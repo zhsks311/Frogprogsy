@@ -792,6 +792,12 @@ async function handleMessages(
     const events: AdapterEvent[] = [];
     for await (const e of mixedEvents) events.push(e);
     recordUsageFromEvents(logCtx, events);
+    const adapterError = firstAdapterError(events);
+    if (adapterError) {
+      recordLogPhase(logCtx, "nonstream_bridge", "error", "provider_response_error");
+      finalizeRequestLog(logCtx, "bridge_error", 502, { kind: "upstream", code: "provider_response_error" });
+      return formatAnthropicErrorResponse(502, "upstream_error", adapterError);
+    }
     const json = buildMessageJSON(events, responseModelId, { hideThinkingSummary: mixHideThinking });
     recordLogPhase(logCtx, "nonstream_bridge", "ok");
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
@@ -988,6 +994,13 @@ async function handleMessages(
     try {
       const events = await adapter.parseResponse(upstreamResponse);
       recordUsageFromEvents(logCtx, events);
+      const adapterError = firstAdapterError(events);
+      if (adapterError) {
+        recordAttemptLog(logCtx, attempt, "error", "provider_response_error", upstreamResponse.status);
+        recordLogPhase(logCtx, "nonstream_bridge", "error", "provider_response_error");
+        finalizeRequestLog(logCtx, "bridge_error", 502, { kind: "upstream", code: "provider_response_error" });
+        return formatAnthropicErrorResponse(502, "upstream_error", adapterError);
+      }
       const json = buildMessageJSON(events, responseModelId, { hideThinkingSummary: attemptParsed.options.hideThinkingSummary });
       recordLogPhase(logCtx, "nonstream_bridge", "ok");
       return new Response(JSON.stringify(json), { headers: responseHeadersFromUpstream(upstreamResponse, { "Content-Type": "application/json" }) });
@@ -1730,10 +1743,18 @@ function recordLogUsage(ctx: RequestLogContext, usage: FrogUsage | undefined): v
   };
 }
 
+function firstAdapterError(events: AdapterEvent[]): string | undefined {
+  const error = events.find((event): event is Extract<AdapterEvent, { type: "error" }> => event.type === "error");
+  return error?.message;
+}
+
 async function* observeUsageEvents(events: AsyncGenerator<AdapterEvent>, ctx: RequestLogContext): AsyncGenerator<AdapterEvent> {
   for await (const event of events) {
     if (event.type === "done") recordLogUsage(ctx, event.usage);
     if (event.type === "diagnostic") recordLogDiagnostic(ctx, event.diagnostic);
+    if (event.type === "error" && !ctx.entry.error) {
+      ctx.entry.error = { kind: "upstream", code: "provider_stream_error" };
+    }
     yield event;
   }
 }
@@ -1932,8 +1953,9 @@ function observeLoggedStream(body: ReadableStream<Uint8Array>, ctx: RequestLogCo
       try {
         const { done, value } = await reader.read();
         if (done) {
-          recordLogPhase(ctx, "stream_bridge", "ok");
-          finalizeRequestLog(ctx, "completed", successStatus);
+          const streamError = ctx.entry.error?.code === "provider_stream_error" ? ctx.entry.error : undefined;
+          recordLogPhase(ctx, "stream_bridge", streamError ? "error" : "ok", streamError?.code);
+          finalizeRequestLog(ctx, streamError ? "bridge_error" : "completed", streamError ? 502 : successStatus, streamError);
           controller.close();
           return;
         }

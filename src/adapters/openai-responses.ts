@@ -213,6 +213,33 @@ function emitResponseItemEvents(item: Record<string, unknown>): AdapterEvent[] {
   return out;
 }
 
+function responseTerminalError(json: Record<string, unknown>): string | undefined {
+  const error = json.error;
+  if (error && typeof error === "object" && !Array.isArray(error)) {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === "string" && message.length > 0) return message;
+    return "upstream response failed";
+  }
+
+  const status = typeof json.status === "string" ? json.status : undefined;
+  if (status && status !== "completed") {
+    const details = json.incomplete_details;
+    if (details && typeof details === "object" && !Array.isArray(details)) {
+      const reason = (details as Record<string, unknown>).reason;
+      if (typeof reason === "string" && reason.length > 0) return `Upstream response ${status}: ${reason}`;
+    }
+    return `Upstream response ${status}`;
+  }
+  return undefined;
+}
+
+function hasAssistantOutput(events: AdapterEvent[]): boolean {
+  return events.some(event =>
+    (event.type === "text_delta" && event.text.length > 0)
+    || event.type === "tool_call_start"
+  );
+}
+
 function eventsFromCompletedResponse(json: Record<string, unknown>): AdapterEvent[] {
   const events: AdapterEvent[] = [];
   const output = Array.isArray(json.output) ? json.output : [];
@@ -221,10 +248,17 @@ function eventsFromCompletedResponse(json: Record<string, unknown>): AdapterEven
       events.push(...emitResponseItemEvents(raw as Record<string, unknown>));
     }
   }
-  if (json.error && typeof json.error === "object" && !Array.isArray(json.error)) {
-    const err = json.error as Record<string, unknown>;
-    events.push({ type: "error", message: typeof err.message === "string" ? err.message : "upstream error" });
+
+  const terminalError = responseTerminalError(json);
+  if (terminalError) {
+    events.push({ type: "error", message: terminalError });
+    return events;
   }
+  if (!hasAssistantOutput(events)) {
+    events.push({ type: "error", message: "Upstream completed without assistant output" });
+    return events;
+  }
+
   events.push({ type: "done", usage: usageFromResponses(json.usage as Record<string, unknown> | undefined) });
   return events;
 }
@@ -299,6 +333,7 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
       let buffer = "";
       let currentEventType = "";
       const toolArgumentDeltaSeen = new Set<string>();
+      let hasStreamOutput = false;
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -326,7 +361,10 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
             currentEventType = "";
             switch (eventType) {
               case "response.output_text.delta":
-                if (typeof data.delta === "string") yield { type: "text_delta", text: data.delta };
+                if (typeof data.delta === "string" && data.delta.length > 0) {
+                  hasStreamOutput = true;
+                  yield { type: "text_delta", text: data.delta };
+                }
                 break;
               case "response.reasoning_summary_text.delta":
                 if (typeof data.delta === "string") yield { type: "thinking_delta", thinking: data.delta };
@@ -339,6 +377,7 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
                 if (item?.type === "function_call" || item?.type === "custom_tool_call" || item?.type === "tool_search_call") {
                   const id = typeof item.call_id === "string" ? item.call_id : typeof item.id === "string" ? item.id : `call_${crypto.randomUUID().slice(0, 8)}`;
                   const name = typeof item.name === "string" ? item.name : item.type === "tool_search_call" ? "tool_search" : "";
+                  hasStreamOutput = true;
                   yield { type: "tool_call_start", id, name };
                 }
                 break;
@@ -365,8 +404,22 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
               }
               case "response.completed": {
                 const responseObj = data.response as Record<string, unknown> | undefined;
-                yield { type: "done", usage: usageFromResponses(responseObj?.usage as Record<string, unknown> | undefined) };
-                break;
+                if (!responseObj) {
+                  yield { type: "error", message: "Upstream completed without response metadata" };
+                  return;
+                }
+                const terminalError = responseTerminalError(responseObj);
+                if (terminalError) {
+                  yield { type: "error", message: terminalError };
+                  return;
+                }
+                if (!hasStreamOutput) {
+                  const completedEvents = eventsFromCompletedResponse(responseObj);
+                  for (const event of completedEvents) yield event;
+                  return;
+                }
+                yield { type: "done", usage: usageFromResponses(responseObj.usage as Record<string, unknown> | undefined) };
+                return;
               }
               case "response.failed":
               case "response.incomplete": {
