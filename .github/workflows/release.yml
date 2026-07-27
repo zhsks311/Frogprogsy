@@ -206,20 +206,25 @@ jobs:
           version_exists=false
           if [ "$package_exists" = "true" ]; then
             version_probe_file="$(mktemp)"
-            if bun pm view "${pkg_name}@${RELEASE_VERSION}" version >"$version_probe_file" 2>&1; then
+            if ! bun pm view "$pkg_name" versions --json >"$version_probe_file" 2>&1; then
+              echo "::error::Unable to list registry versions for ${pkg_name}"
+              sed 's/^/registry: /' "$version_probe_file"
+              exit 1
+            fi
+
+            if VERSION_PROBE_FILE="$version_probe_file" bun -e '
+              import { registryVersionListed } from "./scripts/release-registry";
+              const output = await Bun.file(process.env.VERSION_PROBE_FILE).text();
+              process.exit(registryVersionListed(output, process.env.RELEASE_VERSION ?? "") ? 0 : 3);
+            '; then
               version_exists=true
             else
-              version_probe="$(<"$version_probe_file")"
-              case "$version_probe" in
-                *"E404"*|*"404 Not Found"*|*"does not exist in this registry"*|*"No match found"*)
-                  version_exists=false
-                  ;;
-                *)
-                  echo "::error::Unable to determine whether ${pkg_name}@${RELEASE_VERSION} exists"
-                  sed 's/^/registry: /' "$version_probe_file"
-                  exit 1
-                  ;;
-              esac
+              version_probe_status=$?
+              if [ "$version_probe_status" -ne 3 ]; then
+                echo "::error::Invalid registry versions response for ${pkg_name}"
+                sed 's/^/registry: /' "$version_probe_file"
+                exit 1
+              fi
             fi
             rm -f "$version_probe_file"
           fi

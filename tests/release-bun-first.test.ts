@@ -96,7 +96,10 @@ describe("Bun-first release and installation contract", () => {
     expect(helper).toContain("--bootstrap must publish a stable version to the latest channel");
     expect(workflow).toContain("bootstrap must create the default latest channel");
     expect(workflow).not.toContain('|*"not found"*)');
-    expect(workflow).toContain("Unable to determine whether ${pkg_name}@${RELEASE_VERSION} exists");
+    expect(workflow).toContain('bun pm view "$pkg_name" versions --json');
+    expect(workflow).toContain('import { registryVersionListed } from "./scripts/release-registry"');
+    expect(workflow).toContain("Invalid registry versions response for ${pkg_name}");
+    expect(workflow).not.toContain('bun pm view "${pkg_name}@${RELEASE_VERSION}" version >"$version_probe_file"');
     expect(workflow).toContain("Unable to determine whether GitHub Release ${release_tag} exists");
     expect(helper).not.toContain('output.includes("release not found") ||');
     expect(workflow).toContain("secrets.NPM_BOOTSTRAP_TOKEN");
