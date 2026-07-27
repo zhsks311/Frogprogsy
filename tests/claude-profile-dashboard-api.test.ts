@@ -896,7 +896,7 @@ describe("auto-mode classifier routing profile PATCH", () => {
     }
   });
 
-  test("reports rollback failures when a project update and its rollback both fail", async () => {
+  test.skipIf(process.platform === "win32")("reports rollback failures when a project update and its rollback both fail", async () => {
     const validProject = mkdtempSync(join(tmpdir(), "frog-classifier-rollback-valid-"));
     const badProject = mkdtempSync(join(tmpdir(), "frog-classifier-rollback-bad-"));
     chmodSync(badProject, 0o500);
