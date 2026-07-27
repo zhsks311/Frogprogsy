@@ -4,6 +4,44 @@ This document defines FrogProgsy's Claude Code auto-mode review routing. It is i
 **Claude Code 2.1.220**. Auto-mode is a safety boundary, so routing must be explicit, deterministic, observable,
 and removable.
 
+## Implementation status — 2026-07-24
+
+Status: **implemented, verified, and merged to `main` in commit `930ced4`**. This records the source
+contract; it does not mean that any particular locally installed `frogp` package has already been rebuilt,
+installed, or restarted.
+
+The shipped behavior is:
+
+- The user configures one explicit `autoModeClassifier` provider/model pair, then enables review routing
+  separately for each managed Claude Code home with `routeAutoModeClassifier:true`. Configuring a target alone
+  does not alter Claude Code.
+- An opted-in home makes Claude Code 2.1.220 send both internal auto-mode review stages (`xml_s1` and `xml_s2`)
+  with the exact reserved alias `claude-frogp-auto-classifier`. That alias is the only classifier identity
+  FrogProgsy recognizes.
+- In the verified dangerous-command scenario, the observed upstream sequence was
+  `main model → reviewer → reviewer → main model`: the first and last calls belong to the normal main-model
+  work loop, while the two middle calls are Claude Code's separate review stages. FrogProgsy does not create
+  the two review calls.
+- The reserved alias is pinned to the single configured target. Ordinary provider fallback, long-context
+  routing, and model mixing cannot replace or intercept that reviewer. Multiple keys for the selected provider
+  may be retried, but another provider/model is never substituted.
+- Management writes fail closed: incomplete, unknown, or disabled targets are rejected; deleting, overwriting,
+  or disabling the configured target is blocked; static-catalog targets are also checked before server listen.
+- Profile opt-out and profile deletion remove FrogProgsy's reserved Sonnet override from the Claude Code home
+  and its enrolled projects. The exact user-owned `ANTHROPIC_DEFAULT_SONNET_MODEL` value is backed up, refreshed
+  when the user changes it, and restored instead of being discarded.
+- Generated gateway aliases and model-mixing aliases cannot claim the reserved classifier id.
+- Because Claude Code uses `ANTHROPIC_DEFAULT_SONNET_MODEL` for both auto-mode review and its built-in `sonnet`
+  shortcut, an opted-in session must switch its main model using an exact gateway catalog entry rather than
+  `/model sonnet`.
+
+Landing verification for `930ced4`:
+
+- real Claude Code 2.1.220 loopback E2E: `main-model → review-model → review-model → main-model`;
+- `bun run typecheck`: passed;
+- `bun test --isolate ./tests`: 1,385 passed, 1 skipped, 0 failed;
+- `bun run build:gui`: passed.
+
 ## Verified client behavior
 
 A local capture ran the installed Claude Code 2.1.220 binary against a loopback Anthropic Messages server in
