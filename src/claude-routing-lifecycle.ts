@@ -1,8 +1,10 @@
 import { existsSync, statSync } from "node:fs";
+import { DEFAULT_PORT } from "./config";
 
 import { restoreNativeClaudeCode } from "./claude-inject";
-import { managedClaudeProfiles } from "./claude-profiles";
-import { injectClaudeProjectSettings, restoreClaudeProjectSettings } from "./claude-settings";
+import { clearClaudeProjectsForRoutingProfile, findClaudeProjectsForRoutingProfile } from "./claude-projects";
+import { managedClaudeProfiles, resolveClaudeProfileClassifierFlag } from "./claude-profiles";
+import { clearClaudeProjectRoutingProfileHeader, injectClaudeProjectSettings, restoreClaudeProjectSettings } from "./claude-settings";
 import type { ClaudeProjectRecord, FrogConfig } from "./types";
 
 /**
@@ -25,6 +27,47 @@ export interface RoutingLifecycleResult {
   message: string;
 }
 
+export interface RemovedProfileProjectCleanupResult {
+  success: boolean;
+  error?: string;
+  projects: string[];
+}
+
+/**
+ * Remove a profile's auto-mode reviewer alias from enrolled project settings before clearing the
+ * routing-profile metadata. Both CLI and management API use this single safety-sensitive routine.
+ */
+export function cleanupClaudeProjectsForRemovedProfile(
+  config: FrogConfig,
+  profileId: string,
+  port = config.port ?? DEFAULT_PORT,
+): RemovedProfileProjectCleanupResult {
+  const projects = findClaudeProjectsForRoutingProfile(config, profileId);
+  const projectPaths = projects.map(project => project.projectPath);
+  for (const project of projects) {
+    if (project.enrolled === true) {
+      const updated = injectClaudeProjectSettings(port, {
+        projectPath: project.projectPath,
+        routingProfileId: profileId,
+        gatewayAuthCarrier: config.gatewayAuthCarrier,
+        routeAutoModeClassifier: false,
+      });
+      if (!updated.success) {
+        return {
+          success: false,
+          error: `Could not remove auto-mode classifier routing from ${project.projectPath}: ${updated.message}`,
+          projects: projectPaths,
+        };
+      }
+    }
+    const cleared = clearClaudeProjectRoutingProfileHeader(project.projectPath, profileId);
+    if (!cleared.success) {
+      return { success: false, error: cleared.message, projects: projectPaths };
+    }
+  }
+  clearClaudeProjectsForRoutingProfile(config, profileId);
+  return { success: true, projects: projectPaths };
+}
 /** Registry projects whose durable enrollment intent is currently on. */
 export function enrolledClaudeProjects(config: FrogConfig): ClaudeProjectRecord[] {
   const registry = config.claudeProjects;
@@ -114,6 +157,7 @@ export function reapplyEnrolledClaudeProjects(config: FrogConfig, port: number):
       projectPath: project.projectPath,
       routingProfileId: project.routingProfileId,
       gatewayAuthCarrier: config.gatewayAuthCarrier,
+      routeAutoModeClassifier: resolveClaudeProfileClassifierFlag(config, project.routingProfileId),
     });
     success = success && result.success;
     messages.push(`[project ${project.name}] ${result.message}`);

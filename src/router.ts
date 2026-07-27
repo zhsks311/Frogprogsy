@@ -1,6 +1,7 @@
 import type { FrogAssistantContentPart, FrogConfig, FrogContentPart, FrogParsedRequest, FrogProviderConfig } from "./types";
 import { resolveEnvValue } from "./config";
 import { deterministicModelAlias, resolveConfiguredModelAlias, GATEWAY_MODEL_ALIAS_PREFIX } from "./model-aliases";
+import { AUTO_MODE_CLASSIFIER_ALIAS, resolveAutoModeClassifierTarget } from "./classifier-settings";
 
 /**
  * Which resolution stage produced a route. Recorded on every route-log entry so "why did this
@@ -16,6 +17,7 @@ export type RouteKind =
   | "exact-model"
   | "family"
   | "default"
+  | "classifier"
   | "long-context";
 
 export interface RouteResult {
@@ -25,10 +27,8 @@ export interface RouteResult {
   routeKind: RouteKind;
   /** Sorted candidate provider names when a lexicographic tie-break chose among >1 provider. */
   ambiguousCandidates?: string[];
-  /** True when this route was produced by the auto-mode classifier (Haiku-class) resolver. */
+  /** True when this route was produced by the reserved auto-mode classifier alias resolver. */
   classifierRoute?: boolean;
-  /** Non-fatal diagnostic emitted when a haiku-class model fell back to the provider's defaultModel. */
-  warning?: string;
 }
 
 export interface LongContextRouteInput {
@@ -130,7 +130,11 @@ function isConfigDerivedModelAlias(config: FrogConfig, alias: string): boolean {
 }
 
 function isResolvedRouteProtected(input: LongContextRouteInput): boolean {
-  return input.resolvedRouteKind === "alias" || input.resolvedRouteKind === "qualified";
+  return (
+    input.resolvedRouteKind === "alias" ||
+    input.resolvedRouteKind === "qualified" ||
+    input.resolvedRouteKind === "classifier"
+  );
 }
 
 function isProtectedModelId(input: LongContextRouteInput): boolean {
@@ -251,29 +255,34 @@ function defaultProviderRoute(config: FrogConfig, modelId: string, useDefaultMod
   return makeRoute(config, config.defaultProvider, useDefaultModel ? (defaultProv.defaultModel ?? modelId) : modelId, "client-default");
 }
 
-function isHaikuClassModelId(modelId: string): boolean {
-  return modelId.startsWith("claude-haiku-") || modelId.startsWith("claude-3-5-haiku");
-}
-
-function resolveClassifierRoute(config: FrogConfig): RouteResult | null {
-  const fb = config.classifierFallback;
-  if (fb?.provider && fb.model) {
-    const prov = config.providers[fb.provider];
-    if (prov) {
-      return { providerName: fb.provider, provider: { ...prov, apiKey: resolveEnvValue(prov.apiKey) }, modelId: fb.model, routeKind: "client-default", classifierRoute: true };
-    }
+function autoModeClassifierRoute(config: FrogConfig): RouteResult {
+  const resolved = resolveAutoModeClassifierTarget(config);
+  if (!resolved.ok) {
+    throw new Error(`Reserved auto-mode classifier alias "${AUTO_MODE_CLASSIFIER_ALIAS}" is not usable: ${resolved.message}`);
   }
-  const defaultProv = config.providers[config.defaultProvider];
-  if (defaultProv?.classifierModel) {
-    return { providerName: config.defaultProvider, provider: { ...defaultProv, apiKey: resolveEnvValue(defaultProv.apiKey) }, modelId: defaultProv.classifierModel, routeKind: "client-default", classifierRoute: true };
-  }
-  return null;
+  const prov = config.providers[resolved.provider] as FrogProviderConfig;
+  return {
+    providerName: resolved.provider,
+    provider: { ...prov, apiKey: resolveEnvValue(prov.apiKey) },
+    modelId: resolved.model,
+    routeKind: "classifier",
+    classifierRoute: true,
+  };
 }
 
 
 
 export function routeModel(config: FrogConfig, modelId: string): RouteResult {
   const providerNames = Object.keys(config.providers);
+
+  // s0. Reserved auto-mode classifier alias — EXACT match only, ahead of ALL general alias
+  //     resolution. Claude Code sends this exact id for its auto-mode permission side-queries; it
+  //     routes to the single explicit `autoModeClassifier` target. No model-name-shape guessing; a
+  //     missing/incomplete/unknown-provider/disabled target fails closed (throws) rather than
+  //     drifting to a heavy default model.
+  if (modelId === AUTO_MODE_CLASSIFIER_ALIAS) {
+    return autoModeClassifierRoute(config);
+  }
 
   // Claude Code's model picker can submit the literal "default" sentinel; map it to the configured
   // default provider's defaultModel when available.
@@ -319,15 +328,8 @@ export function routeModel(config: FrogConfig, modelId: string): RouteResult {
     CLIENT_DEFAULT_PREFIXES.some(prefix => modelId.startsWith(prefix)) &&
     !isAnthropicProviderName(config.defaultProvider)
   ) {
-    if (isHaikuClassModelId(modelId)) {
-      const cls = resolveClassifierRoute(config);
-      if (cls) return cls;
-      const route = defaultProviderRoute(config, modelId, true);
-      if (route) return { ...route, warning: `haiku-class classifier '${modelId}' fell back to defaultModel '${route.modelId}' (no classifierModel/classifierFallback configured)` };
-    } else {
-      const route = defaultProviderRoute(config, modelId, true);
-      if (route) return route;
-    }
+    const route = defaultProviderRoute(config, modelId, true);
+    if (route) return route;
   }
 
   // s4. Exact `defaultModel` match across providers.

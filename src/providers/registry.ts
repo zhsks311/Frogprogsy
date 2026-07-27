@@ -13,7 +13,6 @@ export interface ProviderRegistryEntry {
   note?: string;
   dashboardUrl?: string;
   defaultModel?: string;
-  classifierModel?: string;
   models?: string[];
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -42,7 +41,6 @@ export type ProviderConfigSeed = Pick<
   | "reasoningEfforts" | "modelReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap"
   | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
   | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "escapeBuiltinToolNames"
-  | "classifierModel"
 >;
 
 function textOnlyCapabilities(ids: readonly string[]): Record<string, FrogModelCapabilities> {
@@ -117,7 +115,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // gpt-5.3-codex, which the backend rejects for ChatGPT accounts.
     models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"],
     defaultModel: "gpt-5.5",
-    classifierModel: "gpt-5.4-mini",
     modelContextWindows: {
       "gpt-5.5": 272_000,
       "gpt-5.4": 272_000,

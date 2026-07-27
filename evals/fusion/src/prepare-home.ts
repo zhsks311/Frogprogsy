@@ -46,12 +46,11 @@ async function canonicalizeStartupConfig(config: FrogConfig, outDir: string): Pr
   const priorHome = process.env.FROGPROGSY_HOME;
   process.env.FROGPROGSY_HOME = outDir;
   try {
-    // Mirrors src/server.ts:2057-2081 startServer startup back-fill without importing src/cli.ts:
-    // runtime fixture removal, OAuth provider preset reconcile, subagent seed, classifier back-fill.
-    const [{ DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders }, { reconcileOAuthProviders }, { getProviderRegistryEntry }] = await Promise.all([
+    // Mirrors the deterministic startup normalization used by src/server.ts without importing src/cli.ts:
+    // runtime fixture removal, OAuth provider reconcile, and subagent seed.
+    const [{ DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders }, { reconcileOAuthProviders }] = await Promise.all([
       import("../../../src/config"),
       import("../../../src/oauth/index"),
-      import("../../../src/providers/registry"),
     ]);
 
     dropRuntimeFixtureProviders(config);
@@ -65,11 +64,6 @@ async function canonicalizeStartupConfig(config: FrogConfig, outDir: string): Pr
       config.subagentModels = [...DEFAULT_SUBAGENT_MODELS];
     }
 
-    for (const [name, provider] of Object.entries(config.providers ?? {})) {
-      if (provider.classifierModel) continue;
-      const seed = getProviderRegistryEntry(name)?.classifierModel;
-      if (seed) provider.classifierModel = seed;
-    }
     return config;
   } finally {
     if (priorHome === undefined) delete process.env.FROGPROGSY_HOME;

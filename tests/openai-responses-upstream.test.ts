@@ -88,6 +88,60 @@ describe("OpenAI Responses upstream body sanitization", () => {
       { type: "done", usage: { inputTokens: 2, outputTokens: 1 } },
     ]);
   });
+  test("recovers output from a final-only completed response", async () => {
+    const adapter = createResponsesAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "oauth",
+      apiKey: "token",
+    });
+    const response = new Response([
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Recovered\"}]}],\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}",
+      "",
+    ].join("\n"));
+
+    await expect(adapter.parseResponse!(response)).resolves.toEqual([
+      { type: "text_delta", text: "Recovered" },
+      { type: "done", usage: { inputTokens: 2, outputTokens: 1 } },
+    ]);
+  });
+
+  test("turns a failed completed envelope into a terminal error", async () => {
+    const adapter = createResponsesAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "oauth",
+      apiKey: "token",
+    });
+    const response = new Response([
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"failed\",\"output\":[],\"error\":{\"message\":\"Input exceeds the context window\"},\"usage\":null}}",
+      "",
+    ].join("\n"));
+
+    await expect(adapter.parseResponse!(response)).resolves.toEqual([
+      { type: "error", message: "Input exceeds the context window" },
+    ]);
+  });
+
+  test("rejects a completed response with no assistant output", async () => {
+    const adapter = createResponsesAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "oauth",
+      apiKey: "token",
+    });
+    const response = new Response([
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":null}}",
+      "",
+    ].join("\n"));
+
+    await expect(adapter.parseResponse!(response)).resolves.toEqual([
+      { type: "error", message: "Upstream completed without assistant output" },
+    ]);
+  });
   test("coerces object-shaped input_image.image_url to a string before relaying", () => {
     const adapter = createResponsesAdapter(provider);
     const request = adapter.buildRequest({

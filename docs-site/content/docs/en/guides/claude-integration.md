@@ -19,6 +19,10 @@ FrogProgsy connects through the gateway path Claude Code already reads. It does 
   }
 }
 ```
+An opted-in profile also owns `ANTHROPIC_DEFAULT_SONNET_MODEL=claude-frogp-auto-classifier` so Claude Code
+2.1.220 sends both auto-mode review stages through the explicit reviewer route. That variable also changes the
+built-in `sonnet` shortcut: use an exact gateway catalog model when switching the main model, and restart or
+resume the session after changing the profile.
 
 Unrelated settings stay untouched. Before the first write, previous values for the owned keys are saved in `~/.frogprogsy/claude-profiles/<cp_id>/claude-settings-backup.json`; restore paths put those values back exactly for that profile. If the backup is missing, restore removes only clearly recognizable FrogProgsy residue: a local `ANTHROPIC_BASE_URL` paired with gateway discovery, the optional local FrogProgsy auth marker, the `X-Frogp-Claude-Profile` header, and routed default model aliases created by current or older releases. Unrelated settings remain in place so Claude Code account connectors keep working.
 

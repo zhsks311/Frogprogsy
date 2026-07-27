@@ -264,6 +264,8 @@ export interface ClaudeProfileRecord {
   lastInjectedAt?: string;
   lastSeenAt?: string;
   authState?: ClaudeProfileAuthState;
+  /** Opt-in: inject the reserved auto-mode classifier alias for this profile so its auto-mode side-queries route to `autoModeClassifier`. */
+  routeAutoModeClassifier?: boolean;
 }
 
 export interface ClaudeProfilesConfig {
@@ -366,8 +368,12 @@ export interface FrogConfig {
   webSearchFallback?: FrogWebSearchFallbackConfig;
   /** Image fallback helper. Disabled unless explicitly enabled; implemented in-process, not as a separate app. */
   imageFallback?: FrogImageFallbackConfig;
-  /** Cross-provider override for the auto-mode classifier (Haiku-class) side-queries. Takes precedence over a provider's classifierModel. Lets main=codex while the classifier runs on e.g. anthropic/claude-haiku. */
-  classifierFallback?: { provider?: string; model?: string };
+  /**
+   * Single explicit target for the Claude Code auto-mode side-classifier. ONLY the reserved alias
+   * `claude-frogp-auto-classifier` (AUTO_MODE_CLASSIFIER_ALIAS) routes here; there is no model-name-shape
+   * guessing and no generic provider fallback. Both fields are required for the classifier to be usable.
+   */
+  autoModeClassifier?: { provider: string; model: string };
   /** Named Claude Code config directories. Claude subscription auth stays pass-through only. */
   claudeProfiles?: ClaudeProfilesConfig;
   /** Project-scoped Claude Code enrollments using <project>/.claude/settings.local.json. */
@@ -564,8 +570,6 @@ export interface FrogProviderConfig {
   /** Key auth only: configured-order stateless failover candidates after apiKey. */
   apiKeys?: string[];
   defaultModel?: string;
-  /** Lightweight model id for Claude Code Haiku-class background/classifier side-queries routed to this provider (auto-mode permission classifier). Undefined -> falls back to defaultModel. */
-  classifierModel?: string;
   models?: string[];
   /**
    * Fetch the provider's live `/models` endpoint. Defaults to true.

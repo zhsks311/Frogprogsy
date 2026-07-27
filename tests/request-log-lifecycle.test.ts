@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { __requestLogTest } from "../src/server";
+import { bridgeToMessagesSSE } from "../src/messages/bridge";
+import type { AdapterEvent } from "../src/types";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -89,6 +91,30 @@ describe("privacy-safe request logs", () => {
     expect(entry.status).toBe(200);
     expect(entry.upstream?.responseBytes).toBe(5);
     expect(entry.phases.some(phase => phase.name === "stream_bridge" && phase.status === "ok")).toBe(true);
+  });
+  test("adapter stream errors finalize as provider stream failures", async () => {
+    __requestLogTest.clear();
+    const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+
+    async function* errorEvents(): AsyncGenerator<AdapterEvent> {
+      yield { type: "error", message: "Upstream completed without assistant output" };
+    }
+
+    const events = __requestLogTest.observeUsageEvents(errorEvents(), ctx);
+    const bridged = bridgeToMessagesSSE(events, "gpt-5.6-sol");
+    const body = await new Response(__requestLogTest.observeLoggedStream(bridged, ctx)).text();
+
+    expect(body).toContain("event: error");
+    expect(body).toContain("Upstream completed without assistant output");
+    const [entry] = __requestLogTest.requestLogSnapshot();
+    expect(entry.lifecycle).toBe("bridge_error");
+    expect(entry.status).toBe(502);
+    expect(entry.error).toEqual({ kind: "upstream", code: "provider_stream_error" });
+    expect(entry.phases.some(phase =>
+      phase.name === "stream_bridge"
+      && phase.status === "error"
+      && phase.code === "provider_stream_error"
+    )).toBe(true);
   });
 
   test("stream cancellation finalizes client_cancel once", async () => {
@@ -225,6 +251,66 @@ describe("privacy-safe request logs", () => {
         usage: { input_tokens: 3, output_tokens: 1 },
       });
       expect(entry.phases.some(phase => phase.name === "nonstream_bridge" && phase.status === "ok")).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  test("Codex empty non-stream completions return a visible upstream error", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      const body = [
+        "event: response.completed",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":null}}",
+        "",
+      ].join("\n");
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+
+    try {
+      const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const response = await __requestLogTest.handleMessages(
+        new Request("http://127.0.0.1/v1/messages", {
+          method: "POST",
+          body: JSON.stringify({
+            model: "gpt-5.6-sol",
+            max_tokens: 10,
+            messages: [{ role: "user", content: "hello" }],
+            stream: false,
+          }),
+        }),
+        {
+          port: 10100,
+          defaultProvider: "codex",
+          providers: {
+            codex: {
+              adapter: "openai-responses",
+              baseUrl: "https://chatgpt.com/backend-api/codex",
+              defaultModel: "gpt-5.6-sol",
+              apiKey: "test-key",
+            },
+          },
+        },
+        ctx,
+      );
+
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({
+        type: "error",
+        error: {
+          type: "server_error",
+          message: "Upstream completed without assistant output",
+        },
+      });
+      const [entry] = __requestLogTest.requestLogSnapshot();
+      expect(entry.lifecycle).toBe("bridge_error");
+      expect(entry.status).toBe(502);
+      expect(entry.error).toEqual({ kind: "upstream", code: "provider_response_error" });
+      expect(entry.phases.some(phase =>
+        phase.name === "nonstream_bridge"
+        && phase.status === "error"
+        && phase.code === "provider_response_error"
+      )).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
     }

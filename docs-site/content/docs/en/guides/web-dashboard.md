@@ -64,11 +64,14 @@ Use the phase list to isolate failures:
 - `stream_bridge` — conversion back to Claude Messages
 - `finalize` — logging and cleanup
 
-## Classifier model settings
+## Auto-mode review route
 
-Claude Code auto-mode permission checks are separate Haiku-class side queries. When the main default provider is non-Anthropic, use the dashboard classifier panel to keep those checks on a lightweight provider/model instead of silently routing them to the heavyweight default model.
+Choose one explicit reviewer provider/model in the dashboard, then enable the route on each Claude Code home that
+should use it. Claude Code 2.1.220 sends both review stages through the reserved alias for those homes; FrogProgsy
+does not guess from Sonnet/Haiku names. Restart or resume an existing Claude Code session after changing the home.
 
-Use per-provider classifier models for normal routing, or set a cross-provider classifier fallback when all classifier side queries should use one provider/model pair.
+While enabled, select main models by their exact gateway catalog entry rather than Claude Code's built-in `sonnet`
+shortcut. A reviewer 404/429 can make Claude Code fall back to the current main model.
 
 
 ## Usage accounting

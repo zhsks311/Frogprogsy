@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildClaudeCodeEnv, injectClaudeCodeSettings, injectClaudeProjectSettings, mergeClaudeCodeSettings, mergeClaudeProjectSettings, readClaudeGatewayState, readClaudeProjectGatewayState, removeOrphanedFrogProgsySettings, restoreClaudeCodeSettings, restoreClaudeCodeSettingsFromBackup, restoreClaudeProjectSettings } from "../src/claude-settings";
 import { ensureClaudeProjectSettingsExcluded, getClaudeProjectGitProtection } from "../src/claude-projects";
+import { AUTO_MODE_CLASSIFIER_ALIAS } from "../src/classifier-settings";
+import { buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv, resolveClaudeProfileClassifierFlag } from "../src/claude-profiles";
+import type { ClaudeProfileRecord, FrogConfig } from "../src/types";
 
 describe("Claude Code settings injection", () => {
   test("builds token-free native OAuth gateway discovery env by default", () => {
@@ -530,6 +533,159 @@ describe("Claude Code settings injection", () => {
       changed: true,
       settings: { env: { ANTHROPIC_AUTH_TOKEN: "sk-ant-user-real", UNRELATED: "keep" } },
     });
+  });
+
+  test("auto-mode classifier opt-in injects the reserved alias only when the profile flag is set", () => {
+    expect(AUTO_MODE_CLASSIFIER_ALIAS).toBe("claude-frogp-auto-classifier");
+    // absent flag => no reserved alias
+    expect(buildClaudeCodeEnv(10100)).toEqual({
+      ANTHROPIC_BASE_URL: "http://localhost:10100",
+      CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
+    });
+    // opt-in => reserved alias present
+    expect(buildClaudeCodeEnv(10100, { routeAutoModeClassifier: true })).toEqual({
+      ANTHROPIC_BASE_URL: "http://localhost:10100",
+      CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS,
+    });
+  });
+
+  test("profile false/absent never overwrites a user's own Sonnet default", () => {
+    const merged = mergeClaudeCodeSettings({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5" } }, 10100, null);
+    expect((merged.settings.env as Record<string, unknown>).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-4-5");
+  });
+
+  test("opt-out restores the exact pre-injection Sonnet default from the first backup", () => {
+    // user starts with their own Sonnet default; opt-in overwrites it with the reserved alias
+    const first = mergeClaudeCodeSettings({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5" } }, 10100, null, { routeAutoModeClassifier: true });
+    expect(first.settings.env).toMatchObject({ ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS });
+    expect(first.backup.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toEqual({ existed: true, value: "claude-sonnet-4-5" });
+    // flag off on the next injection => exact prior value restored (not deleted)
+    const second = mergeClaudeCodeSettings(first.settings, 10100, first.backup);
+    expect((second.settings.env as Record<string, unknown>).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-4-5");
+
+    // no prior value (existed:false) => opt-out deletes the reserved alias entirely
+    const cleanFirst = mergeClaudeCodeSettings({ env: {} }, 10100, null, { routeAutoModeClassifier: true });
+    expect(cleanFirst.settings.env).toMatchObject({ ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS });
+    const cleanSecond = mergeClaudeCodeSettings(cleanFirst.settings, 10100, cleanFirst.backup);
+    expect((cleanSecond.settings.env as Record<string, unknown>).ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+  });
+
+  test("opt-in refreshes a stale backup when the user added a Sonnet default later", () => {
+    const initial = mergeClaudeCodeSettings({ env: {} }, 10100, null, { routeAutoModeClassifier: true });
+    const userEdited = {
+      ...initial.settings,
+      env: {
+        ...(initial.settings.env as Record<string, unknown>),
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5",
+      },
+    };
+    const reinjected = mergeClaudeCodeSettings(userEdited, 10100, initial.backup, { routeAutoModeClassifier: true });
+    expect(reinjected.backup.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toEqual({
+      existed: true,
+      value: "claude-sonnet-4-5",
+    });
+    expect((reinjected.settings.env as Record<string, unknown>).ANTHROPIC_DEFAULT_SONNET_MODEL)
+      .toBe(AUTO_MODE_CLASSIFIER_ALIAS);
+
+    const optedOut = mergeClaudeCodeSettings(reinjected.settings, 10100, reinjected.backup);
+    expect((optedOut.settings.env as Record<string, unknown>).ANTHROPIC_DEFAULT_SONNET_MODEL)
+      .toBe("claude-sonnet-4-5");
+  });
+
+  test("restore reverts the reserved alias but preserves a user's own Sonnet default", () => {
+    const backup = {
+      schemaVersion: 1 as const,
+      settingsPath: "/tmp/settings.json",
+      env: {
+        ANTHROPIC_BASE_URL: { existed: false },
+        ANTHROPIC_AUTH_TOKEN: { existed: false },
+        CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: { existed: false },
+        ANTHROPIC_CUSTOM_HEADERS: { existed: false },
+        ANTHROPIC_DEFAULT_SONNET_MODEL: { existed: true, value: "claude-sonnet-4-5" },
+      },
+    };
+    // current value is our reserved alias => reverted to the exact backed-up value
+    expect(restoreClaudeCodeSettingsFromBackup({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS } }, backup))
+      .toEqual({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5" } });
+    // current value is a user's own default => left untouched even though a backup entry exists
+    expect(restoreClaudeCodeSettingsFromBackup({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-opus-4-1" } }, backup))
+      .toEqual({ env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-opus-4-1" } });
+  });
+
+  test("orphan cleanup removes the reserved classifier alias but keeps a user's Sonnet default", () => {
+    expect(removeOrphanedFrogProgsySettings({
+      env: {
+        ANTHROPIC_BASE_URL: "http://localhost:10100",
+        CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS,
+        UNRELATED: "keep",
+      },
+    })).toEqual({
+      changed: true,
+      settings: { env: { UNRELATED: "keep" } },
+    });
+
+    expect(removeOrphanedFrogProgsySettings({
+      env: {
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5",
+        UNRELATED: "keep",
+      },
+    })).toEqual({
+      changed: false,
+      settings: { env: { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5", UNRELATED: "keep" } },
+    });
+  });
+
+  test("project enrollment threads the auto-mode classifier opt-in through to project settings", () => {
+    const project = mkdtempSync(join(tmpdir(), "frog-project-classifier-"));
+    try {
+      const optIn = mergeClaudeProjectSettings({ env: {} }, 10100, null, { projectPath: project, routingProfileId: "cp_work", routeAutoModeClassifier: true });
+      expect(optIn.settings.env).toMatchObject({
+        ANTHROPIC_BASE_URL: "http://localhost:10100",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS,
+      });
+      // opt-out (flag omitted) on reapply strips the reserved alias (no prior value to restore)
+      const optOut = mergeClaudeProjectSettings(optIn.settings, 10100, optIn.backup, { projectPath: project, routingProfileId: "cp_work" });
+      expect((optOut.settings.env as Record<string, unknown>).ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+      // a project without a routing profile never receives the reserved alias
+      const noProfile = mergeClaudeProjectSettings({ env: {} }, 10100, null, { projectPath: project });
+      expect((noProfile.settings.env as Record<string, unknown>).ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  test("run env injects the reserved alias on opt-in; native env strips it while keeping user Sonnet defaults", () => {
+    const optIn = { id: "cp_work", name: "Work", claudeHome: "/tmp/home", routeAutoModeClassifier: true } as ClaudeProfileRecord;
+    const optOut = { id: "cp_home", name: "Home", claudeHome: "/tmp/home2" } as ClaudeProfileRecord;
+
+    expect(buildClaudeProfileRunEnv(optIn, 10100, "token-free", {}).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
+    // opt-out run env strips a stale frog alias from baseEnv but preserves a user's own default
+    expect(buildClaudeProfileRunEnv(optOut, 10100, "token-free", { ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+    expect(buildClaudeProfileRunEnv(optOut, 10100, "token-free", { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5" }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-4-5");
+
+    // native env always strips our reserved alias, never a user's own default
+    expect(buildClaudeProfileNativeEnv(optIn, { ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+    expect(buildClaudeProfileNativeEnv(optIn, { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5" }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-4-5");
+  });
+
+  test("resolveClaudeProfileClassifierFlag reads the opt-in only for a known profile", () => {
+    const config = {
+      claudeProfiles: {
+        schemaVersion: 1 as const,
+        defaultProfileId: "cp_work",
+        profiles: [
+          { id: "cp_work", name: "Work", claudeHome: "/tmp/a", routeAutoModeClassifier: true },
+          { id: "cp_home", name: "Home", claudeHome: "/tmp/b" },
+        ],
+      },
+    } as unknown as FrogConfig;
+    expect(resolveClaudeProfileClassifierFlag(config, "cp_work")).toBe(true);
+    expect(resolveClaudeProfileClassifierFlag(config, "cp_home")).toBe(false);
+    expect(resolveClaudeProfileClassifierFlag(config, "cp_unknown")).toBe(false);
+    expect(resolveClaudeProfileClassifierFlag(config, undefined)).toBe(false);
+    expect(resolveClaudeProfileClassifierFlag({} as FrogConfig, "cp_work")).toBe(false);
   });
 
   test("static guard: the local discovery sentinel token is injected only inside an explicit sentinel branch", () => {

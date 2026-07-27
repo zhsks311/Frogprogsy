@@ -11,6 +11,12 @@ Native OpenAI/ChatGPT model routes still use the `openai-responses` upstream ada
 upstream implementation detail. The public Claude Code inbound OpenAI Responses route is retired: `POST
 /v1/responses` returns `410` and tells callers to use `/v1/messages`.
 
+A Responses terminal envelope is successful only when it produces assistant text or a tool call. The adapter recovers
+output from a final-only `response.completed` envelope when delta frames are absent, but converts failed, incomplete,
+or outputless terminal envelopes into an `AdapterEvent` error. The Messages bridge must surface that error to Claude
+Code, and request logs must finish with `provider_stream_error` or `provider_response_error` rather than recording a
+blank `200 completed` request.
+
 OpenAI/ChatGPT forward routes use `authMode:"forward"` and forward only the allowed Claude Code/OpenAI auth/session
 headers. Anthropic forward routes use the `anthropic` adapter and forward only real `Authorization` or `x-api-key`
 values; the local `local-frogprogsy` marker is stripped before upstream traffic.

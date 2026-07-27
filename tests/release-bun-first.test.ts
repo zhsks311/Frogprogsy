@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { registryVersionListed } from "../scripts/release-registry";
 
 const root = new URL("../", import.meta.url);
 
@@ -14,6 +15,16 @@ describe("Bun-first release and installation contract", () => {
     expect(source).not.toContain("npm version");
     expect(source).not.toContain("npm install -g");
     expect(source).toContain("bun add -g frogprogsy");
+  });
+
+  test("release registry preflight distinguishes used and unused versions", () => {
+    const versions = JSON.stringify(["0.0.1", "0.0.2-preview.1"]);
+    expect(registryVersionListed(versions, "0.0.2-preview.1")).toBe(true);
+    expect(registryVersionListed(versions, "0.0.2-preview.2")).toBe(false);
+    expect(registryVersionListed(JSON.stringify("0.0.1"), "0.0.1")).toBe(true);
+    expect(() => registryVersionListed(JSON.stringify([42]), "0.0.1")).toThrow(
+      "registry versions response must contain only strings",
+    );
   });
 
   test("release helper waits fail-closed on BOTH workflow gates for the exact SHA before dispatching", async () => {

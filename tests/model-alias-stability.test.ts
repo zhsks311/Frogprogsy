@@ -1,12 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { computeModelAliases, deterministicModelAlias, resolveConfiguredModelAlias, resolvePersistedModelAlias, GATEWAY_MODEL_ALIAS_PREFIX, type ModelAliasEntry } from "../src/model-aliases";
+import { computeModelAliases, deterministicModelAlias, materializeModelAliases, resolveConfiguredModelAlias, resolvePersistedModelAlias, GATEWAY_MODEL_ALIAS_PREFIX, type ModelAliasEntry } from "../src/model-aliases";
 import { nativeOpenAiSlugs, syncCatalogModels, type CatalogModel } from "../src/claude-catalog";
 import { syncClaudeCodeGatewayModelsCache } from "../src/claude-refresh";
 import { routeModel } from "../src/router";
 import type { FrogConfig } from "../src/types";
+import { AUTO_MODE_CLASSIFIER_ALIAS } from "../src/classifier-settings";
 
 const config: FrogConfig = {
   port: 10100,
@@ -106,6 +107,38 @@ describe("Claude-visible model aliases", () => {
 
     const reordered = deterministicModelAlias("provider-a", "Model X/Preview");
     expect(reordered).toBe(alias);
+  });
+
+  test("the reserved auto-mode classifier alias is never published for a provider model", () => {
+    expect(deterministicModelAlias("auto", "classifier")).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
+    const aliases = computeModelAliases([{ provider: "auto", model: "classifier" }]);
+    expect(aliases.get("auto/classifier")).toMatch(
+      /^claude-frogp-auto-classifier-[a-f0-9]{6}$/,
+    );
+  });
+
+  test("subset materialization migrates a stale persisted reserved alias", () => {
+    const homes = makeHomes();
+    try {
+      writeFileSync(homes.aliasesPath, JSON.stringify({
+        schemaVersion: 1,
+        aliases: {
+          [AUTO_MODE_CLASSIFIER_ALIAS]: {
+            alias: AUTO_MODE_CLASSIFIER_ALIAS,
+            provider: "auto",
+            model: "classifier",
+            routeKey: "auto/classifier",
+            displayName: "auto/classifier",
+            createdAt: new Date(0).toISOString(),
+          },
+        },
+      }));
+      const [entry] = materializeModelAliases([{ provider: "auto", model: "classifier" }]);
+      expect(entry?.alias).toMatch(/^claude-frogp-auto-classifier-[a-f0-9]{6}$/);
+      expect(persistedAliases(homes.aliasesPath)).not.toHaveProperty(AUTO_MODE_CLASSIFIER_ALIAS);
+    } finally {
+      homes.cleanup();
+    }
   });
 
   test("collision suffix appears only when distinct route keys share a slug base", () => {

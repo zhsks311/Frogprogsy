@@ -55,6 +55,10 @@ frogprogsy-owned env keys under `<profile-home>/settings.json`:
   }
 }
 ```
+A profile with `routeAutoModeClassifier:true` additionally owns
+`ANTHROPIC_DEFAULT_SONNET_MODEL:"claude-frogp-auto-classifier"`. The exact pre-injection value is part of the same
+backup/restore contract. The shared built-in `sonnet` shortcut limitation and the Claude Code 2.1.220 verification
+boundary are defined in `structure/07_classifier-routing.md`.
 
 Settings intentionally do not store frogprogsy's local discovery auth token by default. Managed settings,
 project enrollment, and launcher environments are token-free: they set the gateway base URL and discovery
@@ -95,8 +99,9 @@ retained). Doctor reports the cache `fetchedAt` age.
 Auth carrier — token-free is the approved default; sentinel is the rollback override. Following the corrected
 manual P0 PASS (`artifacts/claude-dual-auth/probe-picker-manual-2026-07-20.json`; see
 `structure/09_claude-dual-auth.md`), the approved default interactive `frogp` launch is token-free: managed
-settings/launchers set only `ANTHROPIC_BASE_URL` + `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` and inject NO
-`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`, so the native subscription bearer passes through unchanged and
+settings/launchers set `ANTHROPIC_BASE_URL` + `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`, optionally add the
+reserved reviewer alias for an opted-in profile, and inject NO `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`, so the
+native subscription bearer passes through unchanged and
 claude.ai connectors stay eligible (the corrected run showed `claude mcp list` connectors with no
 connectors-disabled warning). The new `gatewayAuthCarrier?: "token-free" | "sentinel"` config field carries the
 choice: absent ⇒ token-free (post-PASS default, immediate, no soak); `"sentinel"` ⇒ the prior behavior that

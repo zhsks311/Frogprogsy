@@ -39,7 +39,7 @@ The JSON fields map to the runtime `ProviderConfig` objects under `providers.*` 
 | `connectTimeoutMs` | `number` | `30000` | Upstream DNS/TCP/TLS/response-header timeout in milliseconds. |
 | `webSearchFallback` | object | auto when a compatible forward/key provider exists | Hosted web-search helper settings. |
 | `imageFallback` | object | auto when a compatible forward/key provider exists | Image-description helper settings for text-only lanes. |
-| `classifierFallback` | object | — | Cross-provider override for Claude Code auto-mode classifier side queries; `{ provider, model }` takes precedence over per-provider `classifierModel`. |
+| `autoModeClassifier` | object | — | One explicit `{ provider, model }` target for the reserved Claude Code 2.1.220 auto-mode review alias. |
 | `modelMixing` | object | — | Model mixing behind the `frogp/mix` alias (route/fusion/pipeline). Disabled unless `enabled: true`. See [Model mixing fields](#model-mixing-fields). |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field; the Claude Messages data plane uses HTTP/SSE. |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op; FrogProgsy does not touch Claude Code history. |
@@ -56,7 +56,6 @@ Each `providers` key is a route namespace. For example, model `qwen/qwen3-coder`
 | `apiKey` | string | Literal key or `${ENV_VAR}` / `$ENV_VAR` reference. |
 | `headers` | object | Extra static upstream headers. Do not use this to bypass credential handling. |
 | `defaultModel` | string | Provider-owned short model id used for provider/default fallback routing. |
-| `classifierModel` | string | Lightweight model used for Claude Code auto-mode classifier side queries when this provider is the default or selected by `classifierFallback`. |
 | `models` | string[] | Seed/fallback model list; exact allowlist when `liveModels` is `false`. |
 | `liveModels` | boolean | Whether start/sync fetches live `/models`; default `true`. |
 | `contextWindow` | number | Provider-wide Claude-visible context cap. |
@@ -82,28 +81,40 @@ Each `providers` key is a route namespace. For example, model `qwen/qwen3-coder`
 | `oauth` | Resolves and refreshes a stored OAuth token from `~/.frogprogsy/auth.json`, then sends it as Bearer auth. |
 | `forward` | Copies only allowlisted upstream-compatible auth headers from the incoming Claude Code request. Used by Anthropic and OpenAI Responses lanes. |
 
-## Classifier routing fields
+## Auto-mode review routing
 
-Claude Code auto-mode permission checks are separate small-model side queries. When `defaultProvider` is not Anthropic, set a lightweight classifier route so those checks do not silently use the heavyweight `defaultModel`.
+Claude Code 2.1.220 uses separate Sonnet 5 side queries for auto-mode safety review. FrogProgsy does not identify
+those requests by a Sonnet/Haiku model name or by inspecting the prompt: the HTTP body has no trustworthy
+auto-mode marker.
 
-How a permission check flows:
+Configure one target:
 
-```text
-main model attempts an action (e.g. a Bash command)
-  → Claude Code sends a side query with a Haiku-class id (claude-haiku-*)
-  → FrogProgsy routes it: classifierFallback → provider classifierModel → defaultModel (+ warning)
-  → the routed model judges the action against Claude Code's auto-mode policy → allow / block
+```json
+{
+  "autoModeClassifier": {
+    "provider": "codex",
+    "model": "gpt-5.4-mini"
+  }
+}
 ```
 
-| Field | Scope | Role |
-| --- | --- | --- |
-| `classifierModel` | provider | Provider-local model used for Haiku-class classifier requests. |
-| `classifierFallback.provider` | top level | Provider that should receive all classifier side queries. |
-| `classifierFallback.model` | top level | Model id used with the fallback provider. |
+Then enable **Route auto-mode reviews** on each Claude Code home that should use it. FrogProgsy makes that home
+send both review stages with the exact `claude-frogp-auto-classifier` alias and routes only that alias to the
+configured target. Generic provider fallback, long-context routing, and model mixing do not apply.
 
-If neither field is configured, FrogProgsy still routes the request but emits a warning when a Haiku-class classifier id falls back to `defaultModel`.
+Provider and model are both required. Missing providers, disabled models, and models absent from a non-empty known
+catalog are rejected. The target cannot be cleared while an opted-in home still depends on it.
 
-The model choice changes how strictly Claude Code's built-in auto-mode policy (`allow` / `soft_deny` / `hard_deny` categories) is interpreted — a frontier model over-blocks, a light model matches the original Haiku calibration. The policy itself is not configured here: inspect and tune it in Claude Code via `claude auto-mode defaults` / `claude auto-mode config` (an `autoMode.allow` entry unblocks trusted `soft_deny` commands; `hard_deny` categories stay blocked no matter which model judges).
+Two client boundaries matter:
+
+- A 404/429 or connection failure can make Claude Code retry and fall back to the current main model. This is
+  Claude Code behavior, not a FrogProgsy fallback.
+- The opt-in uses `ANTHROPIC_DEFAULT_SONNET_MODEL`, which also controls Claude Code's built-in `sonnet` shortcut.
+  While enabled, switch the main model with an exact gateway catalog entry, not that shortcut. Restart or resume
+  an existing Claude Code session after changing the home setting.
+
+The route was verified against Claude Code 2.1.220 and must be re-verified when the client implementation changes.
+Use `claude auto-mode defaults` / `claude auto-mode config` to inspect or tune Claude Code's policy itself.
 
 ## Model capability fields
 
@@ -210,8 +221,7 @@ Every degraded path is loud (a warning is logged), never silent, and the Claude 
       "adapter": "openai-responses",
       "baseUrl": "https://chatgpt.com/backend-api/codex",
       "authMode": "oauth",
-      "defaultModel": "gpt-5.5",
-      "classifierModel": "gpt-5.4-mini"
+      "defaultModel": "gpt-5.5"
     },
     "ollama-cloud": {
       "adapter": "openai-chat",
@@ -229,7 +239,7 @@ Every degraded path is loud (a warning is logged), never silent, and the Claude 
   },
   "subagentModels": ["anthropic/claude-sonnet-4-6", "ollama-cloud/glm-5.2"],
   "disabledModels": ["ollama-cloud/experimental-model"],
-  "classifierFallback": {
+  "autoModeClassifier": {
     "provider": "codex",
     "model": "gpt-5.4-mini"
   },

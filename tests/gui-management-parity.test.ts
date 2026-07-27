@@ -71,10 +71,10 @@ describe("GUI management parity", () => {
     expect(usage).toContain('t("usage.heatmap.tooltip"');
 
     expect(en).toContain('"mix.boundaryTitle": "Separate from command approval"');
-    // Auto-approval review keys keep the plain "심사/审查" naming (mixing's judge is the
-    // separate "분류기/分类器" concept and may use those words in mix.* keys only).
-    expect(ko).toContain('"dash.classifierTitle": "자동 승인 심사 모델"');
-    expect(zh).toContain('"dash.classifierTitle": "自动批准审查模型"');
+    // Auto-mode review keys use the plain "심사/审查" naming; model-mixing's judge is the
+    // separate "분류기/分类器" concept and may use those words in mix.* keys only.
+    expect(ko).toContain('"dash.classifierTitle": "자동 모드 심사 경로"');
+    expect(zh).toContain('"dash.classifierTitle": "自动模式审查路由"');
     const dashSectionKo = ko.slice(ko.indexOf('"dash.classifierTitle"'), ko.indexOf('"dash.classifierPolicyTitle"'));
     expect(dashSectionKo).not.toContain("분류기");
   });

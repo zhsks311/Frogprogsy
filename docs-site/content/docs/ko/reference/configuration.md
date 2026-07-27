@@ -39,7 +39,7 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 | `connectTimeoutMs` | `number` | `30000` | Upstream DNS/TCP/TLS/response-header timeout(ms) |
 | `webSearchFallback` | object | auto when compatible forward/key provider exists | Hosted web-search helper 설정 |
 | `imageFallback` | object | auto when compatible forward/key provider exists | Text-only lane용 image-description helper 설정 |
-| `classifierFallback` | object | — | Claude Code auto-mode classifier side query용 cross-provider override. `{ provider, model }`은 provider별 `classifierModel`보다 우선합니다. |
+| `autoModeClassifier` | object | — | Claude Code 2.1.220의 예약 자동 모드 심사 alias를 처리할 단일 `{ provider, model }` 대상 |
 | `modelMixing` | object | — | `frogp/mix` 별칭 뒤의 모델 섞어 쓰기(route/fusion/pipeline). `enabled: true` 전에는 비활성. [Model mixing fields](#model-mixing-fields) 참고. |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field; Claude Messages data plane은 HTTP/SSE 사용 |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op; Claude Code history는 건드리지 않음 |
@@ -56,7 +56,6 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 | `apiKey` | string | Literal key 또는 `${ENV_VAR}` / `$ENV_VAR` reference |
 | `headers` | object | Extra static upstream headers. 인증 header를 여기로 우회하지 마세요. |
 | `defaultModel` | string | Provider-owned short model id. Prefix 없는 request 또는 provider default에 사용됩니다. |
-| `classifierModel` | string | 이 provider가 기본 provider이거나 `classifierFallback`으로 선택됐을 때 Claude Code auto-mode classifier side query에 쓸 경량 모델 |
 | `models` | string[] | Seed/fallback model list. `liveModels: false`일 때 exact allowlist입니다. |
 | `liveModels` | boolean | Start/sync에서 live `/models` fetch 여부. 기본 `true`입니다. |
 | `contextWindow` | number | Provider-wide Claude-visible context cap |
@@ -82,28 +81,41 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 | `oauth` | `~/.frogprogsy/auth.json`의 저장 OAuth token을 resolve/refresh해서 Bearer로 보냅니다. |
 | `forward` | 들어온 Claude Code 요청의 allowlisted upstream-compatible auth header만 복사합니다. Anthropic과 OpenAI Responses 계열에서 사용합니다. |
 
-## Classifier routing fields
+## 자동 모드 심사 라우팅
 
-Claude Code auto-mode 권한 확인은 별도의 작은 모델 side query입니다. `defaultProvider`가 Anthropic이 아닐 때는 이 확인이 heavyweight `defaultModel`로 조용히 가는 일을 막기 위해 경량 classifier route를 설정하세요.
+Claude Code 2.1.220은 자동 모드 안전 심사를 위해 별도의 Sonnet 5 요청을 보냅니다. HTTP 본문에는
+신뢰할 수 있는 자동 모드 표식이 없으므로 FrogProgsy는 Sonnet/Haiku 모델명이나 프롬프트 내용을 보고
+심사 요청을 추측하지 않습니다.
 
-권한 확인 한 번의 흐름:
+대상 하나를 지정합니다.
 
-```text
-메인 모델이 행동을 시도 (예: Bash 명령)
-  → Claude Code가 Haiku급 id(claude-haiku-*)로 side query 전송
-  → FrogProgsy가 라우팅: classifierFallback → provider classifierModel → defaultModel (+ warning)
-  → 라우팅된 모델이 Claude Code auto-mode 지침을 기준으로 판정 → 허용 / 차단
+```json
+{
+  "autoModeClassifier": {
+    "provider": "codex",
+    "model": "gpt-5.4-mini"
+  }
+}
 ```
 
-| Field | Scope | Role |
-| --- | --- | --- |
-| `classifierModel` | provider | Haiku-class classifier request에 쓸 provider-local model |
-| `classifierFallback.provider` | top level | 모든 classifier side query를 받을 provider |
-| `classifierFallback.model` | top level | fallback provider와 함께 쓸 model id |
+그 다음 이 경로를 사용할 각 Claude Code 홈에서 **자동 모드 심사 라우팅**을 켭니다. 해당 홈은 두
+심사 단계를 정확한 `claude-frogp-auto-classifier` alias로 보내고, FrogProgsy는 이 alias만 지정
+대상으로 라우팅합니다. 일반 프로바이더 fallback, 긴 컨텍스트 라우팅, 모델 섞기는 적용하지 않습니다.
 
-둘 다 설정하지 않으면 FrogProgsy는 요청을 계속 라우팅하되, Haiku-class classifier id가 `defaultModel`로 fallback될 때 warning을 남깁니다.
+provider와 model은 둘 다 필수입니다. 없는 프로바이더, 비활성 모델, 비어 있지 않은 알려진 모델
+목록에 없는 모델은 저장되지 않습니다. 이 기능을 켠 홈이 있으면 대상을 지울 수 없습니다.
 
-모델 선택은 Claude Code 내장 auto-mode 지침(`allow` / `soft_deny` / `hard_deny` 카테고리)을 얼마나 엄격하게 해석하는지를 바꿉니다 — 프런티어 모델은 과잉 차단하고, 경량 모델이 원래 Haiku 보정에 가깝습니다. 지침 자체는 여기서 설정하지 않습니다. Claude Code에서 `claude auto-mode defaults` / `claude auto-mode config`로 확인·조정하세요 (`autoMode.allow` 항목은 신뢰하는 `soft_deny` 명령을 해제하며, `hard_deny` 카테고리는 어떤 모델이 심사하든 항상 차단됩니다).
+Claude Code 자체 경계도 두 가지 있습니다.
+
+- 지정 대상이 404/429를 반환하거나 연결되지 않으면 Claude Code가 재시도한 뒤 현재 메인 모델로
+  fallback할 수 있습니다. 이는 FrogProgsy fallback이 아니라 Claude Code 자체 동작입니다.
+- 이 기능은 Claude Code의 내장 `sonnet` 단축명과 같은 `ANTHROPIC_DEFAULT_SONNET_MODEL`을
+  사용합니다. 기능을 켠 동안 메인 모델은 내장 단축명이 아니라 정확한 게이트웨이 모델 항목으로
+  바꾸세요. 홈 설정을 변경한 뒤에는 기존 Claude Code 세션을 재시작하거나 resume해야 합니다.
+
+이 경로는 Claude Code 2.1.220에서 검증했습니다. 클라이언트 구현이 바뀌면 다시 검증해야 합니다.
+Claude Code 자체 지침은 `claude auto-mode defaults` / `claude auto-mode config`로 확인하거나
+조정합니다.
 
 ## Model capability fields
 
@@ -208,8 +220,7 @@ FrogProgsy는 provider별 `modelCapabilities`로 Claude Code catalog hint와 ima
       "adapter": "openai-responses",
       "baseUrl": "https://chatgpt.com/backend-api/codex",
       "authMode": "oauth",
-      "defaultModel": "gpt-5.5",
-      "classifierModel": "gpt-5.4-mini"
+      "defaultModel": "gpt-5.5"
     },
     "ollama-cloud": {
       "adapter": "openai-chat",
@@ -227,7 +238,7 @@ FrogProgsy는 provider별 `modelCapabilities`로 Claude Code catalog hint와 ima
   },
   "subagentModels": ["anthropic/claude-sonnet-4-6", "ollama-cloud/glm-5.2"],
   "disabledModels": ["ollama-cloud/experimental-model"],
-  "classifierFallback": {
+  "autoModeClassifier": {
     "provider": "codex",
     "model": "gpt-5.4-mini"
   },

@@ -18,6 +18,7 @@
  * Requires: gh CLI (authed). Final publishing uses Trusted Publishing (OIDC), with no long-lived registry token.
  */
 import { $ } from "bun";
+import { registryVersionListed } from "./release-registry";
 
 const args = process.argv.slice(2);
 interface GhRun {
@@ -86,15 +87,22 @@ async function writePackageVersion(version: string): Promise<boolean> {
 }
 
 async function registryVersionExists(packageName: string, version: string): Promise<boolean> {
-  const result = await runQuiet(["bun", "pm", "view", `${packageName}@${version}`, "version"]);
-  if (result.exitCode === 0) return true;
+  const result = await runQuiet(["bun", "pm", "view", packageName, "versions", "--json"]);
+  if (result.exitCode === 0) {
+    try {
+      return registryVersionListed(result.stdout, version);
+    } catch (error) {
+      console.error(`✗ invalid registry versions response for ${packageName}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  }
 
   const output = `${result.stdout}\n${result.stderr}`.toLowerCase();
   if (output.includes("e404") || output.includes("404 not found") || output.includes("does not exist in this registry") || output.includes("no match found")) {
     return false;
   }
 
-  console.error(`✗ failed to check registry version ${packageName}@${version}`);
+  console.error(`✗ failed to check registry versions for ${packageName}`);
   if (result.stderr) console.error(result.stderr);
   process.exit(1);
 }

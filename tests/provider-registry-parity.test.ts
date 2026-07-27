@@ -9,7 +9,6 @@ import {
   deriveInitProviders,
   deriveJawcodeAliases,
   deriveKeyLoginMap,
-  deriveOAuthProviderConfig,
   deriveProviderPresets,
 } from "../src/providers/derive";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
@@ -230,11 +229,5 @@ describe("provider registry parity", () => {
     const routed = entries.find(e => e.slug === "minimax/minimax-m2.5");
     expect(routed?.context_window).toBe(204_800);
     expect(routed?.max_context_window).toBe(204_800);
-  });
-});
-describe("classifier model back-fill (G001)", () => {
-  test("deriveOAuthProviderConfig('codex') includes classifierModel gpt-5.4-mini", () => {
-    const cfg = deriveOAuthProviderConfig("codex");
-    expect(cfg?.classifierModel).toBe("gpt-5.4-mini");
   });
 });

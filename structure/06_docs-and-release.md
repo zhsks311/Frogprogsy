@@ -116,6 +116,51 @@ A published preview is immutable and is not republished as stable. After preview
 the corresponding stable version as a new release. Every changed package version is consumed even if
 a later metadata step fails; recovery uses a new patch or prerelease number.
 
+### Preview candidate validation
+
+Use three distinct lanes; do not substitute one for another:
+
+| Lane | Command / install source | What it proves |
+| --- | --- | --- |
+| Local development package | `bun run dev:package reinstall --yes` | The current worktree can build, package, install, and report an exact immutable local build. |
+| Public preview candidate | `bun run release <version>-preview.<n> --tag preview --publish` followed by `bun add -g frogprogsy@preview` | The registry tarball, global installation, PATH, runtime lifecycle, migrations, and real integrations work without moving `latest`. |
+| Stable release | `bun run release <version> --publish` | The validated candidate is available on the default supported channel. |
+
+A preview is public and consumes its version permanently. It must contain no secrets or local-only artifacts.
+Installing `frogprogsy` without a tag continues to resolve `latest`; testers must explicitly request
+`frogprogsy@preview`.
+
+Run a preview for changes that can behave differently only after packaging or installation, including global
+bin/PATH changes, proxy start/stop/watchdog behavior, Claude settings backup and restoration, credential or
+Keychain integration, model discovery, configuration migrations, and public CLI/API compatibility. A
+documentation-only change that cannot alter the package or runtime does not require a preview.
+
+The maintainer preview acceptance cycle is:
+
+1. Prove the candidate locally with `bun run dev:package reinstall --yes` and
+   `bun run dev:package status`.
+2. Land the candidate on `main`, require the exact-SHA CI and Package lifecycle gates, then publish an unused
+   prerelease such as `0.2.0-preview.1`:
+   `bun run release 0.2.0-preview.1 --tag preview --publish`.
+3. Stop the currently running proxy and replace only the global Bun package. Do not use the destructive
+   product-level uninstall command:
+   `frogp stop`, `bun remove -g frogprogsy`, `bun add -g frogprogsy@preview`, then `frogp refresh`.
+4. Test from a new terminal so PATH resolution is real. Verify the installed registry version, proxy
+   start/health/GUI, stop and restart, Claude profile backup/restoration, native Claude OAuth/connectors,
+   configured provider authentication and model visibility, and at least one real response through each
+   release-critical provider. Confirm package-only removal preserves `~/.frogprogsy`, Claude homes, Keychain
+   items, grants, and credentials.
+5. Reinstall `frogprogsy@latest` and confirm rollback to the supported channel works.
+6. If validation fails, fix forward on `main` and publish `0.2.0-preview.2` (or the next unused prerelease). Never
+   replace or retag the failed preview tarball.
+7. If validation passes, publish the stable SemVer as a separate release. Apart from the version metadata, the
+   stable candidate must match the previewed contents; any product change requires another preview cycle. The
+   stable release still reruns every exact-SHA gate and registry smoke check.
+
+Retain the preview workflow URL, package integrity, tested operating systems, and acceptance results in the
+release record. A passing local development package is not evidence that the public preview tarball was
+installed, and a passing preview is not permission to bypass the stable release gates.
+
 ### Release sequence
 
 1. Land the release contents on `main` through the normal branch/worktree path.

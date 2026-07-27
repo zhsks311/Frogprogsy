@@ -64,11 +64,14 @@ Request log 被刻意设计得很窄，不会成为 secret store。它显示 tim
 - `stream_bridge` — conversion back to Claude Messages
 - `finalize` — logging and cleanup
 
-## Classifier model settings
+## 自动模式审查路由
 
-Claude Code auto-mode permission checks 是独立的 Haiku-class side queries。当 main default provider 不是 Anthropic 时，可在 dashboard classifier panel 中把这些检查固定到轻量 provider/model，避免它们被静默路由到 heavyweight default model。
+在仪表盘中指定唯一的审查提供方/模型，然后在需要使用它的每个 Claude Code 目录上启用该功能。
+Claude Code 2.1.220 会让这些目录的两个审查阶段使用保留别名；FrogProgsy 不根据 Sonnet/Haiku
+名称猜测审查请求。更改目录设置后请重启或 resume 现有 Claude Code 会话。
 
-通常为每个 provider 设置 classifier model；只有所有 classifier side queries 都要走同一个 provider/model pair 时，才设置 cross-provider classifier fallback。
+启用时请通过精确的网关模型条目选择主模型，不要使用 Claude Code 内置的 `sonnet` 快捷名。
+审查目标返回 404/429 时，Claude Code 可能回退到当前主模型。
 
 
 ## 用 usage accounting 查看 local 使用量
