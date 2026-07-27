@@ -5,6 +5,7 @@ import { atomicWriteFile, ensureConfigDirForWrite, getConfigDir } from "./config
 import { assertSafeClaudeHomeWrite, CLAUDE_HOME, resolveClaudeCodeHome } from "./claude-paths";
 import { mergeClaudeProfileHeader, removeClaudeProfileHeader } from "./claude-profiles";
 import { ensureClaudeProjectSettingsExcluded } from "./claude-projects";
+import { AUTO_MODE_CLASSIFIER_ALIAS } from "./classifier-settings";
 import type { GatewayAuthCarrier } from "./types";
 
 export const CLAUDE_SETTINGS_PATH = join(CLAUDE_HOME, "settings.json");
@@ -39,6 +40,7 @@ export const OWNED_CLAUDE_ENV_KEYS = [
   "ANTHROPIC_AUTH_TOKEN",
   "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
   "ANTHROPIC_CUSTOM_HEADERS",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
 ] as const;
 
 type OwnedKey = typeof OWNED_CLAUDE_ENV_KEYS[number];
@@ -85,6 +87,7 @@ export function removeOrphanedFrogProgsySettings(settings: Record<string, unknow
   const hasFrogProgsyMarker = stripped.changed
     || env.ANTHROPIC_AUTH_TOKEN === LOCAL_CLAUDE_AUTH_TOKEN
     || env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY === "1"
+    || env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS
     || hasProfileHeader;
 
   if (isLocalFrogProgsyBaseUrl(env.ANTHROPIC_BASE_URL) && hasFrogProgsyMarker) {
@@ -95,6 +98,12 @@ export function removeOrphanedFrogProgsySettings(settings: Record<string, unknow
 
   if (env.ANTHROPIC_AUTH_TOKEN === LOCAL_CLAUDE_AUTH_TOKEN) {
     delete env.ANTHROPIC_AUTH_TOKEN;
+    changed = true;
+    removedFrogProxyEnv = true;
+  }
+
+  if (env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS) {
+    delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
     changed = true;
     removedFrogProxyEnv = true;
   }
@@ -127,6 +136,8 @@ export interface ClaudeSettingsInjectionOptions {
   gatewayAuthCarrier?: GatewayAuthCarrier;
   claudeHome?: string;
   profileId?: string;
+  /** Inject the reserved auto-mode classifier alias (ANTHROPIC_DEFAULT_SONNET_MODEL) when the resolved profile opts in. */
+  routeAutoModeClassifier?: boolean;
 }
 
 /**
@@ -147,6 +158,7 @@ export function buildClaudeCodeEnv(port: number, options: ClaudeSettingsInjectio
     ...(includeAuthToken ? { ANTHROPIC_AUTH_TOKEN: LOCAL_CLAUDE_AUTH_TOKEN } : {}),
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
     ...(options.profileId ? { ANTHROPIC_CUSTOM_HEADERS: mergeClaudeProfileHeader(undefined, options.profileId) } : {}),
+    ...(options.routeAutoModeClassifier ? { ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS } : {}),
   };
 }
 
@@ -267,10 +279,27 @@ export function mergeClaudeCodeSettings(
     }
   }
 
+  // A user may add/change this setting after FrogProgsy created its backup. A non-reserved current
+  // value is user-owned, so refresh the backup immediately before opting in and overwriting it.
+  const currentSonnetDefault = originalEnv.ANTHROPIC_DEFAULT_SONNET_MODEL;
+  if (
+    desired.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS
+    && typeof currentSonnetDefault === "string"
+    && currentSonnetDefault !== AUTO_MODE_CLASSIFIER_ALIAS
+  ) {
+    backup.env.ANTHROPIC_DEFAULT_SONNET_MODEL = { existed: true, value: currentSonnetDefault };
+  }
+
   env.ANTHROPIC_BASE_URL = desired.ANTHROPIC_BASE_URL;
   if (desired.ANTHROPIC_AUTH_TOKEN !== undefined) env.ANTHROPIC_AUTH_TOKEN = desired.ANTHROPIC_AUTH_TOKEN;
   else if (env.ANTHROPIC_AUTH_TOKEN === LOCAL_CLAUDE_AUTH_TOKEN) delete env.ANTHROPIC_AUTH_TOKEN;
   env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = desired.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY;
+  if (desired.ANTHROPIC_DEFAULT_SONNET_MODEL !== undefined) env.ANTHROPIC_DEFAULT_SONNET_MODEL = desired.ANTHROPIC_DEFAULT_SONNET_MODEL;
+  else if (env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS) {
+    const previous = backup.env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+    if (previous?.existed) env.ANTHROPIC_DEFAULT_SONNET_MODEL = previous.value ?? "";
+    else delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+  }
   if (options.profileId) {
     env.ANTHROPIC_CUSTOM_HEADERS = mergeClaudeProfileHeader(typeof env.ANTHROPIC_CUSTOM_HEADERS === "string" ? env.ANTHROPIC_CUSTOM_HEADERS : undefined, options.profileId);
   }
@@ -286,6 +315,9 @@ export function restoreClaudeCodeSettingsFromBackup(
   const next: Record<string, unknown> = removeRoutedClaudeCodeModel(settings).settings;
   const env = isRecord(next.env) ? { ...next.env } : {};
   for (const key of OWNED_CLAUDE_ENV_KEYS) {
+    // The reserved auto-mode classifier alias is the only frogprogsy-owned Sonnet default: revert it to
+    // the exact backed-up prior value, but never disturb a user's own ANTHROPIC_DEFAULT_SONNET_MODEL.
+    if (key === "ANTHROPIC_DEFAULT_SONNET_MODEL" && env[key] !== AUTO_MODE_CLASSIFIER_ALIAS) continue;
     const entry = backup.env[key];
     if (!entry || !entry.existed) delete env[key];
     else env[key] = entry.value ?? "";
@@ -357,6 +389,8 @@ export interface ClaudeProjectSettingsOptions {
   includeAuthToken?: boolean;
   /** Configured carrier threaded from FrogConfig.gatewayAuthCarrier. Absent => token-free (default). */
   gatewayAuthCarrier?: GatewayAuthCarrier;
+  /** Inject the reserved auto-mode classifier alias for this project when the routing profile opts in. */
+  routeAutoModeClassifier?: boolean;
 }
 
 export function mergeClaudeProjectSettings(
@@ -371,6 +405,7 @@ export function mergeClaudeProjectSettings(
     ...(options.includeAuthToken !== undefined ? { includeAuthToken: options.includeAuthToken } : {}),
     ...(options.gatewayAuthCarrier ? { gatewayAuthCarrier: options.gatewayAuthCarrier } : {}),
     ...(profileId ? { profileId } : {}),
+    ...(options.routeAutoModeClassifier ? { routeAutoModeClassifier: options.routeAutoModeClassifier } : {}),
   });
   const projectSettings = merged.settings;
   if (!profileId && isRecord(projectSettings.env)) {

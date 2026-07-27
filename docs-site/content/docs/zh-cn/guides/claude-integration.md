@@ -19,6 +19,10 @@ FrogProgsy 通过 Claude Code 已经读取的 gateway path 接入。它不 patch
   }
 }
 ```
+启用自动模式审查路由的目录还会由 FrogProgsy 管理
+`ANTHROPIC_DEFAULT_SONNET_MODEL=claude-frogp-auto-classifier`，让 Claude Code 2.1.220 的两个审查阶段
+走显式目标。该变量也会改变内置 `sonnet` 快捷名；切换主模型时请使用精确的网关模型条目，并在
+更改目录设置后重启或 resume 会话。
 
 无关 settings 不会被改动。首次写入前，owned key 的旧值会按 profile 保存到 `~/.frogprogsy/claude-profiles/<cp_id>/claude-settings-backup.json`，restore path 会只为该 profile 精确还原这些值。即使没有 backup，restore 也只移除能明确识别为 FrogProgsy 残留的条目：和 gateway discovery 一起留下的 local `ANTHROPIC_BASE_URL`、可选的本地 FrogProgsy auth marker、`X-Frogp-Claude-Profile` header，以及当前或历史 release 创建的 routed default model alias。无关 settings 不会被删除，因此 Claude Code account connector 会继续工作。
 

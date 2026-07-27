@@ -1,4 +1,4 @@
-import { providerKnownModels } from "../classifier-settings";
+import { AUTO_MODE_CLASSIFIER_ALIAS, providerKnownModels } from "../classifier-settings";
 import type { FrogConfig, FrogModelMixingConfig } from "../types";
 import { mixAliasId } from "./select";
 import { computeCallPlan } from "./orchestrate";
@@ -360,7 +360,13 @@ export function applyModelMixingPatch(config: FrogConfig, patch: unknown): strin
       continue;
     }
     if (key === "enabled") assignBoolean(current, key, value, warnings);
-    else if (key === "aliasId" || key === "guidance") assignString(current, key, value, warnings);
+    else if (key === "aliasId") {
+      if (typeof value === "string" && value.trim() === AUTO_MODE_CLASSIFIER_ALIAS) {
+        warnings.push(`modelMixing.aliasId ignored: "${AUTO_MODE_CLASSIFIER_ALIAS}" is reserved for the auto-mode classifier`);
+      } else {
+        assignString(current, key, value, warnings);
+      }
+    } else if (key === "guidance") assignString(current, key, value, warnings);
     else if (key === "mode") {
       if (typeof value === "string" && MODES.has(value)) current.mode = value;
       else warnings.push("modelMixing.mode ignored: expected coordinator or rules");

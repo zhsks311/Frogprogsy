@@ -17,6 +17,7 @@ interface ClaudeProfile {
   id: string;
   name: string;
   claudeHome: string;
+  routeAutoModeClassifier?: boolean;
   injected?: boolean;
   lastInjectedAt?: string;
   lastSeenAt?: string;
@@ -301,10 +302,11 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error("patch failed");
+      const result = await res.json().catch(() => ({})) as { error?: string };
+      if (!res.ok) throw new Error(result.error || t("claudeProfiles.saveFailed"));
       await loadProfiles();
       notify(successMessage, true);
-    } catch { notify(t("claudeProfiles.saveFailed"), false); }
+    } catch (err) { notify(err instanceof Error ? err.message : t("claudeProfiles.saveFailed"), false); }
     finally { setBusy(false); }
   };
 
@@ -489,6 +491,28 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
             <label><span>{t("claudeProfiles.rename")}</span><input className="input" value={renameValue} onChange={e => setRenameValue(e.target.value)} /></label>
             <div style={{ alignSelf: "end" }}><button className="btn btn-primary" onClick={() => patchSelected({ name: renameValue }, t("claudeProfiles.renamed"))} disabled={busy || !renameValue.trim()}>{t("common.save")}</button></div>
           </div>
+          <section className="panel-soft" style={{ marginTop: 16 }}>
+            <div className="panel-head">
+              <div>
+                <div style={{ fontWeight: 650 }}>{t("claudeProfiles.autoModeClassifierTitle")}</div>
+                <div className="muted" style={{ fontSize: 13 }}>{t("claudeProfiles.autoModeClassifierHint")}</div>
+              </div>
+              <button
+                className={`switch ${selected.routeAutoModeClassifier ? "on" : ""}`}
+                type="button"
+                aria-label={t("claudeProfiles.autoModeClassifierTitle")}
+                aria-pressed={selected.routeAutoModeClassifier === true}
+                disabled={busy}
+                onClick={() => patchSelected(
+                  { routeAutoModeClassifier: !selected.routeAutoModeClassifier },
+                  t(selected.routeAutoModeClassifier ? "claudeProfiles.autoModeClassifierDisabled" : "claudeProfiles.autoModeClassifierEnabled"),
+                )}
+              >
+                <span className="knob" />
+              </button>
+            </div>
+            <p className="muted" style={{ fontSize: 13, marginBottom: 0 }}>{t("claudeProfiles.autoModeClassifierCaveat")}</p>
+          </section>
 
           <section className="panel-soft" style={{ marginTop: 16 }}>
             <div className="panel-head">

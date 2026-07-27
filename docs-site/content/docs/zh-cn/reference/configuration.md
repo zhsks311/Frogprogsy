@@ -39,7 +39,7 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 | `connectTimeoutMs` | `number` | `30000` | Upstream DNS/TCP/TLS/response-header timeout(ms) |
 | `webSearchFallback` | object | auto when compatible forward/key provider exists | Hosted web-search helper 设置 |
 | `imageFallback` | object | auto when compatible forward/key provider exists | Text-only lane 的 image-description helper 设置 |
-| `classifierFallback` | object | — | Claude Code auto-mode classifier side query 的 cross-provider override；`{ provider, model }` 优先于每个 provider 的 `classifierModel`。 |
+| `autoModeClassifier` | object | — | 处理 Claude Code 2.1.220 保留自动模式审查别名的唯一 `{ provider, model }` 目标 |
 | `modelMixing` | object | — | `frogp/mix` 别名背后的模型混合（route/fusion/pipeline）。`enabled: true` 前为禁用。见 [Model mixing fields](#model-mixing-fields)。 |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field；Claude Messages data plane 使用 HTTP/SSE |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op；不修改 Claude Code history |
@@ -56,7 +56,6 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 | `apiKey` | string | Literal key 或 `${ENV_VAR}` / `$ENV_VAR` reference |
 | `headers` | object | Extra static upstream headers。不要用它绕过认证 header。 |
 | `defaultModel` | string | Provider-owned short model id。用于 prefix-less request 或 provider default。 |
-| `classifierModel` | string | 当该 provider 是 default provider 或被 `classifierFallback` 选中时，用于 Claude Code auto-mode classifier side query 的轻量模型 |
 | `models` | string[] | Seed/fallback model list。`liveModels: false` 时是 exact allowlist。 |
 | `liveModels` | boolean | start/sync 时是否 fetch live `/models`。默认 `true`。 |
 | `contextWindow` | number | Provider-wide Claude-visible context cap |
@@ -82,28 +81,39 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 | `oauth` | 解析/刷新 `~/.frogprogsy/auth.json` 中保存的 OAuth token，并以 Bearer 发送。 |
 | `forward` | 只复制 incoming Claude Code request 中明确 allowlisted、upstream-compatible 的 auth header。Anthropic 与 OpenAI Responses 系列使用它。 |
 
-## Classifier routing fields
+## 自动模式审查路由
 
-Claude Code auto-mode permission checks 是独立的小模型 side queries。当 `defaultProvider` 不是 Anthropic 时，应设置轻量 classifier route，避免这些检查静默使用 heavyweight `defaultModel`。
+Claude Code 2.1.220 会为自动模式安全审查发送独立的 Sonnet 5 请求。HTTP 正文没有可信的自动模式
+标记，因此 FrogProgsy 不会根据 Sonnet/Haiku 模型名或提示内容猜测审查请求。
 
-一次权限检查的流程：
+配置一个目标：
 
-```text
-主模型尝试执行某个操作（例如 Bash 命令）
-  → Claude Code 以 Haiku 级 id（claude-haiku-*）发送 side query
-  → FrogProgsy 路由：classifierFallback → provider classifierModel → defaultModel（+ warning）
-  → 被路由到的模型依据 Claude Code auto-mode 策略判定 → 允许 / 拦截
+```json
+{
+  "autoModeClassifier": {
+    "provider": "codex",
+    "model": "gpt-5.4-mini"
+  }
+}
 ```
 
-| Field | Scope | Role |
-| --- | --- | --- |
-| `classifierModel` | provider | Haiku-class classifier request 使用的 provider-local model |
-| `classifierFallback.provider` | top level | 接收所有 classifier side queries 的 provider |
-| `classifierFallback.model` | top level | 与 fallback provider 一起使用的 model id |
+然后在需要使用该路由的每个 Claude Code 目录上启用**自动模式审查路由**。该目录会用精确的
+`claude-frogp-auto-classifier` 别名发送两个审查阶段，FrogProgsy 只将这个别名路由到指定目标。
+通用提供方 fallback、长上下文路由和模型混合均不适用。
 
-如果两个字段都未配置，FrogProgsy 仍会路由请求，但 Haiku-class classifier id fallback 到 `defaultModel` 时会发出 warning。
+provider 和 model 都是必填项。缺失的提供方、禁用模型以及不在非空已知目录中的模型会被拒绝。
+只要还有已启用该功能的目录，就不能清除目标。
 
-模型选择改变的是 Claude Code 内置 auto-mode 策略（`allow` / `soft_deny` / `hard_deny` 类别）被解释的严格程度 — 前沿模型会过度拦截，轻量模型更接近原始 Haiku 校准。策略本身不在此处配置：请在 Claude Code 中通过 `claude auto-mode defaults` / `claude auto-mode config` 查看和调整（`autoMode.allow` 条目可放行你信任的 `soft_deny` 命令；`hard_deny` 类别无论由哪个模型审查都始终拦截）。
+还要注意两个 Claude Code 客户端边界：
+
+- 目标返回 404/429 或连接失败时，Claude Code 可能重试并回退到当前主模型。这是客户端行为，
+  不是 FrogProgsy fallback。
+- 此功能使用与 Claude Code 内置 `sonnet` 快捷名相同的 `ANTHROPIC_DEFAULT_SONNET_MODEL`。
+  启用时请通过精确的网关模型条目切换主模型，不要使用该快捷名。更改目录设置后必须重启或
+  resume 现有 Claude Code 会话。
+
+此路由已针对 Claude Code 2.1.220 验证。客户端实现变化时必须重新验证。Claude Code 自身策略请
+用 `claude auto-mode defaults` / `claude auto-mode config` 查看或调整。
 
 ## Model capability fields
 
@@ -208,8 +218,7 @@ FrogProgsy 使用每个 provider 的 `modelCapabilities`，让 Claude Code catal
       "adapter": "openai-responses",
       "baseUrl": "https://chatgpt.com/backend-api/codex",
       "authMode": "oauth",
-      "defaultModel": "gpt-5.5",
-      "classifierModel": "gpt-5.4-mini"
+      "defaultModel": "gpt-5.5"
     },
     "ollama-cloud": {
       "adapter": "openai-chat",
@@ -227,7 +236,7 @@ FrogProgsy 使用每个 provider 的 `modelCapabilities`，让 Claude Code catal
   },
   "subagentModels": ["anthropic/claude-sonnet-4-6", "ollama-cloud/glm-5.2"],
   "disabledModels": ["ollama-cloud/experimental-model"],
-  "classifierFallback": {
+  "autoModeClassifier": {
     "provider": "codex",
     "model": "gpt-5.4-mini"
   },

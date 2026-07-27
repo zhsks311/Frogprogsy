@@ -6,6 +6,7 @@ import type {
   FrogModelMixingConfig,
   FrogParsedRequest,
 } from "../types";
+import { AUTO_MODE_CLASSIFIER_ALIAS } from "../classifier-settings";
 
 // Namespaced by default (`<ns>/<id>`) so it rides the routed-catalog lifecycle: injected as a routed
 // entry, featured/orderable, and stripped on restore like any other "provider/model" slug.
@@ -19,8 +20,10 @@ export function mixAliasId(cfg: FrogModelMixingConfig | undefined): string {
   return id && id.length > 0 ? id : DEFAULT_MIX_ALIAS_ID;
 }
 
-/** True when this request should enter the mixing path (enabled + id match). */
+/** True when this request should enter the mixing path (enabled + id match). The reserved
+ * auto-mode classifier alias always remains pinned to its explicit classifier target. */
 export function isModelMixingRequest(config: FrogConfig, modelId: string): boolean {
+  if (modelId === AUTO_MODE_CLASSIFIER_ALIAS) return false;
   const cfg = config.modelMixing;
   if (!cfg?.enabled) return false;
   return modelId === mixAliasId(cfg);

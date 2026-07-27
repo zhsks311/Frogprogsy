@@ -1,6 +1,4 @@
-// Shared explainer for the "Auto-approval review model" card (Dashboard + Developer details).
-// Explains what the auto-mode permission classifier is, the routing pipeline, what each
-// control changes, and how the model choice relates to Claude Code's built-in policy.
+// Shared explainer for the explicit Claude Code auto-mode reviewer route.
 import { useT, type TKey } from "../i18n";
 
 const PIPE_KEYS: TKey[] = ["dash.classifierPipe1", "dash.classifierPipe2", "dash.classifierPipe3", "dash.classifierPipe4"];

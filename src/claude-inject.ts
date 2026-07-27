@@ -3,6 +3,7 @@ import { atomicWriteFile, websocketsEnabled } from "./config";
 import { restoreClaudeCodeCatalog } from "./claude-catalog";
 import { assertSafeClaudeHomeWrite, CLAUDE_HOME, claudeCatalogPath, claudeConfigTomlPath, claudeLegacyProfilePath, parseTomlString, readRootTomlString, resolveClaudeCodeConfigPath, tomlString } from "./claude-paths";
 import { CLAUDE_SETTINGS_PATH, injectClaudeCodeSettings, restoreClaudeCodeSettings } from "./claude-settings";
+import { resolveClaudeProfileClassifierFlag } from "./claude-profiles";
 import { invalidateClaudeCodeGatewayModelsCache } from "./claude-refresh";
 import type { FrogConfig } from "./types";
 
@@ -222,11 +223,13 @@ export function chooseCatalogPathForInjection(content: string, requested?: strin
 
 export async function injectClaudeCodeConfig(port: number, config?: FrogConfig, options: InjectClaudeCodeOptions = {}): Promise<{ success: boolean; message: string }> {
   const sentinelCarrier = options.includeAuthToken === true || config?.gatewayAuthCarrier === "sentinel";
+  const routeAutoModeClassifier = config ? resolveClaudeProfileClassifierFlag(config, options.profileId) : false;
   const injected = injectClaudeCodeSettings(port, {
     claudeHome: options.claudeHome,
     profileId: options.profileId,
     includeAuthToken: options.includeAuthToken,
     gatewayAuthCarrier: config?.gatewayAuthCarrier,
+    routeAutoModeClassifier,
   });
   if (!injected.success) return injected;
 

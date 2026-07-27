@@ -9,8 +9,9 @@ import { ClassifierInfo } from "../components/ClassifierInfo";
 interface SettingsData { port: number; hostname: string }
 interface FallbackProviderOption { name: string; models: string[]; defaultModel?: string }
 interface FallbackData { providers: FallbackProviderOption[]; webSearchProviders?: FallbackProviderOption[]; imageProviders?: FallbackProviderOption[]; webSearch: { enabled: boolean; provider: string; model: string; reasoning: string }; image: { enabled: boolean; provider: string; model: string } }
-interface ClassifierProviderOption { name: string; classifierModel: string; models: string[] }
-interface ClassifierData { providers: ClassifierProviderOption[]; classifierFallback: { provider: string; model?: string } }
+interface ClassifierProviderOption { name: string; models: string[] }
+interface ClassifierTarget { provider: string; model: string }
+interface ClassifierData { providers: ClassifierProviderOption[]; autoModeClassifier: ClassifierTarget }
 type GitProtectionState = "tracked" | "ignored" | "excluded" | "untracked" | "not_git" | "unwritable" | "unknown";
 
 interface ClaudeProjectDiagnostics {
@@ -101,12 +102,15 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
   const [stopping, setStopping] = useState(false);
   const [webSearchModelDraft, setWebSearchModelDraft] = useState("");
   const [imageModelDraft, setImageModelDraft] = useState("");
+  const [classifierProviderDraft, setClassifierProviderDraft] = useState("");
+  const [classifierModelDraft, setClassifierModelDraft] = useState("");
   const [copiedCommand, setCopiedCommand] = useState("");
   const recoveryRef = useRef<HTMLElement | null>(null);
   const debuggingRef = useRef<HTMLElement | null>(null);
   const [settingsError, setSettingsError] = useState<SectionError>(null);
   const [fallbackError, setFallbackError] = useState<SectionError>(null);
   const [classifierError, setClassifierError] = useState<SectionError>(null);
+  const [classifierErrorDetail, setClassifierErrorDetail] = useState("");
   const [claudeStatusError, setClaudeStatusError] = useState<SectionError>(null);
 
 
@@ -177,6 +181,11 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
     setWebSearchModelDraft(fallback.webSearch.model);
     setImageModelDraft(fallback.image.model);
   }, [fallback?.webSearch.model, fallback?.image.model]);
+  useEffect(() => {
+    if (!classifier) return;
+    setClassifierProviderDraft(classifier.autoModeClassifier.provider);
+    setClassifierModelDraft(classifier.autoModeClassifier.model);
+  }, [classifier?.autoModeClassifier.provider, classifier?.autoModeClassifier.model]);
   const webSearchFallbackProviders = fallback?.webSearchProviders ?? fallback?.providers ?? [];
   const imageFallbackProviders = fallback?.imageProviders ?? fallback?.providers ?? [];
 
@@ -189,6 +198,7 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
     if (fallback?.image.model) values.add(fallback.image.model);
     return [...values].sort((a, b) => a.localeCompare(b));
   }, [webSearchFallbackProviders, imageFallbackProviders, fallback?.webSearch.model, fallback?.image.model]);
+  const classifierModelOptions = classifier?.providers.find(provider => provider.name === classifierProviderDraft)?.models ?? [];
 
   const saveFallbacks = async (patch: FallbackPatch) => {
     if (!fallback || fallbackSaving) return;
@@ -220,24 +230,23 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
     }
   };
 
-  const saveClassifier = async (patch: { providers?: Record<string, { classifierModel: string }>; classifierFallback?: { provider: string; model?: string } }) => {
+  const saveClassifier = async (target: ClassifierTarget | null) => {
     if (!classifier || classifierSaving) return;
-    const previous = classifier;
     setClassifierSaving(true);
     try {
       const res = await fetch(`${apiBase}/api/classifier-settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
+        body: JSON.stringify({ autoModeClassifier: target }),
       });
-      if (!res.ok) throw new Error("save failed");
-      const data = await res.json() as ClassifierData & { ok: boolean; warnings: string[] };
-      setClassifier({ providers: data.providers, classifierFallback: data.classifierFallback });
+      const data = await res.json().catch(() => ({})) as ClassifierData & { error?: string };
+      if (!res.ok) throw new Error(data.error || "save failed");
+      setClassifier({ providers: data.providers, autoModeClassifier: data.autoModeClassifier });
       setClassifierError(null);
-      if (Array.isArray(data.warnings) && data.warnings.length > 0) console.warn("frogprogsy: classifier settings warnings:", data.warnings);
-    } catch {
-      setClassifier(previous);
+      setClassifierErrorDetail("");
+    } catch (err) {
       setClassifierError("save");
+      setClassifierErrorDetail(err instanceof Error ? err.message : String(err));
     } finally {
       setClassifierSaving(false);
     }
@@ -417,32 +426,55 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
       <section className="panel" style={{ marginBottom: 16 }}>
         <div className="panel-head"><h3 className="panel-title">{t("dash.classifierTitle")}</h3><span className="muted" style={{ fontSize: 12 }}>{classifierSaving ? t("prov.savingDefault") : t("dash.classifierHint")}</span></div>
         <ClassifierInfo />
-        {classifierError && <Notice tone="err">{t(classifierError === "save" ? "dev.saveClassifierFailed" : "dev.loadClassifierFailed")}</Notice>}
+        {classifierError && <Notice tone="err">{classifierErrorDetail || t(classifierError === "save" ? "dev.saveClassifierFailed" : "dev.loadClassifierFailed")}</Notice>}
         <div className="fallback-grid">
-          {(classifier?.providers ?? []).map(prov => (
-            <div key={prov.name} className="fallback-row">
-              <div><div style={{ fontWeight: 650 }}>{prov.name}</div><div className="muted" style={{ fontSize: 13 }}>{t("dash.classifierProviderHint")}</div></div>
-              <div className="fallback-controls">
-                <select className="select-sm" value={prov.classifierModel} disabled={!classifier || classifierSaving} onChange={e => saveClassifier({ providers: { [prov.name]: { classifierModel: e.target.value } } })} aria-label={t("dash.classifierModelLabel", { provider: prov.name })}>
-                  <option value="">{t("dash.classifierDefault")}</option>
-                  {(prov.classifierModel && !prov.models.includes(prov.classifierModel) ? [prov.classifierModel, ...prov.models] : prov.models).map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
-              </div>
-            </div>
-          ))}
           <div className="fallback-row">
-            <div><div style={{ fontWeight: 650 }}>{t("dash.classifierFallbackLabel")}</div><div className="muted" style={{ fontSize: 13 }}>{t("dash.classifierFallbackHint")}</div></div>
+            <div>
+              <div style={{ fontWeight: 650 }}>{t("dash.classifierTargetLabel")}</div>
+              <div className="muted" style={{ fontSize: 13 }}>{t("dash.classifierTargetHint")}</div>
+            </div>
             <div className="fallback-controls">
-              <select className="select-sm" value={classifier?.classifierFallback.provider ?? ""} disabled={!classifier || classifierSaving} onChange={e => saveClassifier({ classifierFallback: { provider: e.target.value } })} aria-label={t("dash.classifierFallbackProvider")}>
-                <option value="">{t("dash.classifierFallbackNone")}</option>
-                {(classifier?.providers ?? []).map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+              <select
+                className="select-sm"
+                value={classifierProviderDraft}
+                disabled={!classifier || classifierSaving}
+                onChange={event => {
+                  const provider = event.target.value;
+                  const models = classifier?.providers.find(candidate => candidate.name === provider)?.models ?? [];
+                  setClassifierProviderDraft(provider);
+                  setClassifierModelDraft(models.includes(classifierModelDraft) ? classifierModelDraft : (models[0] ?? ""));
+                }}
+                aria-label={t("dash.classifierTargetProvider")}
+              >
+                <option value="">{t("dash.classifierTargetNone")}</option>
+                {(classifier?.providers ?? []).map(provider => <option key={provider.name} value={provider.name}>{provider.name}</option>)}
               </select>
-              {classifier?.classifierFallback.provider ? (
-                <select className="select-sm" value={classifier.classifierFallback.model ?? ""} disabled={!classifier || classifierSaving} onChange={e => saveClassifier({ classifierFallback: { provider: classifier.classifierFallback.provider, model: e.target.value } })} aria-label={t("dash.classifierFallbackModel")}>
-                  <option value="">{t("dash.classifierDefault")}</option>
-                  {(classifier.providers.find(p => p.name === classifier.classifierFallback.provider)?.models ?? []).map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
-              ) : null}
+              <select
+                className="select-sm"
+                value={classifierModelDraft}
+                disabled={!classifier || classifierSaving || !classifierProviderDraft}
+                onChange={event => setClassifierModelDraft(event.target.value)}
+                aria-label={t("dash.classifierTargetModel")}
+              >
+                <option value="">{t("dash.classifierTargetModelPlaceholder")}</option>
+                {classifierModelOptions.map(model => <option key={model} value={model}>{model}</option>)}
+              </select>
+              <button
+                className="btn btn-primary btn-sm"
+                type="button"
+                disabled={!classifier || classifierSaving || !classifierProviderDraft || !classifierModelDraft}
+                onClick={() => saveClassifier({ provider: classifierProviderDraft, model: classifierModelDraft })}
+              >
+                {t("common.save")}
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                type="button"
+                disabled={!classifier || classifierSaving || !classifier.autoModeClassifier.provider}
+                onClick={() => saveClassifier(null)}
+              >
+                {t("dash.classifierTargetClear")}
+              </button>
             </div>
           </div>
         </div>

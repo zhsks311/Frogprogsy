@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { ClaudeProfileAuthState, ClaudeProfileRecord, FrogConfig, GatewayAuthCarrier } from "./types";
 import { resolveClaudeCodeHome } from "./claude-paths";
+import { AUTO_MODE_CLASSIFIER_ALIAS } from "./classifier-settings";
 
 export const CLAUDE_PROFILE_HEADER = "X-Frogp-Claude-Profile";
 const LOCAL_CLAUDE_AUTH_TOKEN = "local-frogprogsy";
@@ -168,6 +169,18 @@ export function managedClaudeProfiles(config: FrogConfig): ClaudeProfileRecord[]
   return ensureClaudeProfiles(config).profiles;
 }
 
+/**
+ * Non-throwing lookup of a profile's auto-mode classifier opt-in. Returns false for an absent/unknown
+ * profileId (e.g. a standalone id not present in config), so callers never inject the reserved alias
+ * for a profile that did not opt in.
+ */
+export function resolveClaudeProfileClassifierFlag(config: FrogConfig, profileId: string | undefined): boolean {
+  if (!profileId) return false;
+  const profiles = config.claudeProfiles?.profiles;
+  if (!Array.isArray(profiles)) return false;
+  return profiles.find(profile => profile.id === profileId)?.routeAutoModeClassifier === true;
+}
+
 
 export function mergeClaudeProfileHeader(existing: string | undefined, profileId: string): string {
   const entries = parseCustomHeaders(existing).filter(entry => entry.name.toLowerCase() !== CLAUDE_PROFILE_HEADER.toLowerCase());
@@ -212,6 +225,10 @@ export function buildClaudeProfileRunEnv(profile: ClaudeProfileRecord, port: num
   // ANTHROPIC_AUTH_TOKEN is preserved), mirroring buildClaudeProfileNativeEnv's cleanup.
   if (carrier === "sentinel") env.ANTHROPIC_AUTH_TOKEN = LOCAL_CLAUDE_AUTH_TOKEN;
   else if (env.ANTHROPIC_AUTH_TOKEN === LOCAL_CLAUDE_AUTH_TOKEN) delete env.ANTHROPIC_AUTH_TOKEN;
+  // The reserved auto-mode classifier alias is injected only when the profile opts in; otherwise any
+  // stale frogprogsy alias inherited from baseEnv is stripped while a user's own Sonnet default survives.
+  if (profile.routeAutoModeClassifier === true) env.ANTHROPIC_DEFAULT_SONNET_MODEL = AUTO_MODE_CLASSIFIER_ALIAS;
+  else if (env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS) delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
   return env;
 }
 
@@ -224,6 +241,7 @@ export function buildClaudeProfileNativeEnv(profile: ClaudeProfileRecord, baseEn
   delete env.ANTHROPIC_BASE_URL;
   delete env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY;
   if (env.ANTHROPIC_AUTH_TOKEN === LOCAL_CLAUDE_AUTH_TOKEN) delete env.ANTHROPIC_AUTH_TOKEN;
+  if (env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS) delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
   const headers = removeClaudeProfileHeader(baseEnv.ANTHROPIC_CUSTOM_HEADERS);
   if (headers) env.ANTHROPIC_CUSTOM_HEADERS = headers;
   else delete env.ANTHROPIC_CUSTOM_HEADERS;

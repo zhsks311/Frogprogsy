@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { suggestClosest } from "./cli-suggest";
 import { dim, error as errorText, shouldColor, success, warn } from "./cli-color";
 import { restoreNativeClaudeCode } from "./claude-inject";
-import { reapplyEnrolledClaudeProjects, restoreManagedClaudeRouting } from "./claude-routing-lifecycle";
+import { cleanupClaudeProjectsForRemovedProfile, reapplyEnrolledClaudeProjects, restoreManagedClaudeRouting } from "./claude-routing-lifecycle";
 import {
   clearShutdownIntent,
   DEFAULT_PORT,
@@ -38,11 +38,10 @@ import {
   removeClaudeProfile,
   renameClaudeProfile,
   resolveClaudeProfile,
+  resolveClaudeProfileClassifierFlag,
 } from "./claude-profiles";
 import {
   addClaudeProject,
-  clearClaudeProjectsForRoutingProfile,
-  findClaudeProjectsForRoutingProfile,
   getClaudeProjectGitProtection,
   listClaudeProjects,
   markClaudeProjectEnrolled,
@@ -51,7 +50,6 @@ import {
 import { claudeLauncherBinDir, findRealClaudeExecutable, runClaudeProfile, syncClaudeLauncherShims } from "./claude-launchers";
 import {
   claudeProjectSettingsFilePath,
-  clearClaudeProjectRoutingProfileHeader,
   injectClaudeProjectSettings,
   readClaudeGatewayState,
   readClaudeProjectGatewayState,
@@ -455,6 +453,7 @@ async function handleStart(options: { block?: boolean } = {}) {
       claudeHome: profile.claudeHome,
       profileId: profile.id,
       gatewayAuthCarrier: startConfig.gatewayAuthCarrier,
+      routeAutoModeClassifier: profile.routeAutoModeClassifier === true,
     });
     markClaudeProfileInjected(startConfig, profile.id, true);
   }
@@ -989,16 +988,6 @@ function printClaudeProjectStatus(config: ReturnType<typeof loadConfig>, project
   console.log("Project enrollment does not choose the Claude account or Claude Code home; Claude Code remains in control of account/home selection.");
 }
 
-function cleanupProjectsForRemovedProfile(config: ReturnType<typeof loadConfig>, profileId: string): void {
-  const projects = findClaudeProjectsForRoutingProfile(config, profileId);
-  for (const project of projects) {
-    const cleared = clearClaudeProjectRoutingProfileHeader(project.projectPath, profileId);
-    if (!cleared.success) {
-      throw new Error(`Could not clear project routing metadata for ${project.projectPath}: ${cleared.message}`);
-    }
-  }
-  clearClaudeProjectsForRoutingProfile(config, profileId);
-}
 
 async function handleClaudeProjectCommand(values: string[], config: ReturnType<typeof loadConfig>): Promise<void> {
   const action = values[1] ?? "status";
@@ -1018,6 +1007,7 @@ async function handleClaudeProjectCommand(values: string[], config: ReturnType<t
         projectPath: project.projectPath,
         routingProfileId: project.routingProfileId,
         gatewayAuthCarrier: config.gatewayAuthCarrier,
+        routeAutoModeClassifier: resolveClaudeProfileClassifierFlag(config, project.routingProfileId),
       });
       if (!result.success) {
         console.error(`❌ ${result.message}`);
@@ -1138,7 +1128,8 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         process.exit(1);
       }
       try {
-        cleanupProjectsForRemovedProfile(config, profile.id);
+        const cleanup = cleanupClaudeProjectsForRemovedProfile(config, profile.id);
+        if (!cleanup.success) throw new Error(cleanup.error ?? "project profile cleanup failed");
       } catch (error) {
         console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
         process.exit(1);

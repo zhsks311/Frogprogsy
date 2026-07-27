@@ -44,7 +44,7 @@ explicit `provider/model`, provider model lists, or the configured `defaultProvi
 | `~/.frogprogsy/claude-profiles/<cp_id>/claude-settings-backup.json` | frogprogsy | Per-home `settings.json` backup for restore. |
 | `~/.frogprogsy/claude-grants/<cg_id>/.frogprogsy-grant.json` | frogprogsy | Non-secret isolated-grant metadata marker; credentials are never embedded here. |
 | scoped Keychain service or `<grant-dir>/.credentials.json` | frogprogsy grant broker | One credential origin per grant; never the global Claude service or a native `~/.claude*` home. |
-| `<profile-home>/settings.json` | Claude Code, edited by frogprogsy | Injected `ANTHROPIC_BASE_URL`, gateway discovery, and optional `X-Frogp-Claude-Profile` header. |
+| `<profile-home>/settings.json` | Claude Code, edited by frogprogsy | Injected `ANTHROPIC_BASE_URL`, gateway discovery, optional profile header, and optional reserved auto-mode reviewer alias. |
 | `<profile-home>/models_cache.json` | Claude Code, invalidated by frogprogsy | Cache invalidated after model/discovery changes for that Claude Code home. |
 | `dist/`, `gui/dist/`, `node_modules/` | generated | Build output/dependencies. |
 
@@ -56,7 +56,7 @@ explicit `provider/model`, provider model lists, or the configured `defaultProvi
 - Routed model slugs use `provider/model`.
 - Claude Code `spawn_agent` visibility depends on the first five featured catalog entries.
 - `frogp stop`, `frogp restore`, and service stop/uninstall must leave native Claude Code usable.
-- The auto-mode classifier (Haiku-class ids) routes to a configured lightweight model; an unconfigured request falls back to `defaultModel` with a loud warning, never a silent heavy judge.
+- Auto-mode review routing is profile opt-in and version-gated: only the exact reserved alias routes to one explicit `autoModeClassifier` target, without model-name guessing or generic provider fallback.
 - Provider request authentication funnels through `resolveProviderAuth`; `forward` clears stored keys, and `claude-grant` is accepted only for the official Anthropic API endpoint.
 - Isolated grants are opt-in and separate from native Claude homes. Deletion must remove the exact scoped credential before deleting its in-root directory and config record.
 

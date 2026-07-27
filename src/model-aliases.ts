@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWriteFile, ensureConfigDirForWrite, getConfigDir } from "./config";
 import type { FrogConfig } from "./types";
+import { AUTO_MODE_CLASSIFIER_ALIAS } from "./classifier-settings";
 
 export const MODEL_ALIASES_PATH = join(getConfigDir(), "model-aliases.json");
 
@@ -76,7 +77,8 @@ export function computeModelAliases(models: AliasSourceModel[]): Map<string, str
   const out = new Map<string, string>();
   for (const [routeKey, m] of routeKeys) {
     const base = deterministicModelAlias(m.provider, m.model);
-    out.set(routeKey, baseCounts.get(base)! > 1 ? `${base}-${collisionSuffix(m.provider, m.model)}` : base);
+    const collides = base === AUTO_MODE_CLASSIFIER_ALIAS || baseCounts.get(base)! > 1;
+    out.set(routeKey, collides ? `${base}-${collisionSuffix(m.provider, m.model)}` : base);
   }
   return out;
 }
@@ -119,6 +121,8 @@ function makeEntry(provider: string, model: string, alias: string, existing?: Mo
  */
 export function materializeModelAliases(models: AliasSourceModel[], options: { prune?: boolean } = {}): ModelAliasEntry[] {
   const state = readState();
+  // The auto-mode classifier id is router-owned and must never survive in the provider/model alias registry.
+  delete state.aliases[AUTO_MODE_CLASSIFIER_ALIAS];
   const aliases = computeModelAliases(models);
   const keep = new Set<string>();
   const entries: ModelAliasEntry[] = [];

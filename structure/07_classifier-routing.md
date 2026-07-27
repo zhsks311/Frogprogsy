@@ -1,84 +1,143 @@
-# Classifier Routing SOT
+# Auto-mode Classifier Routing SOT
 
-Auto-mode classifier model selection for Claude Code. Claude Code runs its auto-mode permission
-classifier as a separate small/fast (Haiku-class) model call. When the default provider is
-non-Anthropic, frogprogsy would otherwise redirect every unqualified `claude-*` id — including the
-classifier's Haiku — to the default provider's heavyweight `defaultModel`, so a frontier model
-becomes the permission judge and over-blocks auto-mode actions. Classifier routing sends Haiku-class
-ids to a configured lightweight model instead.
+This document defines FrogProgsy's Claude Code auto-mode review routing. It is intentionally version-gated to
+**Claude Code 2.1.220**. Auto-mode is a safety boundary, so routing must be explicit, deterministic, observable,
+and removable.
+
+## Verified client behavior
+
+A local capture ran the installed Claude Code 2.1.220 binary against a loopback Anthropic Messages server in
+`--permission-mode auto`. The main model was an exact FrogProgsy Codex gateway alias and the mocked action was
+an unrequested `curl ... | sh` command.
+
+Observed facts:
+
+- Without an override, both auto-mode XML review stages use `claude-sonnet-5`.
+- With `ANTHROPIC_DEFAULT_SONNET_MODEL=claude-frogp-auto-classifier`, both `xml_s1` and `xml_s2` use that exact
+  reserved alias. The main request remains on its exact gateway model.
+- The HTTP request body has no trustworthy `auto_mode` marker. FrogProgsy cannot safely identify review calls
+  from body metadata, prompt text, stream shape, or a Sonnet/Haiku model name.
+- A 404 from the reserved alias makes Claude Code fall back to the current main model. A 429 is retried by the
+  client before the same main-model fallback. This is Claude Code behavior; it is not FrogProgsy provider
+  fallback.
+- `ANTHROPIC_DEFAULT_SONNET_MODEL` also controls Claude Code's built-in `sonnet` shortcut. While profile routing
+  is enabled, main-model switches must use an exact gateway catalog model, not the built-in shortcut. Capturing
+  an exact Anthropic gateway model confirmed that the main request stayed on that model while both review stages
+  still used the reserved alias.
+- Claude Code checks remote `tengu_auto_mode_config.modelByMainModel` / `model` before its local default-model
+  logic. The environment override is therefore a verified 2.1.220 mechanism, not a universal guarantee against
+  a future or remotely supplied client override.
+
+The local capture files live under ignored `artifacts/`; they are evidence, not committed product state.
 
 ## Config shape
 
-| Field | Location | Purpose |
-| --- | --- | --- |
-| `FrogProviderConfig.classifierModel?` | per provider | Lightweight model for this provider's classifier side-queries. |
-| `FrogConfig.classifierFallback?` `{ provider?, model? }` | top level | Cross-provider override (e.g. main = codex, classifier = anthropic haiku). |
+```ts
+interface FrogConfig {
+  autoModeClassifier?: {
+    provider: string;
+    model: string;
+  };
+}
 
-Both are optional and additive; existing configs without them route exactly as before.
+interface ClaudeProfileRecord {
+  routeAutoModeClassifier?: boolean;
+}
+```
 
-## Router precedence (`src/router.ts` `resolveClassifierRoute`)
+There is one review target. The retired `classifierFallback` and provider-level `classifierModel` fields are not
+part of this contract. There is no ordered runtime classifier fallback.
 
-Haiku-class id = `claude-haiku-*` or legacy `claude-3-5-haiku*` (`isHaikuClassModelId`). For a
-Haiku-class id when `defaultProvider` is non-Anthropic, resolution is:
+## Routing contract
 
-1. `classifierFallback` `{provider, model}` — top-level cross-provider pin.
-2. default provider's `classifierModel` — per-provider pin.
-3. `defaultModel` + a `warning` carrier — loud fallback, never silent.
+The reserved model id is exactly:
 
-- Non-Haiku `claude-*` keep the existing client-default redirect to `defaultModel` (unchanged).
-- Alias resolution (s1) and `provider/model` namespace (s2) resolve before this stage.
-- An Anthropic (or `anthropic-*`) default provider skips this stage entirely and uses native haiku.
-- `RouteResult` carries `classifierRoute?` and `warning?`; no new `routeKind` value is introduced —
-  a configured classifier route keeps `routeKind: "client-default"` plus the `classifierRoute` flag.
+```text
+claude-frogp-auto-classifier
+```
 
-## Seeding and startup back-fill
+`src/router.ts` handles it before ordinary gateway aliases:
 
-- Registry (`src/providers/registry.ts`): `ProviderRegistryEntry.classifierModel` field, part of the
-  `ProviderConfigSeed` pick; the `codex` entry is seeded `"gpt-5.4-mini"`. Threaded through
-  `providerConfigSeed` (`src/providers/derive.ts`) so `deriveOAuthProviderConfig('codex')` yields it.
-- Startup back-fill (`src/server.ts` `startServer`, after `reconcileOAuthProviders`): set-if-absent for
-  registered providers only, `saveConfig` once, one-time startup notification. It never overwrites a
-  user value, never runs inside `loadConfig` (a pure reader), and never appends to
-  `OAUTH_RECONCILE_FIELDS` (which force-overwrites).
+1. Resolve the single configured `autoModeClassifier` target.
+2. Reject an absent/incomplete target, missing provider, or disabled target.
+3. Return `routeKind: "classifier"` and `classifierRoute: true`.
+4. Protect that route from long-context routing and model mixing.
+5. Build only the selected provider's key attempts. Never append `fallbackProviders`.
 
-## Management API and GUI
+No other id is inferred to be a classifier. In particular, ordinary Sonnet, Haiku, Opus, and default-provider
+requests follow normal routing. Request prompt inspection and model-name guessing are prohibited.
 
-- `src/classifier-settings.ts`: `providerKnownModels`, `validateClassifierModel` (warn-only),
-  `classifierSettingsSnapshot` (broad `Object.keys(config.providers)` enumeration — deliberately NOT
-  the `openai-responses`+`forward` fallback filter, which would exclude codex/anthropic).
-- `GET`/`PUT /api/classifier-settings` (verb is `PUT`): edit per-provider `classifierModel` and the
-  top-level `classifierFallback`. Validation is warn-only — an unknown model returns `200` with a
-  `warnings` array and still persists; only malformed JSON returns `400`.
-- GUI: the dashboard "Classifier model (auto-mode)" card (`gui/src/pages/Dashboard.tsx`, also rendered
-  on `gui/src/pages/DeveloperDetails.tsx`) with i18n keys in `gui/src/i18n/{en,ko,zh}.ts`. The card
-  includes a shared explainer (`gui/src/components/ClassifierInfo.tsx`): what the classifier is, the
-  4-step pipeline (action → Haiku-class side-query → routing precedence → allow/block), what each
-  control changes (blank = defaultModel fallback + warning; fallback overrides per-provider; Anthropic
-  default = native haiku), and the policy-vs-model note (model changes interpretation strictness of the
-  built-in allow/soft_deny/hard_deny policy; the policy itself is tuned in Claude Code via
-  `claude auto-mode defaults`/`config`; hard_deny always blocks). The same pipeline + policy note is in
-  `docs-site/content/docs/{en,ko,zh-cn}/reference/configuration.md` "Classifier routing fields".
+## Claude Code home opt-in
 
-## Invariants
+Saving `autoModeClassifier` alone does not change Claude Code. Each managed Claude Code home must explicitly set
+`routeAutoModeClassifier: true`.
 
-- The classifier is a permission/safety judge. Never silently install a heavy or wrong model as the
-  judge: an unconfigured Haiku-class request falls back to `defaultModel` with a loud `warning`.
-- Selection is deterministic and config-driven. No route-time auto-guessing by model-name shape, and
-  no live pricing/`:floor` selection (rejected: non-deterministic and unsafe for a safety judge).
-- Explicit config (`classifierFallback`, then per-provider `classifierModel`) always overrides.
-- Save-time validation is warn-only; never `400` on an unknown model against a partial `models[]`.
+For an opted-in home, FrogProgsy owns and injects:
 
-## Tests
+```text
+ANTHROPIC_DEFAULT_SONNET_MODEL=claude-frogp-auto-classifier
+```
 
-- `tests/router.test.ts`, `tests/router-classifier.adversarial.test.ts` — precedence, Haiku-class
-  detection, negatives (sonnet/opus/default), `classifierFallback` precedence, warning carrier.
-- `tests/classifier-settings.test.ts`, `tests/classifier-settings.adversarial.test.ts` — broad
-  enumeration, warn-only, delete semantics, `classifierFallback` lifecycle, malformed-JSON `400`.
-- `tests/provider-registry-parity.test.ts` — `deriveOAuthProviderConfig('codex')` yields
-  `classifierModel`.
+The key is applied consistently by settings injection, launcher environment construction, server start/refresh,
+and project enrollment that names the profile. Turning the flag off restores the exact pre-injection value from
+the settings backup. Deleting an opted-in profile also removes the reserved alias from enrolled projects before
+their routing metadata is cleared. Native launch/restore removes only FrogProgsy's reserved value and preserves
+unrelated user values.
 
-## Not automated
+Because the value is process environment, changing the profile does not mutate an already running Claude Code
+process. Restart or resume the session after changing it.
 
-The auto-mode deny behavior (a hard-deny action such as data exfiltration and a soft-deny action such
-as `curl | bash` staying blocked under a `gpt-5.4-mini` classifier) is a documented MANUAL gate; no
-auto-mode e2e harness exists.
+## Main-model switching
+
+The opt-in is compatible with changing the main model in the same Claude Code conversation only when the new
+main model is selected by its exact FrogProgsy gateway catalog entry. For example, switching from an exact Codex
+entry to an exact Anthropic provider/model entry keeps the main request on Anthropic and the review stages on the
+reserved alias.
+
+Do not use Claude Code's built-in `sonnet` shortcut while the opt-in is enabled: the client resolves that shortcut
+through the same environment variable and would select the reserved reviewer alias as the main model. FrogProgsy
+must not guess whether such a request is a main request or a review request.
+
+## Management validation
+
+`GET /api/classifier-settings` returns the one target plus visible provider/model options.
+
+`PUT /api/classifier-settings` accepts only:
+
+```json
+{
+  "autoModeClassifier": {
+    "provider": "codex",
+    "model": "gpt-5.4-mini"
+  }
+}
+```
+
+`null` clears the target. Save is rejected when provider/model is incomplete, the provider is missing, the model
+is disabled, or a non-empty known catalog does not contain the model. Clearing is rejected while any Claude Code
+home has review routing enabled.
+
+Provider deletion/overwrite and `disabledModels` updates are rejected when they would invalidate the configured target.
+
+Enabling a profile is rejected unless the target is valid. Applied home/project settings are updated immediately;
+failures are surfaced instead of leaving the stored flag and injected environment out of sync. Startup rejects
+structurally invalid/disabled targets and unknown targets for static provider catalogs. Live-catalog targets are
+validated when saved because startup does not perform a network catalog refresh.
+
+## Verification gates
+
+Automated tests cover:
+
+- exact reserved-alias routing and all fail-closed target states;
+- absence of Sonnet/Haiku prompt/model-name inference;
+- no generic provider fallback, long-context override, or model mixing;
+- profile/home/project injection, exact backup restore, and native-env cleanup;
+- management save/delete validation and profile lifecycle reapplication.
+
+Before changing this mechanism for a new Claude Code release, repeat the loopback capture and verify:
+
+1. both review stages use the reserved alias;
+2. an exact GPT main model remains GPT;
+3. an exact Anthropic main-model switch remains Anthropic;
+4. 404 and 429 behavior is recorded;
+5. the built-in `sonnet` shortcut caveat still holds.

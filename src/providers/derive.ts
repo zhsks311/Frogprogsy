@@ -82,7 +82,6 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): FrogProviderCo
     ...(entry.autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels: [...entry.autoToolChoiceOnlyModels] } : {}),
     ...(entry.preserveReasoningContentModels ? { preserveReasoningContentModels: [...entry.preserveReasoningContentModels] } : {}),
     ...(entry.escapeBuiltinToolNames !== undefined ? { escapeBuiltinToolNames: entry.escapeBuiltinToolNames } : {}),
-    ...(entry.classifierModel ? { classifierModel: entry.classifierModel } : {}),
   };
 }
 

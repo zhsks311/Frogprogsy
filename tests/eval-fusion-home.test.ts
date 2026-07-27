@@ -138,7 +138,7 @@ describe("eval fusion home tooling", () => {
 
     const prepared = JSON.parse(readFileSync(join(runA, "home", "config.json"), "utf8"));
     expect(prepared.providers.routed).toBeUndefined();
-    expect(prepared.providers.codex.classifierModel).toBe("gpt-5.4-mini");
+    expect(prepared.providers.codex).not.toHaveProperty("classifierModel");
     expect(prepared.subagentModels).toContain("gpt-5.5");
     expect(readFileSync(join(runA, "config.snapshot.json"), "utf8")).toContain("[REDACTED]");
 

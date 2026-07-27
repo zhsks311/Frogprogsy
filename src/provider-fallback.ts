@@ -68,9 +68,15 @@ export function resolvePrimaryRoute(config: FrogConfig, parsed: FrogParsedReques
 export function buildAttemptContexts(config: FrogConfig, parsed: FrogParsedRequest): AttemptBuildResult {
   const primaryRoute = resolvePrimaryRoute(config, parsed);
   const attempts = buildAttemptsForRoute(primaryRoute, "primary", 0);
-  const fallbackRoute = firstValidFallbackRoute(config, primaryRoute.providerName, primaryRoute.modelId);
-  if (fallbackRoute && fallbackRoute.providerName !== primaryRoute.providerName) {
-    attempts.push(...buildAttemptsForRoute(fallbackRoute, "fallback", attempts.length));
+  // Classifier routes are pinned to their single explicit `autoModeClassifier` target. Only
+  // same-provider key retries (already built above via provider key candidates) are allowed —
+  // never a generic `fallbackProviders` cross-provider fallback, which would let a different
+  // provider/model silently become the auto-mode safety judge.
+  if (primaryRoute.routeKind !== "classifier") {
+    const fallbackRoute = firstValidFallbackRoute(config, primaryRoute.providerName, primaryRoute.modelId);
+    if (fallbackRoute && fallbackRoute.providerName !== primaryRoute.providerName) {
+      attempts.push(...buildAttemptsForRoute(fallbackRoute, "fallback", attempts.length));
+    }
   }
   return { primaryRoute, attempts };
 }

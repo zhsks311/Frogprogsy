@@ -38,11 +38,10 @@ import { decideImageFallback, describeImagesInPlace } from "./image-fallback";
 import { removeCredential } from "./oauth/store";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
-import { getProviderRegistryEntry } from "./providers/registry";
-import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
+import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
-import { classifierSettingsSnapshot, validateClassifierModel } from "./classifier-settings";
+import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
 import { resolveModelCapabilities, supportsImageInput, supportsNativeWebSearch } from "./model-capabilities";
 import { isOpenAIResponsesFallbackProvider } from "./fallback-openai-responses";
 import { buildAttemptContexts, cloneParsedForAttempt, isSameProviderRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
@@ -51,7 +50,6 @@ import { effectiveKeyCandidates } from "./provider-keys";
 import { testProviderConnection as runProviderConnectionTest } from "./provider-test";
 import { resolveGuiBuildIdentity } from "./build-identity";
 import {
-  clearClaudeProjectRoutingProfileHeader,
   injectClaudeProjectSettings,
   readClaudeGatewayState,
   readClaudeProjectGatewayState,
@@ -67,11 +65,11 @@ import {
   removeClaudeProfile,
   renameClaudeProfile,
   resolveClaudeProfile,
+  resolveClaudeProfileClassifierFlag,
   updateClaudeProfileAuthState,
 } from "./claude-profiles";
 import {
   addClaudeProject,
-  clearClaudeProjectsForRoutingProfile,
   findClaudeProjectsForRoutingProfile,
   getClaudeProjectGitProtection,
   listClaudeProjects,
@@ -80,6 +78,7 @@ import {
   resolveClaudeProject,
 } from "./claude-projects";
 import { claudeLauncherBinDir, findRealClaudeExecutable, syncClaudeLauncherShims } from "./claude-launchers";
+import { cleanupClaudeProjectsForRemovedProfile } from "./claude-routing-lifecycle";
 import {
   addClaudeGrant,
   assertClaudeGrantRemovalSafe,
@@ -816,7 +815,6 @@ async function handleMessages(
     }
     attempts = built.attempts.filter(attempt => !isRouteDisabled(config, attempt.providerName, attempt.modelId, responseModelId));
     setRouteLog(logCtx, built.primaryRoute, built.primaryRoute.routeKind, built.primaryRoute.ambiguousCandidates);
-    if (built.primaryRoute.warning) console.error(`frogprogsy: ${built.primaryRoute.warning}`);
     recordLogPhase(logCtx, "route", "ok", undefined, routeStarted);
   } catch (err) {
     recordLogPhase(logCtx, "route", "error", "route_not_found", routeStarted);
@@ -1587,6 +1585,21 @@ function profileGatewayApplied(config: FrogConfig, profile: { id: string; claude
   const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
   return readClaudeGatewayState(activePort, { claudeHome: profile.claudeHome, profileId: profile.id }).applied;
 }
+
+/**
+ * Validate the explicit target against deterministic config state and, when supplied, the current
+ * configured/live catalog used by the management surface.
+ */
+function classifierTargetIssue(
+  config: FrogConfig,
+  effectiveModels: Array<{ provider: string; id: string }> = [],
+): { reason: string; message: string } | null {
+  const resolved = resolveAutoModeClassifierTarget(config);
+  if (!resolved.ok) return { reason: resolved.reason, message: resolved.message };
+  const unknownModel = validateClassifierModel(config, resolved.provider, resolved.model, effectiveModels);
+  if (unknownModel) return { reason: "unknown_model", message: unknownModel };
+  return null;
+}
 function profileGatewaySnapshot(config: FrogConfig, profile: { id: string; claudeHome: string }) {
   const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
   const state = readClaudeGatewayState(activePort, { claudeHome: profile.claudeHome, profileId: profile.id });
@@ -1677,15 +1690,6 @@ function claudeProjectsSnapshot(config: FrogConfig, root?: string | null) {
   return { projects };
 }
 
-function cleanupProjectsForRemovedProfile(config: FrogConfig, profileId: string): { success: boolean; error?: string; projects: string[] } {
-  const projects = findClaudeProjectsForRoutingProfile(config, profileId);
-  for (const project of projects) {
-    const cleared = clearClaudeProjectRoutingProfileHeader(project.projectPath, profileId);
-    if (!cleared.success) return { success: false, error: cleared.message, projects: projects.map(item => item.projectPath) };
-  }
-  clearClaudeProjectsForRoutingProfile(config, profileId);
-  return { success: true, projects: projects.map(item => item.projectPath) };
-}
 
 function syncClaudeLaunchersBestEffort(config: FrogConfig): { success: boolean; error?: string } {
   try {
@@ -2810,6 +2814,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         projectPath: project.projectPath,
         routingProfileId: project.routingProfileId,
         gatewayAuthCarrier: config.gatewayAuthCarrier,
+        routeAutoModeClassifier: resolveClaudeProfileClassifierFlag(config, project.routingProfileId),
       });
       if (!result.success) return jsonResponse({ success: false, error: result.message }, 409);
       markClaudeProjectEnrolled(config, project.id, true);
@@ -2877,7 +2882,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     const parts = url.pathname.split("/");
     const profileSelector = decodeURIComponent(parts[3] ?? "");
     const action = parts[4];
-    let profile;
+    let profile: ClaudeProfileRecord;
     try {
       profile = resolveClaudeProfile(config, profileSelector);
     } catch {
@@ -2885,8 +2890,78 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     }
 
     if (!action && req.method === "PATCH") {
-      let body: { name?: unknown };
-      try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+      let parsedBody: unknown;
+      try { parsedBody = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+      if (typeof parsedBody !== "object" || parsedBody === null || Array.isArray(parsedBody)) {
+        return jsonResponse({ error: "profile patch must be an object" }, 400);
+      }
+      const body = parsedBody as { name?: unknown; routeAutoModeClassifier?: unknown };
+      if ("routeAutoModeClassifier" in body && typeof body.routeAutoModeClassifier !== "boolean") {
+        return jsonResponse({ error: "routeAutoModeClassifier must be a boolean" }, 400);
+      }
+      if (typeof body.routeAutoModeClassifier === "boolean") {
+        const previousFlag = profile.routeAutoModeClassifier === true;
+        const nextFlag = body.routeAutoModeClassifier;
+        if (nextFlag !== previousFlag) {
+          if (nextFlag) {
+            const view = await effectiveModelView(config, {
+              profileId: profile.id,
+              headers: req.headers,
+              includeConfiguredForwardModels: true,
+            });
+            const effectiveModels = view.models.map(({ provider, id }) => ({ provider, id }));
+            const issue = classifierTargetIssue(config, effectiveModels);
+            if (issue) return jsonResponse({ error: `cannot enable auto-mode classifier routing: ${issue.message}`, reason: issue.reason }, 409);
+          }
+
+          const appliedHome = profile.injected === true || profileGatewayApplied(config, profile);
+          const affectedProjects = findClaudeProjectsForRoutingProfile(config, profile.id).filter(project => project.enrolled === true);
+          if ((appliedHome || affectedProjects.length > 0) && claudeWritesBlocked("Claude Code auto-mode classifier update")) {
+            return jsonResponse({ error: "Claude Code writes are blocked; routing settings were not changed" }, 409);
+          }
+
+          profile.routeAutoModeClassifier = nextFlag;
+          if (appliedHome || affectedProjects.length > 0) {
+            const classifierPort = config.port ?? DEFAULT_PORT;
+            const { injectClaudeCodeConfig } = await import("./claude-inject");
+            const reinjectHome = () => injectClaudeCodeConfig(classifierPort, config, { claudeHome: profile.claudeHome, profileId: profile.id });
+            const reinjectProjects = (flag: boolean) => affectedProjects.map(project => injectClaudeProjectSettings(classifierPort, {
+              projectPath: project.projectPath,
+              routingProfileId: project.routingProfileId,
+              gatewayAuthCarrier: config.gatewayAuthCarrier,
+              routeAutoModeClassifier: flag,
+            }));
+
+            const homeResult = appliedHome ? await reinjectHome() : { success: true, message: "" };
+            const projectResults = homeResult.success ? reinjectProjects(nextFlag) : [];
+            const failedProject = projectResults.find(result => !result.success);
+            if (!homeResult.success || failedProject) {
+              profile.routeAutoModeClassifier = previousFlag;
+              const rollbackErrors: string[] = [];
+              if (appliedHome) {
+                try {
+                  const rollbackHome = await reinjectHome();
+                  if (!rollbackHome.success) rollbackErrors.push(`home: ${rollbackHome.message}`);
+                } catch (err) {
+                  rollbackErrors.push(`home: ${err instanceof Error ? err.message : String(err)}`);
+                }
+              }
+              for (const [index, result] of reinjectProjects(previousFlag).entries()) {
+                if (!result.success) {
+                  rollbackErrors.push(`project ${affectedProjects[index]?.id ?? index}: ${result.message}`);
+                }
+              }
+              const failure = !homeResult.success
+                ? `auto-mode classifier update failed for ${profile.claudeHome}: ${homeResult.message}`
+                : `auto-mode classifier update failed for an enrolled project of home ${profile.id}: ${failedProject!.message}`;
+              const message = rollbackErrors.length > 0
+                ? `${failure}; rollback incomplete: ${rollbackErrors.join("; ")}`
+                : failure;
+              return jsonResponse({ success: false, error: message, rollbackErrors }, 500);
+            }
+          }
+        }
+      }
       if (typeof body.name === "string") profile = renameClaudeProfile(config, profile.id, body.name);
       persistConfig(config);
       const launcherSync = syncClaudeLaunchersBestEffort(config);
@@ -2908,7 +2983,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
           if (!restored.success) return jsonResponse({ error: restored.message }, 500);
           profile.injected = false;
         }
-        const projectCleanup = cleanupProjectsForRemovedProfile(config, profile.id);
+        const projectCleanup = cleanupClaudeProjectsForRemovedProfile(config, profile.id);
         if (!projectCleanup.success) return jsonResponse({ error: projectCleanup.error ?? "project profile cleanup failed", projects: projectCleanup.projects }, 409);
         const removed = removeClaudeProfile(config, profile.id);
         persistConfig(config);
@@ -3277,50 +3352,66 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
   }
 
   if (url.pathname === "/api/classifier-settings" && req.method === "GET") {
-    return jsonResponse(classifierSettingsSnapshot(config));
+    const profileId = url.searchParams.get("profileId") ?? undefined;
+    const view = await effectiveModelView(config, {
+      profileId,
+      headers: req.headers,
+      includeConfiguredForwardModels: true,
+    });
+    const effectiveModels = view.models.map(({ provider, id }) => ({ provider, id }));
+    return jsonResponse(classifierSettingsSnapshot(config, effectiveModels));
   }
 
   if (url.pathname === "/api/classifier-settings" && req.method === "PUT") {
-    let body: { providers?: Record<string, { classifierModel?: string }>; classifierFallback?: { provider?: string; model?: string } };
+    let body: unknown;
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
-    const warnings: string[] = [];
-    if (body.providers && typeof body.providers === "object") {
-      for (const [name, entry] of Object.entries(body.providers)) {
-        if (typeof entry !== "object" || entry === null) continue;
-        if (!config.providers[name]) {
-          warnings.push(`provider "${name}" not found in config — skipped`);
-          continue;
-        }
-        if (typeof entry.classifierModel === "string") {
-          const trimmed = entry.classifierModel.trim();
-          if (!trimmed) {
-            delete config.providers[name]!.classifierModel;
-          } else {
-            config.providers[name]!.classifierModel = trimmed;
-            const w = validateClassifierModel(config, name, trimmed);
-            if (w) warnings.push(w);
-          }
-        }
-      }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      return jsonResponse({ error: "body must be { autoModeClassifier: { provider, model } | null }" }, 400);
     }
-    if (body.classifierFallback && typeof body.classifierFallback === "object") {
-      const { provider, model } = body.classifierFallback;
-      const providerTrimmed = typeof provider === "string" ? provider.trim() : undefined;
-      if (providerTrimmed === "") {
-        delete config.classifierFallback;
-      } else if (providerTrimmed) {
-        const modelTrimmed = typeof model === "string" ? model.trim() : undefined;
-        config.classifierFallback = { provider: providerTrimmed, ...(modelTrimmed ? { model: modelTrimmed } : {}) };
-        if (!config.providers[providerTrimmed]) {
-          warnings.push(`classifierFallback provider "${providerTrimmed}" not found in config`);
-        } else if (modelTrimmed) {
-          const w = validateClassifierModel(config, providerTrimmed, modelTrimmed);
-          if (w) warnings.push(w);
-        }
+    const bodyKeys = Object.keys(body);
+    if (bodyKeys.length !== 1 || bodyKeys[0] !== "autoModeClassifier") {
+      return jsonResponse({ error: "body must contain only autoModeClassifier" }, 400);
+    }
+
+    const target = (body as { autoModeClassifier: unknown }).autoModeClassifier;
+    const profileId = url.searchParams.get("profileId") ?? undefined;
+    const view = await effectiveModelView(config, {
+      profileId,
+      headers: req.headers,
+      includeConfiguredForwardModels: true,
+    });
+    const effectiveModels = view.models.map(({ provider, id }) => ({ provider, id }));
+
+    if (target === null) {
+      const dependent = (config.claudeProfiles?.profiles ?? []).filter(entry => entry.routeAutoModeClassifier === true);
+      if (dependent.length > 0) {
+        return jsonResponse({ error: `cannot clear the auto-mode classifier target while ${dependent.length} Claude Code home(s) route to it; disable routeAutoModeClassifier first`, profiles: dependent.map(entry => entry.id) }, 409);
       }
+      delete config.autoModeClassifier;
+      persistConfig(config);
+      return jsonResponse(classifierSettingsSnapshot(config, effectiveModels));
+    }
+    if (typeof target !== "object" || target === null || Array.isArray(target)) {
+      return jsonResponse({ error: "autoModeClassifier must be an object { provider, model } or null" }, 400);
+    }
+    const targetKeys = Object.keys(target);
+    if (targetKeys.length !== 2 || !targetKeys.includes("provider") || !targetKeys.includes("model")) {
+      return jsonResponse({ error: "autoModeClassifier must contain only provider and model" }, 400);
+    }
+    const providerInput = (target as { provider?: unknown }).provider;
+    const modelInput = (target as { model?: unknown }).model;
+    const provider = typeof providerInput === "string" ? providerInput.trim() : "";
+    const model = typeof modelInput === "string" ? modelInput.trim() : "";
+    const previousTarget = config.autoModeClassifier;
+    config.autoModeClassifier = { provider, model };
+    const issue = classifierTargetIssue(config, effectiveModels);
+    if (issue) {
+      if (previousTarget === undefined) delete config.autoModeClassifier;
+      else config.autoModeClassifier = previousTarget;
+      return jsonResponse({ error: issue.message, reason: issue.reason }, 400);
     }
     persistConfig(config);
-    return jsonResponse({ ...classifierSettingsSnapshot(config), ok: true, warnings });
+    return jsonResponse(classifierSettingsSnapshot(config, effectiveModels));
   }
 
   if (url.pathname === "/api/model-mixing-settings" && req.method === "GET") {
@@ -3454,6 +3545,22 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         return jsonResponse({ error: err instanceof Error ? err.message : "invalid Claude Code home" }, 400);
       }
     }
+    if (config.autoModeClassifier?.provider?.trim() === name) {
+      const candidateConfig: FrogConfig = {
+        ...config,
+        providers: { ...config.providers, [name]: prov },
+      };
+      const candidateTarget = resolveAutoModeClassifierTarget(candidateConfig);
+      const unknownModel = candidateTarget.ok && prov.liveModels !== true
+        ? validateClassifierModel(candidateConfig, candidateTarget.provider, candidateTarget.model)
+        : null;
+      if (!candidateTarget.ok || unknownModel) {
+        const detail = candidateTarget.ok ? unknownModel : candidateTarget.message;
+        return jsonResponse({
+          error: `cannot overwrite the auto-mode classifier provider with an invalid target: ${detail}`,
+        }, 409);
+      }
+    }
 
     config.providers[name] = prov;
     if (body.setDefault) config.defaultProvider = name;
@@ -3479,6 +3586,9 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     if (!name || !config.providers[name]) return jsonResponse({ error: "unknown provider" }, 404);
     if (name === config.defaultProvider) {
       return jsonResponse({ error: "cannot remove the default provider; select another default first" }, 409);
+    }
+    if (config.autoModeClassifier?.provider?.trim() === name) {
+      return jsonResponse({ error: "cannot remove the auto-mode classifier provider; clear the classifier target first" }, 409);
     }
 
     const removedProvider = config.providers[name];
@@ -3508,6 +3618,17 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     let body: { models?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     const disabled = Array.isArray(body.models) ? body.models.filter((m): m is string => typeof m === "string") : [];
+    const classifierWithDisabled = resolveAutoModeClassifierTarget({ ...config, disabledModels: disabled });
+    if (!classifierWithDisabled.ok && classifierWithDisabled.reason === "disabled") {
+      const dependentProfiles = (config.claudeProfiles?.profiles ?? [])
+        .filter(profile => profile.routeAutoModeClassifier === true)
+        .map(profile => profile.id);
+      return jsonResponse({
+        error: "cannot disable the configured auto-mode classifier target; disable dependent homes and clear the target first",
+        reason: classifierWithDisabled.reason,
+        profiles: dependentProfiles,
+      }, 409);
+    }
     config.disabledModels = disabled;
 
     persistConfig(config);
@@ -3688,15 +3809,26 @@ export function startServer(port?: number) {
     config.subagentModels = [...DEFAULT_SUBAGENT_MODELS];
     saveConfig(config);
   }
-  const classifierBackfilled: string[] = [];
-  for (const [name, prov] of Object.entries(config.providers)) {
-    if (prov.classifierModel) continue;
-    const seedModel = getProviderRegistryEntry(name)?.classifierModel;
-    if (seedModel) { prov.classifierModel = seedModel; classifierBackfilled.push(`${name}=${seedModel}`); }
-  }
-  if (classifierBackfilled.length > 0) {
-    saveConfig(config);
-    console.error(`frogprogsy: set auto-mode classifierModel for ${classifierBackfilled.join(", ")}. Edit ${getConfigPath()} or the dashboard to change.`);
+  // Auto-mode classifier: never back-fill or guess. Invalid configured targets and opted-in homes
+  // without a usable target fail before the proxy begins listening. Static provider catalogs are
+  // also validated; live-catalog providers were validated when saved and cannot be refreshed here.
+  const classifierResolution = resolveAutoModeClassifierTarget(config);
+  const classifierRoutedHomes = (config.claudeProfiles?.profiles ?? []).filter(entry => entry.routeAutoModeClassifier === true);
+  const classifierUnknownModel = classifierResolution.ok
+    && config.providers[classifierResolution.provider]?.liveModels !== true
+    ? validateClassifierModel(config, classifierResolution.provider, classifierResolution.model)
+    : null;
+  if (
+    (!classifierResolution.ok && (config.autoModeClassifier !== undefined || classifierRoutedHomes.length > 0))
+    || classifierUnknownModel
+  ) {
+    const detail = classifierResolution.ok
+      ? `unknown_model: ${classifierUnknownModel}`
+      : `${classifierResolution.reason}: ${classifierResolution.message}`;
+    throw new Error(
+      `Invalid autoModeClassifier (${detail}). ` +
+      `Disable routeAutoModeClassifier or fix ${getConfigPath()}.`,
+    );
   }
   const listenPort = port ?? config.port ?? DEFAULT_PORT;
   setCorsOrigin(listenPort);
