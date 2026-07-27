@@ -62,7 +62,9 @@ describe("Bun-first release and installation contract", () => {
     expect(workflow).toContain("bun pm view");
     expect(workflow).toContain("bun run prepublishOnly");
     expect(workflow).toContain("bun scripts/dev-package.ts build --skip-gates");
-    expect(workflow).toContain('bun publish --dry-run "$TARBALL"');
+    expect(workflow).toContain(
+      'bun publish --dry-run "$TARBALL" --tag "$REGISTRY_DIST_TAG" --access public --token frogprogsy-dry-run-placeholder',
+    );
     expect(workflow).toContain('npm publish "$TARBALL" --tag "$REGISTRY_DIST_TAG" --access public');
     expect(workflow).not.toContain("npm pack");
     expect(workflow).not.toContain("npm run prepublishOnly");
