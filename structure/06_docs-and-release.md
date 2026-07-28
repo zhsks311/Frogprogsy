@@ -112,6 +112,9 @@ frogprogsy uses SemVer release versions and two registry channels:
 | `preview` | prerelease version such as `0.2.0-preview.1` | Validate a candidate without moving the stable install channel. |
 | `latest` | stable version such as `0.2.0` | Supported public release installed by default. |
 
+GitHub Release metadata follows the same channel mapping: `preview` releases are marked as prereleases and
+must not become **Latest**, while `latest` releases are non-prerelease and explicitly become **Latest**.
+
 A published preview is immutable and is not republished as stable. After preview validation, publish
 the corresponding stable version as a new release. Every changed package version is consumed even if
 a later metadata step fails; recovery uses a new patch or prerelease number.

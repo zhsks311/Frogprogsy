@@ -115,6 +115,15 @@ describe("Bun-first release and installation contract", () => {
     expect(secretIndex).toBeGreaterThan(buildIndex);
     expect(workflow).toContain("Keep the bootstrap credential out of install, build, lifecycle, and dry-run steps");
     expect(pkg.repository?.url).toBe("git+https://github.com/zhsks311/Frogprogsy.git");
+    expect(workflow).toContain("release_flags=(--prerelease=false --latest)");
+    expect(workflow.replace(/\r\n/g, "\n")).toContain([
+      'if [ "$REGISTRY_DIST_TAG" = "preview" ]; then',
+      "            release_flags=(--prerelease --latest=false)",
+      "          fi",
+    ].join("\n"));
+    expect(workflow).toContain("release_flags=(--prerelease --latest=false)");
+    expect(workflow).toContain('gh release edit "$release_tag" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"');
+    expect(workflow).toContain('gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"');
   });
 
   test("package lifecycle workflow builds the shared tarball once and installs it across three OSes", async () => {
