@@ -116,7 +116,7 @@ describe("Bun-first release and installation contract", () => {
     expect(workflow).toContain("Keep the bootstrap credential out of install, build, lifecycle, and dry-run steps");
     expect(pkg.repository?.url).toBe("git+https://github.com/zhsks311/Frogprogsy.git");
     expect(workflow).toContain("release_flags=(--prerelease=false --latest)");
-    expect(workflow).toContain([
+    expect(workflow.replace(/\r\n/g, "\n")).toContain([
       'if [ "$REGISTRY_DIST_TAG" = "preview" ]; then',
       "            release_flags=(--prerelease --latest=false)",
       "          fi",
