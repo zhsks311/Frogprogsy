@@ -367,6 +367,10 @@ jobs:
 
           release_tag="v${RELEASE_VERSION}"
           notes_file="$(mktemp)"
+          release_flags=(--prerelease=false --latest)
+          if [ "$REGISTRY_DIST_TAG" = "preview" ]; then
+            release_flags=(--prerelease --latest=false)
+          fi
 
           git fetch --force --tags origin
 
@@ -413,7 +417,7 @@ jobs:
           fi
 
           if gh release view "$release_tag" >/dev/null 2>&1; then
-            gh release edit "$release_tag" --title "$release_tag" --notes-file "$notes_file"
+            gh release edit "$release_tag" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"
           else
-            gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" --notes-file "$notes_file"
+            gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"
           fi
