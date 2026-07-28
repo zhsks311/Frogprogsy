@@ -65,7 +65,7 @@ describe("Bun-first release and installation contract", () => {
     expect(workflow).toContain(
       'NPM_CONFIG_TOKEN=frogprogsy-dry-run-placeholder bun publish --dry-run "$TARBALL" --tag "$REGISTRY_DIST_TAG" --access public',
     );
-    expect(workflow).not.toContain("--token frogprogsy-dry-run-placeholder");
+    expect(workflow).not.toMatch(/bun publish[^\r\n]*--token/);
     expect(workflow).toContain('npm publish "$TARBALL" --tag "$REGISTRY_DIST_TAG" --access public');
     expect(workflow).not.toContain("npm pack");
     expect(workflow).not.toContain("npm run prepublishOnly");
