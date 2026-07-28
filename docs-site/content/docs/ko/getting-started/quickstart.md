@@ -9,7 +9,7 @@ description: "frogp start, 대시보드 Add Provider, 기본 AI 서비스/모델
 frogp start
 ```
 
-FrogProgsy가 기본 주소 `http://localhost:10100`에서 시작됩니다. 이미 포트가 사용 중이면 빈 로컬 포트를 고르고, Claude Code 설정과 모델 목록을 맞춥니다.
+FrogProgsy가 기본 주소 `http://localhost:3764`에서 시작됩니다. 이미 포트가 사용 중이면 빈 로컬 포트를 고르고, Claude Code 설정과 모델 목록을 맞춥니다.
 
 ## 2. 대시보드 열기
 

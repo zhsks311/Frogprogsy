@@ -13,18 +13,24 @@ frogprogsy is a local provider gateway in front of Claude Code. Connect a provid
 ### 1. Install
 
 ```bash
-git clone https://github.com/zhsks311/frog-progsy.git
-cd frog-progsy
-bun add -g .
-frogp --help
+bun add -g frogprogsy
+frogp --version
 ```
 
-`bun add -g frogprogsy` is the command to use after the package is published to the registry. It is not published there yet.
+The untagged package follows the stable `latest` channel, currently `0.0.1`. To try the current prerelease, `0.0.2-preview.1`, install the `preview` channel explicitly:
+
+```bash
+bun add -g frogprogsy@preview
+```
+
+`frogp update` always moves a Bun-managed install to stable `latest`. To stay on the prerelease channel, reinstall `frogprogsy@preview` with Bun.
 
 frogprogsy runs on [Bun](https://bun.sh) 1.1 or newer. If `frogp` is not found, make sure Bun is on your `PATH`.
 
 <details>
-<summary><b>Missing Bun?</b> Install it first</summary>
+<summary><b>Missing Bun or installing from source?</b></summary>
+
+Install Bun first if needed:
 
 ```bash
 # macOS / Linux / WSL
@@ -34,7 +40,16 @@ curl -fsSL https://bun.sh/install | bash
 powershell -c "irm bun.sh/install.ps1 | iex"
 ```
 
-Open a new terminal, then run the `bun add -g .` step again.
+A source checkout is an alternative to the registry package:
+
+```bash
+git clone https://github.com/zhsks311/Frogprogsy.git
+cd Frogprogsy
+bun add -g .
+frogp --version
+```
+
+Open a new terminal after installing Bun or the global package.
 
 </details>
 
@@ -91,6 +106,12 @@ claude "Explain this project's entry points"
 ```
 
 To route to another model or use a `provider/model` alias, continue with [model routing](https://zhsks311.github.io/frog-progsy/guides/model-routing/).
+
+## Auto-mode review routing (preview)
+
+Choosing GPT as the main model does not automatically choose GPT for Claude Code's two internal auto-mode review calls; they are separate requests. In `0.0.2-preview.1`, choose one explicit reviewer provider/model in the dashboard, then enable **Route auto-mode reviews** for each Claude Code home that should use it. Only that reserved review route uses the selected target; ordinary provider fallback and Model Mixing do not replace it.
+
+This behavior was verified with Claude Code 2.1.220. After changing the home setting, restart or resume the Claude Code session. While the route is enabled, switch the main model with its exact FrogProgsy gateway catalog entry instead of Claude Code's built-in `sonnet` shortcut. See [Dashboard and Activity](https://zhsks311.github.io/frog-progsy/guides/web-dashboard/#auto-mode-review-route) and the [configuration reference](https://zhsks311.github.io/frog-progsy/reference/configuration/#auto-mode-review-routing).
 
 ## Optional: connect a Claude subscription (dual-auth grant)
 

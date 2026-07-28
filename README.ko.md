@@ -13,18 +13,24 @@ frogprogsy는 Claude Code는 그대로 두고 여러 AI 서비스와 모델을 �
 ### 1. 설치
 
 ```bash
-git clone https://github.com/zhsks311/frog-progsy.git
-cd frog-progsy
-bun add -g .
-frogp --help
+bun add -g frogprogsy
+frogp --version
 ```
 
-`bun add -g frogprogsy`는 패키지를 레지스트리에 공개한 뒤에 사용할 명령입니다. 현재는 아직 공개되지 않았습니다.
+태그를 붙이지 않으면 안정판 `latest` 채널을 설치하며, 현재 버전은 `0.0.1`입니다. 현재 시험판 `0.0.2-preview.1`을 사용하려면 `preview` 채널을 명시하세요.
+
+```bash
+bun add -g frogprogsy@preview
+```
+
+`frogp update`는 Bun으로 설치한 패키지를 항상 안정판 `latest`로 옮깁니다. 시험판을 계속 쓰려면 Bun으로 `frogprogsy@preview`를 다시 설치하세요.
 
 frogprogsy는 [Bun](https://bun.sh) 1.1 이상에서 실행됩니다. `frogp` 명령을 찾지 못하면 Bun이 `PATH`에 있는지 확인하세요.
 
 <details>
-<summary><b>Bun이 없나요?</b> 먼저 설치하세요</summary>
+<summary><b>Bun이 없거나 소스에서 설치하나요?</b></summary>
+
+필요하면 먼저 Bun을 설치하세요.
 
 ```bash
 # macOS / Linux / WSL
@@ -34,7 +40,16 @@ curl -fsSL https://bun.sh/install | bash
 powershell -c "irm bun.sh/install.ps1 | iex"
 ```
 
-설치 후 터미널을 새로 열고 위의 `bun add -g .`를 다시 실행하세요.
+레지스트리 패키지 대신 소스 저장소에서 설치할 수도 있습니다.
+
+```bash
+git clone https://github.com/zhsks311/Frogprogsy.git
+cd Frogprogsy
+bun add -g .
+frogp --version
+```
+
+Bun이나 전역 패키지를 설치한 뒤에는 터미널을 새로 여세요.
 
 </details>
 
@@ -91,6 +106,12 @@ claude "이 프로젝트의 진입점을 설명해 줘"
 ```
 
 다른 모델로 보내거나 `provider/model` 값을 직접 쓰는 방법은 [모델 선택 규칙](https://zhsks311.github.io/frog-progsy/ko/guides/model-routing/)에서 이어서 확인하세요.
+
+## 자동 모드 심사 모델 지정하기 (시험판)
+
+메인 모델을 GPT로 골랐다고 해서 Claude Code가 내부적으로 두 번 호출하는 자동 모드 심사 모델까지 GPT가 되는 것은 아닙니다. 두 호출은 서로 별개입니다. `0.0.2-preview.1`에서는 대시보드에서 심사에 사용할 AI 서비스와 모델 한 쌍을 정한 뒤, 이 기능이 필요한 Claude Code 홈마다 **Route auto-mode reviews**를 켤 수 있습니다. 지정된 심사 요청만 선택한 모델로 보내며, 일반 요청의 대체 경로나 Model Mixing이 심사 모델을 바꾸지 않습니다.
+
+이 동작은 Claude Code 2.1.220에서 검증했습니다. 홈 설정을 바꾼 뒤에는 Claude Code 세션을 다시 시작하거나 resume하세요. 기능을 켠 동안 메인 모델을 바꿀 때는 Claude Code 내장 `sonnet` 단축명 대신 FrogProgsy 모델 목록의 정확한 항목을 선택해야 합니다. 자세한 사용법은 [대시보드와 사용 기록](https://zhsks311.github.io/frog-progsy/ko/guides/web-dashboard/#자동-모드-심사-경로)과 [설정 파일 항목](https://zhsks311.github.io/frog-progsy/ko/reference/configuration/#자동-모드-심사-라우팅)을 참고하세요.
 
 ## Claude 구독 연결: 기본은 Forward, 선택은 Claude grant
 

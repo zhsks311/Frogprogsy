@@ -15,19 +15,28 @@ description: "Install the FrogProgsy local relay command and check what you need
 
 ## Install
 
-Until the package is published to the registry, install from a source checkout:
-
-```bash
-git clone https://github.com/zhsks311/frog-progsy.git
-cd frog-progsy
-bun add -g .
-frogp --help
-```
-
-After the package is published, the normal install command will be:
+The normal install follows the stable `latest` registry channel, currently `0.0.1`:
 
 ```bash
 bun add -g frogprogsy
+frogp --version
+```
+
+To test the current prerelease, `0.0.2-preview.1`, select the `preview` channel explicitly:
+
+```bash
+bun add -g frogprogsy@preview
+```
+
+`frogp update` always updates a Bun-managed install to stable `latest`. To remain on the prerelease channel, reinstall `frogprogsy@preview` with Bun.
+
+For a source checkout instead of the registry package:
+
+```bash
+git clone https://github.com/zhsks311/Frogprogsy.git
+cd Frogprogsy
+bun add -g .
+frogp --version
 ```
 
 After installation, start the relay directly:
@@ -48,13 +57,13 @@ docker compose up --build
 
 The container writes FrogProgsy state under `/config`, exposed as the `frogprogsy-config` volume. Its entrypoint seeds `config.json` with `hostname: "0.0.0.0"` so Docker port publishing can reach the relay, and the Compose file sets `FROGP_EXTERNAL_SUPERVISOR=1` so Docker owns crash recovery instead of the in-process watchdog.
 
-By default the host receives `http://localhost:10100`. To use a different host port without changing the container port:
+By default the host receives `http://localhost:3764`. To use a different host port without changing the container port:
 
 ```bash
-FROGP_HOST_PORT=10190 docker compose up --build
+FROGP_HOST_PORT=3765 docker compose up --build
 ```
 
-Point Claude Code at the host-exposed gateway, for example `ANTHROPIC_BASE_URL=http://localhost:10100`.
+Point Claude Code at the host-exposed gateway, for example `ANTHROPIC_BASE_URL=http://localhost:3764`.
 
 ## Advanced installation notes
 

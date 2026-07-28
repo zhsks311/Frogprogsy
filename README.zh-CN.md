@@ -13,18 +13,24 @@ frogprogsy 是运行在 Claude Code 前面的本地 provider 网关。先在仪�
 ### 1. 安装
 
 ```bash
-git clone https://github.com/zhsks311/frog-progsy.git
-cd frog-progsy
-bun add -g .
-frogp --help
+bun add -g frogprogsy
+frogp --version
 ```
 
-`bun add -g frogprogsy` 是包发布到 registry 后使用的命令。目前还没有公开发布。
+不带 tag 时会安装稳定版 `latest` 渠道，当前版本是 `0.0.1`。要试用当前预览版 `0.0.2-preview.1`，请明确安装 `preview` 渠道：
+
+```bash
+bun add -g frogprogsy@preview
+```
+
+`frogp update` 始终把 Bun 管理的安装切换到稳定版 `latest`。要继续使用预览版，请用 Bun 重新安装 `frogprogsy@preview`。
 
 frogprogsy 需要 [Bun](https://bun.sh) 1.1 或更新版本。如果找不到 `frogp` 命令，请确认 Bun 已加入 `PATH`。
 
 <details>
-<summary><b>还没有 Bun？</b> 先安装它</summary>
+<summary><b>还没有 Bun，或需要从源码安装？</b></summary>
+
+需要时先安装 Bun：
 
 ```bash
 # macOS / Linux / WSL
@@ -34,7 +40,16 @@ curl -fsSL https://bun.sh/install | bash
 powershell -c "irm bun.sh/install.ps1 | iex"
 ```
 
-重新打开终端，然后再次运行上面的 `bun add -g .`。
+也可以不用 registry package，改为从源码仓库安装：
+
+```bash
+git clone https://github.com/zhsks311/Frogprogsy.git
+cd Frogprogsy
+bun add -g .
+frogp --version
+```
+
+安装 Bun 或全局 package 后，请重新打开终端。
 
 </details>
 
@@ -91,6 +106,12 @@ claude "解释这个项目的入口点"
 ```
 
 要路由到其他 model，或使用 `provider/model` alias，请继续阅读[模型路由](https://zhsks311.github.io/frog-progsy/zh-cn/guides/model-routing/)。
+
+## 指定 auto-mode 审查模型（预览版）
+
+把主模型设为 GPT，并不会自动把 Claude Code 内部的两次 auto-mode 审查调用也设为 GPT；它们是独立请求。在 `0.0.2-preview.1` 中，先在仪表盘选择一组明确的审查 provider/model，再为需要使用该功能的每个 Claude Code 目录启用 **Route auto-mode reviews**。只有保留的审查路由会使用这个目标；普通 provider fallback 和 Model Mixing 都不会替换它。
+
+此行为已在 Claude Code 2.1.220 上验证。更改目录设置后，请重启或 resume Claude Code 会话。启用该路由时，切换主模型要选择 FrogProgsy gateway catalog 中的精确条目，不要使用 Claude Code 内置的 `sonnet` 快捷名。详见[Dashboard 与 Activity](https://zhsks311.github.io/frog-progsy/zh-cn/guides/web-dashboard/#自动模式审查路由)和[配置参考](https://zhsks311.github.io/frog-progsy/zh-cn/reference/configuration/#自动模式审查路由)。
 
 ## 可选：连接 Claude 订阅（dual-auth grant）
 
