@@ -9,7 +9,7 @@ description: "Go from frogp start to dashboard Add Provider, default provider/mo
 frogp start
 ```
 
-The relay starts on `http://localhost:10100` by default. If the port is already in use, FrogProgsy chooses an open local port and synchronizes Claude Code gateway settings plus the model catalog.
+The relay starts on `http://localhost:3764` by default. If the port is already in use, FrogProgsy chooses an open local port and synchronizes Claude Code gateway settings plus the model catalog.
 
 ## 2. Open the dashboard
 

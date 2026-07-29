@@ -9,7 +9,7 @@ description: "从 frogp start、dashboard Add Provider、默认 provider/model �
 frogp start
 ```
 
-Relay 会在默认端口 `http://localhost:10100` 启动。如果端口已被占用，FrogProgsy 会选择空闲本地端口，并同步 Claude Code gateway settings 与 model catalog。
+Relay 会在默认地址 `http://localhost:3764` 启动。如果端口已被占用，FrogProgsy 会选择空闲本地端口，并同步 Claude Code gateway settings 与 model catalog。
 
 ## 2. 打开 dashboard
 

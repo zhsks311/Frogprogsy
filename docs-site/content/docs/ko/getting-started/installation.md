@@ -15,19 +15,28 @@ description: "FrogProgsy 명령을 설치하고, 첫 실행 전 필요한 준비
 
 ## 설치
 
-패키지를 레지스트리에 공개하기 전까지는 소스 checkout에서 설치합니다:
-
-```bash
-git clone https://github.com/zhsks311/frog-progsy.git
-cd frog-progsy
-bun add -g .
-frogp --help
-```
-
-패키지를 공개한 뒤에는 다음 명령을 사용할 수 있습니다:
+기본 설치는 레지스트리의 안정판 `latest` 채널을 사용하며, 현재 버전은 `0.0.1`입니다.
 
 ```bash
 bun add -g frogprogsy
+frogp --version
+```
+
+현재 시험판 `0.0.2-preview.1`을 사용하려면 `preview` 채널을 명시하세요.
+
+```bash
+bun add -g frogprogsy@preview
+```
+
+`frogp update`는 Bun으로 설치한 패키지를 항상 안정판 `latest`로 업데이트합니다. 시험판을 계속 쓰려면 Bun으로 `frogprogsy@preview`를 다시 설치하세요.
+
+레지스트리 패키지 대신 소스 저장소에서 설치하려면 다음 명령을 사용합니다.
+
+```bash
+git clone https://github.com/zhsks311/Frogprogsy.git
+cd Frogprogsy
+bun add -g .
+frogp --version
 ```
 
 설치가 끝났으면 로컬 연결을 바로 시작합니다.
@@ -49,13 +58,13 @@ docker compose up --build
 
 컨테이너는 FrogProgsy 상태를 `/config`에 쓰고, 이 경로는 `frogprogsy-config` 볼륨으로 보존됩니다. Entrypoint는 Docker 포트 공개가 프록시에 닿도록 `config.json`의 `hostname`을 `"0.0.0.0"`으로 준비하고, Compose 파일은 `FROGP_EXTERNAL_SUPERVISOR=1`을 설정해 crash 복구를 프로세스 내부 watchdog이 아니라 Docker가 맡게 합니다.
 
-기본 host 주소는 `http://localhost:10100`입니다. 컨테이너 포트는 그대로 두고 host 포트만 바꾸려면 다음처럼 실행하세요.
+기본 host 주소는 `http://localhost:3764`입니다. 컨테이너 포트는 그대로 두고 host 포트만 바꾸려면 다음처럼 실행하세요.
 
 ```bash
-FROGP_HOST_PORT=10190 docker compose up --build
+FROGP_HOST_PORT=3765 docker compose up --build
 ```
 
-Claude Code는 호스트에 열린 gateway를 보게 설정하세요. 예: `ANTHROPIC_BASE_URL=http://localhost:10100`.
+Claude Code는 호스트에 열린 gateway를 보게 설정하세요. 예: `ANTHROPIC_BASE_URL=http://localhost:3764`.
 
 ## 처음 설치할 때는 넘겨도 되는 것
 

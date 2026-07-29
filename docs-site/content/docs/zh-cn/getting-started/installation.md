@@ -16,19 +16,28 @@ description: "安装 FrogProgsy local relay command，并检查进入首次成�
 
 ## 安装
 
-在包发布到 registry 前，请从 source checkout 安装：
-
-```bash
-git clone https://github.com/zhsks311/frog-progsy.git
-cd frog-progsy
-bun add -g .
-frogp --help
-```
-
-发布后，可以使用常规安装命令：
+默认安装使用 registry 的稳定版 `latest` 渠道，当前版本是 `0.0.1`：
 
 ```bash
 bun add -g frogprogsy
+frogp --version
+```
+
+要测试当前预览版 `0.0.2-preview.1`，请明确选择 `preview` 渠道：
+
+```bash
+bun add -g frogprogsy@preview
+```
+
+`frogp update` 始终把 Bun 管理的安装更新到稳定版 `latest`。要继续使用预览版，请用 Bun 重新安装 `frogprogsy@preview`。
+
+如果要从源码仓库安装，而不是使用 registry package：
+
+```bash
+git clone https://github.com/zhsks311/Frogprogsy.git
+cd Frogprogsy
+bun add -g .
+frogp --version
 ```
 
 安装完成后直接启动 relay。
@@ -50,13 +59,13 @@ docker compose up --build
 
 容器会把 FrogProgsy 状态写到 `/config`，该路径由 `frogprogsy-config` volume 持久化。Entrypoint 会把 `config.json` 的 `hostname` 设置为 `"0.0.0.0"`，让 Docker 端口发布能访问 relay；Compose 文件设置 `FROGP_EXTERNAL_SUPERVISOR=1`，因此 crash recovery 由 Docker 负责，而不是由进程内 watchdog 负责。
 
-默认 host 地址是 `http://localhost:10100`。如果只想改变 host 端口、不改变容器端口：
+默认 host 地址是 `http://localhost:3764`。如果只想改变 host 端口、不改变容器端口：
 
 ```bash
-FROGP_HOST_PORT=10190 docker compose up --build
+FROGP_HOST_PORT=3765 docker compose up --build
 ```
 
-让 Claude Code 指向宿主机暴露出来的 gateway，例如 `ANTHROPIC_BASE_URL=http://localhost:10100`.
+让 Claude Code 指向宿主机暴露出来的 gateway，例如 `ANTHROPIC_BASE_URL=http://localhost:3764`.
 
 ## 高级安装备注
 
