@@ -550,6 +550,22 @@ describe("Claude Code home management API", () => {
     expect(cfg.disabledModels).toEqual(["test/alpha"]);
   });
 
+  test("renamed Anthropic forward models retain per-model context metadata", async () => {
+    const cfg = config();
+    delete cfg.providers.anthropic;
+    cfg.providers["anthropic-work"] = {
+      adapter: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      authMode: "forward",
+      models: ["claude-opus-4-8", "claude-sonnet-4-6"],
+    };
+
+    const view = await __requestLogTest.effectiveModelView(cfg, { includeConfiguredForwardModels: true });
+
+    expect(view.models.find(model => model.provider === "anthropic-work" && model.id === "claude-opus-4-8")?.contextWindow).toBe(1_000_000);
+    expect(view.models.find(model => model.provider === "anthropic-work" && model.id === "claude-sonnet-4-6")?.contextWindow).toBe(200_000);
+  });
+
   test("data-plane routing rejects a globally hidden model for the selected profile", async () => {
     const cfg = config();
     cfg.disabledModels = ["test/alpha"];

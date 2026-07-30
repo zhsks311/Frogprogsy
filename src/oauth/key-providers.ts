@@ -1,5 +1,6 @@
 import type { FrogModelCapabilities, FrogProviderConfig } from "../types";
 import { deriveKeyLoginMap } from "../providers/derive";
+import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../generated/jawcode-model-metadata";
 
 /**
  * API-key "login" providers: not OAuth — the flow opens the provider's dashboard so the user can
@@ -47,6 +48,17 @@ export function enrichProviderFromCatalog(name: string, prov: FrogProviderConfig
   if (!prov.defaultModel && e.defaultModel) prov.defaultModel = e.defaultModel;
   if (prov.contextWindow === undefined && e.contextWindow !== undefined) prov.contextWindow = e.contextWindow;
   if (!prov.modelContextWindows && e.modelContextWindows) prov.modelContextWindows = { ...e.modelContextWindows };
+  const metadataProvider = resolveJawcodeProvider(name);
+  if (metadataProvider) {
+    const generatedContextWindows = Object.fromEntries(
+      [...new Set([...(prov.models ?? []), prov.defaultModel].filter((id): id is string => !!id))]
+        .map(id => [id, getJawcodeModelMetadata(metadataProvider, id)?.contextWindow] as const)
+        .filter((entry): entry is readonly [string, number] => entry[1] !== undefined),
+    );
+    if (Object.keys(generatedContextWindows).length > 0) {
+      prov.modelContextWindows = { ...generatedContextWindows, ...(prov.modelContextWindows ?? {}) };
+    }
+  }
   if (!prov.modelCapabilities && e.modelCapabilities) prov.modelCapabilities = cloneModelCapabilities(e.modelCapabilities);
   if (!prov.reasoningEfforts && e.reasoningEfforts) prov.reasoningEfforts = [...e.reasoningEfforts];
   if (!prov.modelReasoningEfforts && e.modelReasoningEfforts) prov.modelReasoningEfforts = cloneRecordOfArrays(e.modelReasoningEfforts);

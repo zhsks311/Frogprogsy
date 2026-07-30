@@ -403,6 +403,11 @@ describe("provider connection test API", () => {
     expect(body).toMatchObject({ success: true, name: "anthropic-work" });
     expect(cfg.providers["anthropic-work"]?.authMode).toBe("forward");
     expect(cfg.providers["anthropic-work"]?.models).toContain("claude-sonnet-4-6");
+    expect(cfg.providers["anthropic-work"]?.modelContextWindows).toMatchObject({
+      "claude-opus-4-8": 1_000_000,
+      "claude-sonnet-4-6": 200_000,
+      "claude-haiku-4-5": 200_000,
+    });
     expect(cfg.claudeProfiles?.profiles).toContainEqual(expect.objectContaining({
       name: "anthropic-work",
       claudeHome: workHome,
