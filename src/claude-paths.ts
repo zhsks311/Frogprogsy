@@ -13,50 +13,47 @@ export function resolveClaudeCodeHome(explicitHome?: string): string {
     let stat;
     try {
       stat = statSync(path);
-    } catch (err) {
+    } catch {
       const source = explicitHome ? "Claude Code home" : process.env.CLAUDE_CONFIG_DIR?.trim() ? "CLAUDE_CONFIG_DIR" : "CLAUDE_HOME";
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`${source} points to ${raw}, but that path could not be read: ${message}`);
+      throw new Error(`${source} points to a path that could not be read`);
     }
     if (!stat.isDirectory()) {
       const source = explicitHome ? "Claude Code home" : process.env.CLAUDE_CONFIG_DIR?.trim() ? "CLAUDE_CONFIG_DIR" : "CLAUDE_HOME";
-      throw new Error(`${source} points to ${raw}, but that path is not a directory`);
+      throw new Error(`${source} points to a path that is not a directory`);
     }
     return realpathSync.native(path);
   }
   return defaultClaudeCodeHome();
 }
 
-export const CLAUDE_HOME = resolveClaudeCodeHome();
-export const CLAUDE_CONFIG_TOML_PATH = join(CLAUDE_HOME, "config.toml");
-export const CLAUDE_LEGACY_PROFILE_PATH = join(CLAUDE_HOME, "frogprogsy.config.toml");
-export const DEFAULT_CATALOG_PATH = join(CLAUDE_HOME, "frogprogsy-catalog.json");
-export const CLAUDE_MODELS_CACHE_PATH = join(CLAUDE_HOME, "models_cache.json");
-export function claudeConfigTomlPath(claudeHome = CLAUDE_HOME): string {
+// Do not resolve the environment-selected home at module import time. A bad CLAUDE_CONFIG_DIR used to
+// throw before CLI entrypoints could catch it, printing the raw path and an OS stack trace. Every accessor
+// below resolves only when the operation actually needs a home, inside the caller's normal error boundary.
+export function claudeConfigTomlPath(claudeHome = resolveClaudeCodeHome()): string {
   return join(claudeHome, "config.toml");
 }
 
-export function claudeLegacyProfilePath(claudeHome = CLAUDE_HOME): string {
+export function claudeLegacyProfilePath(claudeHome = resolveClaudeCodeHome()): string {
   return join(claudeHome, "frogprogsy.config.toml");
 }
 
-export function claudeCatalogPath(claudeHome = CLAUDE_HOME): string {
+export function claudeCatalogPath(claudeHome = resolveClaudeCodeHome()): string {
   return join(claudeHome, "frogprogsy-catalog.json");
 }
 
-export function claudeModelsCachePath(claudeHome = CLAUDE_HOME): string {
+export function claudeModelsCachePath(claudeHome = resolveClaudeCodeHome()): string {
   return join(claudeHome, "models_cache.json");
 }
-export function claudeGatewayModelsCachePath(claudeHome = CLAUDE_HOME): string {
+export function claudeGatewayModelsCachePath(claudeHome = resolveClaudeCodeHome()): string {
   return join(claudeHome, "cache", "gateway-models.json");
 }
 
-export function assertSafeClaudeHomeWrite(operation: string, targetPath = CLAUDE_HOME): void {
+export function assertSafeClaudeHomeWrite(operation: string, targetPath = resolveClaudeCodeHome()): void {
   if (process.env.NODE_ENV !== "test") return;
   const target = resolve(targetPath);
   const defaultHome = resolve(defaultClaudeCodeHome());
   if (target === defaultHome || target.startsWith(`${defaultHome}${sep}`)) {
-    throw new Error(`${operation} refused to write to ${target} while NODE_ENV=test. Set CLAUDE_CONFIG_DIR or CLAUDE_HOME to an isolated temp directory before importing Claude Code path modules.`);
+    throw new Error(`${operation} refused to write to ${target} while NODE_ENV=test. Set CLAUDE_CONFIG_DIR or CLAUDE_HOME to an isolated temp directory before this operation.`);
   }
 }
 
@@ -86,6 +83,6 @@ export function readRootTomlString(content: string, key: string): string | null 
   return null;
 }
 
-export function resolveClaudeCodeConfigPath(path: string, claudeHome = CLAUDE_HOME): string {
+export function resolveClaudeCodeConfigPath(path: string, claudeHome = resolveClaudeCodeHome()): string {
   return isAbsolute(path) ? path : join(claudeHome, path);
 }

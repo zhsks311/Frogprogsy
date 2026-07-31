@@ -290,7 +290,7 @@ describe("guided login enforces real executability on this platform", () => {
       caught = err;
     }
     expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toBe("claude grant login executable is not executable");
+    expect((caught as Error).message).toBe("the Claude executable is not executable");
     expect((caught as Error).message).not.toContain(secretPath);
     expect((caught as Error).message).not.toContain("s3cr3t");
   });

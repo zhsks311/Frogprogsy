@@ -46,6 +46,25 @@ belongs to the deterministic `frogp doctor claude` command. GUI/server diagnosti
 so a healthy provider publication with a launcher/PATH/session mismatch is reported as a launcher/process/session
 issue, not as a gateway publishing failure.
 
+### Claude account shortcuts page contract
+
+The page answers "which account do I run, and how do I run it?" Its primary unit is the **command name** the
+user types, not the home path. Each row shows the shortcut name, whether that shortcut is currently usable
+from a terminal, and one next action. Home paths are advanced detail, never the headline.
+
+Server responses carry the shortcut name, its installed/shadowed state, and a copyable shell-setup action.
+The GUI does not recompute shortcut names from home paths — the naming rule lives in one place
+(`structure/02_config-and-claude-home.md`) and the server projects the result.
+
+Copyable commands show the real goal (`claude-work`), not the internal invocation (`frogp claude run <id> --`).
+
+`authState` is gateway-observed request state, not login state. It must never be rendered as "logged in".
+Permitted phrasing describes what the gateway saw and when; absence of observation is "not seen yet", not
+"logged out". Determining which account a home belongs to is out of scope for this contract.
+
+Profile-add failures must not collapse to a single generic message. Each stage — name validation, home
+derivation, directory creation, shortcut generation — reports a distinguishable, actionable cause.
+
 ### Auth-ready model visibility (readiness-filtered picker vs full management registry)
 
 Model visibility is split by auth readiness so the Claude Code `/model` picker never disagrees with the gateway

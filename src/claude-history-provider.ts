@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
-import { assertSafeClaudeHomeWrite, CLAUDE_HOME } from "./claude-paths";
+import { assertSafeClaudeHomeWrite, resolveClaudeCodeHome } from "./claude-paths";
 import { atomicWriteFile, ensureConfigDirForWrite, getConfigDir } from "./config";
 
-const STATE_DB_PATH = join(CLAUDE_HOME, "state_5.sqlite");
+function defaultStateDbPath(): string {
+  return join(resolveClaudeCodeHome(), "state_5.sqlite");
+}
 
 function historyBackupPath(): string {
   return join(getConfigDir(), "claude-history-backup.json");
@@ -171,12 +173,14 @@ function ejectRemainingFrogProgsyHistory(db: Database): { rows: number; files: n
   return { rows: rows.length, files };
 }
 
-export function syncClaudeCodeHistoryProvider(provider: ClaudeCodeHistoryProvider, stateDbPath = STATE_DB_PATH, backupPath = historyBackupPath()): ClaudeCodeHistorySyncResult {
-  if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
-  if (stateDbPath === STATE_DB_PATH) assertSafeClaudeHomeWrite("write Claude history", stateDbPath);
-  if (provider === "openai") return restoreClaudeCodeHistoryProvider(stateDbPath, backupPath);
+export function syncClaudeCodeHistoryProvider(provider: ClaudeCodeHistoryProvider, stateDbPath?: string, backupPath = historyBackupPath()): ClaudeCodeHistorySyncResult {
+  const defaultPath = defaultStateDbPath();
+  const resolvedStateDbPath = stateDbPath ?? defaultPath;
+  if (!existsSync(resolvedStateDbPath)) return { rows: 0, files: 0 };
+  if (resolvedStateDbPath === defaultPath) assertSafeClaudeHomeWrite("write Claude history", resolvedStateDbPath);
+  if (provider === "openai") return restoreClaudeCodeHistoryProvider(resolvedStateDbPath, backupPath);
 
-  const db = new Database(stateDbPath);
+  const db = new Database(resolvedStateDbPath);
   try {
     const placeholders = RESUMABLE_SOURCES.map(() => "?").join(",");
     const openaiRows = db
@@ -292,10 +296,12 @@ function restoreClaudeCodeHistoryProvider(stateDbPath: string, backupPath: strin
   }
 }
 
-export function restoreLegacyOpenaiHistory(stateDbPath = STATE_DB_PATH): { rows: number; files: number } {
-  if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
-  if (stateDbPath === STATE_DB_PATH) assertSafeClaudeHomeWrite("restore legacy Claude history", stateDbPath);
-  const db = new Database(stateDbPath);
+export function restoreLegacyOpenaiHistory(stateDbPath?: string): { rows: number; files: number } {
+  const defaultPath = defaultStateDbPath();
+  const resolvedStateDbPath = stateDbPath ?? defaultPath;
+  if (!existsSync(resolvedStateDbPath)) return { rows: 0, files: 0 };
+  if (resolvedStateDbPath === defaultPath) assertSafeClaudeHomeWrite("restore legacy Claude history", resolvedStateDbPath);
+  const db = new Database(resolvedStateDbPath);
   try {
     return ejectRemainingFrogProgsyHistory(db);
   } finally {

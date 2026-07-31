@@ -24,6 +24,7 @@ interface ClaudeProfile {
   authState?: string;
   gateway?: ClaudeProfileGateway;
   isDefault?: boolean;
+  shortcut?: { command: string; installed: boolean; native?: boolean };
 }
 
 interface ModelRow {
@@ -194,7 +195,7 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   const sonnetCandidates = useMemo(() => sonnetModelCandidates(models), [models]);
   const selectedSonnetModel = sonnetCandidates.find(model => model.namespaced === selectedSonnet);
   const sonnetCommand = selectedSonnetModel ? sonnetModelCommand(selectedSonnetModel.namespaced) : "";
-  const runCommand = selected ? `frogp claude run ${JSON.stringify(selected.name)} --` : "frogp claude run <profile> --";
+  const runCommand = selected?.shortcut?.command ?? "claude-<account>";
   const reloadCommand = selected ? `frogp claude reload-models ${selected.id}` : "frogp claude reload-models <profile-id>";
   const discoveryAuthMode: DiscoveryAuthMode = selected?.gateway?.discoveryAuth ?? (selected?.gateway?.modelDiscoveryReady ? "settings" : selected?.injected ? "launcher" : "direct");
 
@@ -299,15 +300,27 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
       const res = await fetch(`${apiBase}/api/claude-profiles`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName, claudeHome: newHome }),
+        body: JSON.stringify({ name: newName, claudeHome: newHome.trim() || undefined }),
       });
-      if (!res.ok) throw new Error("add failed");
-      const body = await res.json() as { profile?: ClaudeProfile };
+      const body = await res.json() as { profile?: ClaudeProfile; error?: string };
+      if (!res.ok) throw new Error(body.error || t("claudeProfiles.addFailed"));
       setNewName(""); setNewHome("");
       const next = await loadProfiles();
       setSelectedId(body.profile?.id ?? next[0]?.id ?? null);
       notify(t("claudeProfiles.added"), true);
-    } catch { notify(t("claudeProfiles.addFailed"), false); }
+    } catch (error) { notify(error instanceof Error ? error.message : t("claudeProfiles.addFailed"), false); }
+    finally { setBusy(false); }
+  };
+
+  const setupShortcuts = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch(`${apiBase}/api/claude-shortcuts/setup`, { method: "POST" });
+      const body = await res.json() as { message?: string; error?: string; manual?: string };
+      if (!res.ok) throw new Error(body.message || body.error || body.manual || t("claudeProfiles.shortcutsSetupFailed"));
+      notify(body.message || t("claudeProfiles.shortcutsSetupDone"), true);
+      await loadProfiles();
+    } catch (error) { notify(error instanceof Error ? error.message : t("claudeProfiles.shortcutsSetupFailed"), false); }
     finally { setBusy(false); }
   };
 
@@ -507,12 +520,22 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
       />
 
       <section className="panel" style={{ marginBottom: 18 }}>
-        <h3 className="panel-title">{t("claudeProfiles.addTitle")}</h3>
+        <div className="panel-head">
+          <div>
+            <h3 className="panel-title">{t("claudeProfiles.addTitle")}</h3>
+            <p className="page-sub">{t("claudeProfiles.addHint")}</p>
+          </div>
+          <button className="btn btn-ghost" type="button" onClick={setupShortcuts} disabled={busy}>{t("claudeProfiles.shortcutsSetup")}</button>
+        </div>
         <div className="settings-grid">
           <label><span>{t("claudeProfiles.name")}</span><input className="input" value={newName} onChange={e => setNewName(e.target.value)} placeholder={t("claudeProfiles.namePlaceholder")} /></label>
-          <label><span>{t("claudeProfiles.home")}</span><input className="input" value={newHome} onChange={e => setNewHome(e.target.value)} placeholder="~/.claude-work" /></label>
-          <div style={{ alignSelf: "end" }}><button className="btn btn-primary" onClick={addProfile} disabled={busy || !newName.trim() || !newHome.trim()}><IconPlus /> {t("claudeProfiles.add")}</button></div>
+          <div style={{ alignSelf: "end" }}><button className="btn btn-primary" onClick={addProfile} disabled={busy || !newName.trim()}><IconPlus /> {t("claudeProfiles.add")}</button></div>
         </div>
+        <details style={{ marginTop: 12 }}>
+          <summary>{t("claudeProfiles.advancedHome")}</summary>
+          <label style={{ display: "block", marginTop: 10 }}><span>{t("claudeProfiles.home")}</span><input className="input" value={newHome} onChange={e => setNewHome(e.target.value)} placeholder="~/.claude-work" /></label>
+          <p className="muted stat-caption">{t("claudeProfiles.advancedHomeHint")}</p>
+        </details>
       </section>
 
       <div className="model-summary-grid" style={{ marginBottom: 18 }}>
@@ -520,6 +543,7 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
           <button key={profile.id} type="button" className={`stat profile-card ${selected?.id === profile.id ? "active" : ""}`} onClick={() => setSelectedId(profile.id)} style={{ textAlign: "left" }}>
             <div className="muted">{profile.isDefault ? t("claudeProfiles.defaultBadge") : profile.id}</div>
             <div className="stat-value" style={{ fontSize: 18 }}>{profile.name}</div>
+            <div className="stat-caption"><code>{profile.shortcut?.command ?? "—"}</code> · {profile.shortcut?.native ? t("claudeProfiles.shortcutNative") : profile.shortcut?.installed ? t("claudeProfiles.shortcutReady") : t("claudeProfiles.shortcutNeedsSetup")}</div>
             <div className="muted stat-caption text-anywhere">{profile.claudeHome}</div>
             <div className="muted stat-caption">{profile.injected ? t("claudeProfiles.injected") : t("claudeProfiles.notInjected")} · {t(authStateKey(profile.authState))}</div>
           </button>
