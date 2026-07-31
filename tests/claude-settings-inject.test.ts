@@ -103,6 +103,39 @@ describe("Claude Code settings injection", () => {
     }, backup)).toEqual({ model: "claude-sonnet-4-6" });
   });
 
+  test("restore removes legacy routed Haiku overrides but preserves user Haiku defaults", () => {
+    const backup = {
+      schemaVersion: 1 as const,
+      settingsPath: "/tmp/settings.json",
+      env: {
+        ANTHROPIC_BASE_URL: { existed: false },
+        ANTHROPIC_AUTH_TOKEN: { existed: false },
+        CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: { existed: false },
+      },
+    };
+
+    expect(restoreClaudeCodeSettingsFromBackup({
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-frogp-codex-gpt-5-4-mini" },
+    }, backup)).toEqual({});
+
+    expect(restoreClaudeCodeSettingsFromBackup({
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5" },
+    }, backup)).toEqual({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5" } });
+  });
+
+  test("no-backup cleanup removes legacy routed Haiku overrides but preserves user Haiku defaults", () => {
+    expect(removeOrphanedFrogProgsySettings({
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-frogp-codex-gpt-5-4-mini" },
+    })).toEqual({ changed: true, settings: {} });
+
+    expect(removeOrphanedFrogProgsySettings({
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5" },
+    })).toEqual({
+      changed: false,
+      settings: { env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5" } },
+    });
+  });
+
   test("no-backup cleanup removes only orphaned routed settings", () => {
     expect(removeOrphanedFrogProgsySettings({
       model: "claude-frogp-codex-gpt-5-5",

@@ -56,18 +56,24 @@ export interface ClaudeSettingsBackup {
 export const LOCAL_CLAUDE_AUTH_TOKEN = "local-frogprogsy";
 const ROUTED_MODEL_PREFIX = "claude-frogp-";
 
-function isRoutedClaudeCodeModel(model: string): boolean {
-  return model.startsWith(ROUTED_MODEL_PREFIX);
+function isRoutedClaudeCodeModel(model: unknown): model is string {
+  return typeof model === "string" && model.startsWith(ROUTED_MODEL_PREFIX);
 }
 
 function removeRoutedClaudeCodeModel(settings: Record<string, unknown>): { settings: Record<string, unknown>; changed: boolean } {
   const next: Record<string, unknown> = { ...settings };
   const model = next.model;
-  if (typeof model === "string" && isRoutedClaudeCodeModel(model)) {
+  if (isRoutedClaudeCodeModel(model)) {
     delete next.model;
     return { settings: next, changed: true };
   }
   return { settings: next, changed: false };
+}
+
+function removeLegacyRoutedHaikuOverride(env: Record<string, unknown>): boolean {
+  if (!isRoutedClaudeCodeModel(env.ANTHROPIC_DEFAULT_HAIKU_MODEL)) return false;
+  delete env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+  return true;
 }
 
 
@@ -84,10 +90,12 @@ export function removeOrphanedFrogProgsySettings(settings: Record<string, unknow
   let removedFrogProxyEnv = false;
   const customHeaders = typeof env.ANTHROPIC_CUSTOM_HEADERS === "string" ? env.ANTHROPIC_CUSTOM_HEADERS : undefined;
   const hasProfileHeader = customHeaders !== undefined && removeClaudeProfileHeader(customHeaders) !== customHeaders;
+  const hasLegacyRoutedHaikuOverride = isRoutedClaudeCodeModel(env.ANTHROPIC_DEFAULT_HAIKU_MODEL);
   const hasFrogProgsyMarker = stripped.changed
     || env.ANTHROPIC_AUTH_TOKEN === LOCAL_CLAUDE_AUTH_TOKEN
     || env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY === "1"
     || env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS
+    || hasLegacyRoutedHaikuOverride
     || hasProfileHeader;
 
   if (isLocalFrogProgsyBaseUrl(env.ANTHROPIC_BASE_URL) && hasFrogProgsyMarker) {
@@ -104,6 +112,11 @@ export function removeOrphanedFrogProgsySettings(settings: Record<string, unknow
 
   if (env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS) {
     delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+    changed = true;
+    removedFrogProxyEnv = true;
+  }
+
+  if (removeLegacyRoutedHaikuOverride(env)) {
     changed = true;
     removedFrogProxyEnv = true;
   }
@@ -322,6 +335,7 @@ export function restoreClaudeCodeSettingsFromBackup(
     if (!entry || !entry.existed) delete env[key];
     else env[key] = entry.value ?? "";
   }
+  removeLegacyRoutedHaikuOverride(env);
   if (Object.keys(env).length > 0) next.env = env;
   else delete next.env;
   return next;
