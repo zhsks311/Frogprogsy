@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { __requestLogTest } from "../src/server";
@@ -58,6 +58,59 @@ afterEach(() => {
 });
 
 describe("Claude Code home management API", () => {
+  test("POST creates a name-only account home and returns its executable shortcut", async () => {
+    const cfg = config();
+    const homeRoot = mkdtempSync(join(tmpdir(), "frog-profile-api-add-"));
+    let saves = 0;
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles", {
+          method: "POST",
+          headers: { Origin: "http://localhost", "content-type": "application/json" },
+          body: JSON.stringify({ name: "team" }),
+        }),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        {
+          homeDir: homeRoot,
+          saveConfig: () => { saves++; },
+          syncClaudeLaunchers: () => ({ success: true }),
+        },
+      );
+
+      expect(res?.status).toBe(201);
+      const body = await json(res!);
+      expect(body.profile).toMatchObject({ name: "team", claudeHome: join(homeRoot, ".claude-team"), shortcut: { command: "claude-team", installed: true } });
+      expect(saves).toBe(1);
+      expect(existsSync(join(homeRoot, ".claude-team"))).toBe(true);
+      if (process.platform !== "win32") expect(statSync(join(homeRoot, ".claude-team")).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(homeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("POST returns an actionable stage error instead of a generic add failure", async () => {
+    const cfg = config();
+    const homeRoot = mkdtempSync(join(tmpdir(), "frog-profile-api-conflict-"));
+    mkdirSync(join(homeRoot, ".claude-team"));
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles", {
+          method: "POST",
+          headers: { Origin: "http://localhost", "content-type": "application/json" },
+          body: JSON.stringify({ name: "team" }),
+        }),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        { homeDir: homeRoot, saveConfig: () => {}, syncClaudeLaunchers: () => ({ success: true }) },
+      );
+      expect(res?.status).toBe(409);
+      expect(await json(res!)).toMatchObject({ code: "home_exists" });
+    } finally {
+      rmSync(homeRoot, { recursive: true, force: true });
+    }
+  });
+
   test("PATCH is local-origin guarded and renames homes", async () => {
     const cfg = config();
     let saves = 0;

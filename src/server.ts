@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, extname, join, sep } from "node:path";
 import { homedir } from "node:os";
 import { createAnthropicAdapter } from "./adapters/anthropic";
@@ -58,6 +58,7 @@ import {
 import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, setCached } from "./model-cache";
 import {
   addClaudeProfile,
+  derivedClaudeHomeForShortcut,
   ensureClaudeProfiles,
   expandHomePath,
   listClaudeProfiles,
@@ -77,8 +78,9 @@ import {
   removeClaudeProject,
   resolveClaudeProject,
 } from "./claude-projects";
-import { claudeLauncherBinDir, findRealClaudeExecutable, syncClaudeLauncherShims } from "./claude-launchers";
+import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, syncClaudeLauncherShims } from "./claude-launchers";
 import { cleanupClaudeProjectsForRemovedProfile } from "./claude-routing-lifecycle";
+import { configureZshAccountShortcuts, zshManualPathLine } from "./shell-shortcuts";
 import {
   addClaudeGrant,
   assertClaudeGrantRemovalSafe,
@@ -2143,6 +2145,10 @@ function isLocalOrigin(req: Request): boolean {
 
 interface ManagementAPIDeps {
   saveConfig?: (config: FrogConfig) => void;
+  /** Isolated home root for name-only profile creation tests; production defaults to the OS home. */
+  homeDir?: string;
+  /** Launcher sync seam so management API tests never touch the real config directory. */
+  syncClaudeLaunchers?: (config: FrogConfig) => { success: boolean; error?: string };
   /** Branch-B claude-grant management fixtures (keep the API off real network/Keychain/native homes in tests). */
   claudeGrants?: ClaudeGrantManagementDeps;
 }
@@ -2857,24 +2863,81 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     ensureClaudeProfiles(config);
     const profiles = listClaudeProfiles(config).map(profile => {
       const gateway = profileGatewaySnapshot(config, profile);
-      return { ...profile, injected: gateway.injected, gateway };
+      if (profile.isDefault) {
+        let installed = false;
+        try { findRealClaudeExecutable([claudeLauncherBinDir()]); installed = true; } catch { /* surfaced as setup needed */ }
+        return { ...profile, injected: gateway.injected, gateway, shortcut: { command: "claude", installed, native: true } };
+      }
+      const command = claudeProfileShortcutName(profile);
+      const path = join(claudeLauncherBinDir(), claudeLauncherFileName(command));
+      return { ...profile, injected: gateway.injected, gateway, shortcut: { command, installed: existsSync(path), native: false } };
     });
     return jsonResponse({ profiles });
   }
 
   if (url.pathname === "/api/claude-profiles" && req.method === "POST") {
     let body: { name?: unknown; claudeHome?: unknown; home?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await req.json(); } catch { return jsonResponse({ code: "invalid_json", error: "invalid JSON body" }, 400); }
     const name = typeof body.name === "string" ? body.name.trim() : "";
-    const claudeHome = typeof body.claudeHome === "string" ? body.claudeHome : typeof body.home === "string" ? body.home : "";
-    if (!name || !claudeHome) return jsonResponse({ error: "name and claudeHome are required" }, 400);
+    if (!name) return jsonResponse({ code: "invalid_name", error: "Account shortcut name is required" }, 400);
+
+    const explicitHome = typeof body.claudeHome === "string" && body.claudeHome.trim()
+      ? body.claudeHome.trim()
+      : typeof body.home === "string" && body.home.trim()
+        ? body.home.trim()
+        : undefined;
+    let claudeHome: string;
+    if (explicitHome) {
+      claudeHome = expandHomePath(explicitHome);
+      if (!existsSync(claudeHome) || !statSync(claudeHome).isDirectory()) {
+        return jsonResponse({ code: "existing_home_required", error: "The advanced home path must be an existing directory" }, 400);
+      }
+    } else {
+      try {
+        claudeHome = derivedClaudeHomeForShortcut(name, deps.homeDir);
+      } catch (error) {
+        return jsonResponse({ code: "invalid_name", error: error instanceof Error ? error.message : String(error) }, 400);
+      }
+      if (existsSync(claudeHome)) {
+        return jsonResponse({ code: "home_exists", error: "The derived account home already exists; use the advanced existing-home field to adopt it intentionally" }, 409);
+      }
+      try {
+        mkdirSync(claudeHome, { mode: 0o700 });
+        chmodSync(claudeHome, 0o700);
+      } catch (error) {
+        return jsonResponse({ code: "home_creation_failed", error: error instanceof Error ? error.message : String(error) }, 500);
+      }
+    }
+
+    let profile: ClaudeProfileRecord;
     try {
-      const profile = addClaudeProfile(config, { name, claudeHome });
+      profile = addClaudeProfile(config, { name, claudeHome });
       persistConfig(config);
-      const launcherSync = syncClaudeLaunchersBestEffort(config);
-      return jsonResponse({ profile, launcherSync }, 201);
-    } catch {
-      return jsonResponse({ error: "Claude Code home could not be added" }, 409);
+    } catch (error) {
+      return jsonResponse({ code: "registration_failed", error: error instanceof Error ? error.message : String(error) }, 409);
+    }
+    const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
+    const command = claudeProfileShortcutName(profile);
+    if (!launcherSync.success) {
+      return jsonResponse({
+        code: "shortcut_sync_failed",
+        error: "The account was saved, but its shortcut could not be created. Fix the issue and run frogp refresh.",
+        profile: { ...profile, shortcut: { command, installed: false } },
+        launcherSync,
+      }, 500);
+    }
+    return jsonResponse({ profile: { ...profile, shortcut: { command, installed: true } }, launcherSync }, 201);
+  }
+
+  if (url.pathname === "/api/claude-shortcuts/setup" && req.method === "POST") {
+    try {
+      const result = configureZshAccountShortcuts();
+      if (result.state === "refused") {
+        return jsonResponse({ ...result, manual: zshManualPathLine() }, 409);
+      }
+      return jsonResponse({ ...result, manual: zshManualPathLine() });
+    } catch (error) {
+      return jsonResponse({ state: "refused", error: error instanceof Error ? error.message : String(error), manual: zshManualPathLine() }, 409);
     }
   }
 

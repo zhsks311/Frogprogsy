@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -151,6 +151,90 @@ describe("CLI subcommand help", () => {
     expect(result.stderr).toContain("frogp claude");
   });
 
+  test("claude run treats --help after -- as Claude payload instead of frogp help", () => {
+    const frogHome = mkdtempSync(join(tmpdir(), "frogp-claude-payload-help-"));
+    const claudeHome = mkdtempSync(join(tmpdir(), "frogp-claude-payload-home-"));
+    const env = { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: claudeHome, CLAUDE_CONFIG_DIR: claudeHome };
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "run", "missing-profile", "--", "--help"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Unknown Claude Code home: missing-profile");
+      expect(result.stdout).not.toContain("Usage: frogp claude");
+    } finally {
+      rmSync(frogHome, { recursive: true, force: true });
+      rmSync(claudeHome, { recursive: true, force: true });
+    }
+  });
+
+  test("claude shortcuts setup appends the account shortcut path to zshrc", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-shortcuts-cli-"));
+    const frogHome = join(root, "frog");
+    const userHome = join(root, "user");
+    const claudeHome = join(userHome, ".claude");
+    mkdirSync(join(frogHome, "bin"), { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: userHome,
+      SHELL: "/bin/zsh",
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+    };
+    delete env.ZDOTDIR;
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "shortcuts", "setup"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("open a new terminal");
+      expect(readFileSync(join(userHome, ".zshrc"), "utf8")).toContain('$HOME/.frogprogsy/bin');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude add with only a command name creates a 0700 home and account shortcut", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-name-only-"));
+    const frogHome = join(root, "frog");
+    const userHome = join(root, "user");
+    const defaultClaudeHome = join(userHome, ".claude");
+    const realClaude = process.platform === "win32" ? process.execPath : "/usr/bin/true";
+    mkdirSync(defaultClaudeHome, { recursive: true });
+    const env = {
+      ...process.env,
+      HOME: userHome,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: defaultClaudeHome,
+      CLAUDE_CONFIG_DIR: defaultClaudeHome,
+      FROGP_REAL_CLAUDE: realClaude,
+    };
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "add", "work"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("Claude account added: work");
+      expect(result.stdout).toContain("next: open a new terminal and run claude-work");
+      const workHome = join(userHome, ".claude-work");
+      expect(existsSync(workHome)).toBe(true);
+      if (process.platform !== "win32") expect(statSync(workHome).mode & 0o777).toBe(0o700);
+      expect(existsSync(join(frogHome, "bin", process.platform === "win32" ? "claude-work.cmd" : "claude-work"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("claude home CLI add and rename keep a stable id", () => {
     const frogHome = mkdtempSync(join(tmpdir(), "frogp-claude-cli-"));
     const defaultClaudeHome = mkdtempSync(join(tmpdir(), "frogp-claude-default-"));
@@ -163,7 +247,7 @@ describe("CLI subcommand help", () => {
         encoding: "utf8",
       });
       expect(added.status).toBe(0);
-      expect(added.stdout).toContain("Claude Code home added");
+      expect(added.stdout).toContain("Claude account added");
 
       const configPath = join(frogHome, "config.json");
       const afterAdd = JSON.parse(readFileSync(configPath, "utf8"));

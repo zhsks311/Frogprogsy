@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { ClaudeProfileAuthState, ClaudeProfileRecord, FrogConfig, GatewayAuthCarrier } from "./types";
 import { resolveClaudeCodeHome } from "./claude-paths";
 import { AUTO_MODE_CLASSIFIER_ALIAS } from "./classifier-settings";
@@ -115,6 +115,26 @@ export function resolveClaudeProfile(config: FrogConfig, selector?: string | nul
   const byFoldedName = profiles.profiles.find(profile => profile.name.toLowerCase() === lowered);
   if (byFoldedName) return byFoldedName;
   throw new Error(`Unknown Claude Code home: ${wanted}`);
+}
+
+const CLAUDE_SHORTCUT_INPUT_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+const RESERVED_CLAUDE_SHORTCUT_NAMES = new Set(["claude", "default", "profile"]);
+
+/** Validate the user-chosen suffix in `frogp claude add <name>`. */
+export function validateClaudeShortcutInput(name: string): string {
+  const normalized = name.trim();
+  if (!CLAUDE_SHORTCUT_INPUT_PATTERN.test(normalized)) {
+    throw new Error("Account shortcut name must use lowercase letters, numbers, and internal hyphens only");
+  }
+  if (RESERVED_CLAUDE_SHORTCUT_NAMES.has(normalized)) {
+    throw new Error(`Account shortcut name is reserved: ${normalized}`);
+  }
+  return normalized;
+}
+
+/** Default isolated Claude Code home for a command suffix such as `work` → `~/.claude-work`. */
+export function derivedClaudeHomeForShortcut(name: string, baseHome = homedir()): string {
+  return join(baseHome, `.claude-${validateClaudeShortcutInput(name)}`);
 }
 
 export function addClaudeProfile(config: FrogConfig, input: { name: string; claudeHome: string; id?: string }): ClaudeProfileRecord {

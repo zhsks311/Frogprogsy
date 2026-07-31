@@ -5,7 +5,7 @@ description: "The local hooks FrogProgsy owns: settings env keys, gateway discov
 
 This guide focuses on what FrogProgsy writes into Claude Code, what it does not write, and how to restore the native state when needed.
 
-FrogProgsy connects through the gateway path Claude Code already reads. It does not patch Claude Code binaries and it does not install a `model_provider` table in `config.toml` for the active integration path. It does generate optional launcher shims so `claude` and aliases such as `claude-work` can start with the right gateway environment instead of requiring `frogp claude run` in daily use.
+FrogProgsy connects through the gateway path Claude Code already reads. It does not patch Claude Code binaries and it does not install a `model_provider` table in `config.toml` for the active integration path. It generates optional shortcuts such as `claude-work` for additional accounts so daily use does not require `frogp claude run`; plain `claude` always remains the user's installed Claude Code.
 
 ## Owned settings only
 
@@ -76,7 +76,7 @@ You consent to a grant when you set it up, and again for any live subscription-a
 
 ## Launching Claude Code
 
-`frogp start` and `frogp refresh` regenerate `~/.frogprogsy/bin/claude` for the default Claude Code home and aliases derived from configured homes, such as `claude-work` or `claude-personal`. Put `~/.frogprogsy/bin` before the native Claude Code binary in `PATH`, or rely on the package-provided `claude` bin when it wins PATH resolution. Each launcher calls the low-level `frogp claude run <cp_id>` path with `FROGP_REAL_CLAUDE` pinned to the real Claude Code executable, skipping frogprogsy and transient cmux shims to avoid recursion. When the proxy is stopped, the launcher keeps only the selected Claude home env and passes through to native Claude Code.
+`frogp start` and `frogp refresh` regenerate one shortcut per additional Claude account under `~/.frogprogsy/bin`, such as `claude-work` or `claude-personal`. The default account uses plain `claude`; frogprogsy never creates or packages that command. Append the shortcut directory to `PATH` so the user's installed Claude Code keeps the name. Each shortcut calls the low-level `frogp claude run <cp_id>` path with `FROGP_REAL_CLAUDE` pinned to the real Claude Code executable, skipping frogprogsy and transient cmux shims to avoid recursion. When the proxy is stopped, the shortcut keeps only the selected Claude home environment and passes through to native Claude Code.
 
 ## Catalog sync responsibilities
 

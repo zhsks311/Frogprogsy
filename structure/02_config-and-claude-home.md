@@ -116,9 +116,28 @@ built-ins stay untouched (`structure/05_gui-and-management-api.md`).
 ## Claude launchers
 
 `frogp start` and `frogp refresh` also regenerate managed launcher shims under
-`~/.frogprogsy/bin/`. The default configured Claude Code home gets `claude`; each named home gets
-stable profile/home aliases such as `claude-work`, `claude-personal`, and `claude-<profile-name>`
-when those names can be expressed as safe ASCII command names. The shims call the same frogprogsy CLI command
+`~/.frogprogsy/bin/`.
+
+**frogprogsy never owns the plain `claude` command.** `claude` always resolves to the user's own Claude Code
+installation. The default account uses that native `claude` command directly; frogprogsy creates shortcuts
+only for additional accounts (`claude-work`, `claude-personal`, and so on). This is a hard invariant with
+two enforcement points, because two independent
+code paths could produce the name:
+
+- The package declares no `claude` bin. `package.json` exposes `frogp` only.
+- Launcher name planning rejects the exact name `claude` in its final candidate filter, not merely at the
+  points that propose names. A basename slug can collapse to `claude` from non-ASCII input (`.claude-업무`
+  slugifies to `claude`), so filtering proposals individually is insufficient.
+
+Each additional profile gets exactly one stable shortcut; the default profile gets none because native `claude`
+already selects it. The canonical additional-account name is `claude-<slugify(profile name)>`;
+when that slug is empty or equals `claude`, the fallback is derived from the profile id. Profile names are
+user-editable via `frogp claude rename`, whereas a home path is a credential address that must not move —
+so the command name derives from the name, not the home. When a rename or this rule removes a previously
+generated alias, the sync result, `frogp doctor`, and user documentation state both the removed name and
+its replacement.
+
+The shims call the same frogprogsy CLI command
 that generated them (for a source checkout this is the pinned `bun <repo>/src/cli.ts` command), with
 `FROGP_REAL_CLAUDE` pinned to the real Claude Code executable. Real-Claude resolution skips frogprogsy's own
 shim directory and transient cmux shim directories to avoid recursion. When the proxy is active, managed launchers
@@ -126,10 +145,38 @@ prewrite that profile's gateway cache and run token-free by default; `gatewayAut
 local discovery token only as an explicit rollback. When the proxy is not active, the same launchers keep only
 `CLAUDE_CONFIG_DIR`/`CLAUDE_HOME` and pass through to native Claude Code for that profile.
 
-The package also exposes a `claude` bin that behaves as the default-profile launcher when that bin wins
-PATH resolution; otherwise users can put `~/.frogprogsy/bin` before the native Claude Code binary.
+`~/.frogprogsy/bin` is appended to `PATH`, never prepended. Because frogprogsy owns no plain `claude`,
+ordering cannot shadow the user's Claude Code installation. Shell setup must not add a duplicate `PATH`
+entry when the directory is already present.
+
 `frogp stop` and `frogp restore` remove gateway settings but leave launchers installed as native-profile
 pass-through commands; `frogp uninstall` removes the config directory that contains them.
+
+### Account home conflict is fail-closed
+
+A managed launch refuses to run when the caller's `CLAUDE_CONFIG_DIR` or `CLAUDE_HOME` names a different
+account home than the selected profile. It refuses rather than warns: a warning still lets the process
+write credentials into the wrong scoped store, which is exactly the Probe-B damage recorded below.
+
+The check lives at `runClaudeProfile` entry — the single point where both the generated shortcut path
+(shortcut → `frogp claude run <id> --` → CLI) and a direct `frogp claude run` converge. It runs before
+cache prewrite, environment assembly, and spawn. There is no `--force` escape: to use an arbitrary home,
+run the user's own Claude Code, or name the exact profile.
+
+Existing directories are compared by `realpath` identity. Missing paths, non-directories, and unreadable
+paths are fail-closed. The spawn always uses the registered `profile.claudeHome` string verbatim, never a
+normalized comparison result, because that string is the path-derived Keychain address.
+
+Default error text names the shortcut and the fixing command without printing full home paths; only
+detailed/doctor output shows privacy-safe paths.
+
+### Shell setup ownership
+
+Automatic shell configuration is zsh-only, requires explicit consent, and writes a single marked block that
+frogprogsy owns. It never modifies functions, aliases, or `PATH` lines it did not write. Non-TTY contexts
+print a copyable command instead of editing files. The apply step verifies at run time that no
+frogprogsy-owned plain `claude` exists in the managed directory and stops if one is found — ordering during
+development is not a sufficient guarantee for pre-existing user state.
 
 Project enrollment intent and on-disk routing state have different lifetimes. A project row with
 `enrolled:true` records durable intent, but its `.claude/settings.local.json` gateway keys are active only
@@ -160,8 +207,8 @@ use the separately probed token-free native passthrough path — see `structure/
 
 Grant setup resolves the real Claude Code executable (`assertRealClaudeExecutable` /
 `findRealClaudeExecutable`) and builds a guided, human-driven login command (`buildClaudeGrantLoginCommand`,
-default args `auth login --claudeai`). frogprogsy never automates the login and never invokes the managed
-`claude` shim or a launcher-bin/source-dir executable for it: Probe-B recorded that the managed shim ignores
+default args `auth login --claudeai`). frogprogsy never automates the login and never invokes a managed
+shortcut or a launcher-bin/source-dir executable for it: Probe-B recorded that a managed shim ignores
 a caller-supplied `CLAUDE_CONFIG_DIR` and writes the shim's configured profile instead, which changed a
 native scoped default-home service and required a human native re-login to restore
 (`artifacts/claude-dual-auth/probe-b-2026-07-14.json`). Real-executable resolution and a post-login check that
