@@ -1,0 +1,177 @@
+#!/usr/bin/env bun
+
+import { spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+export type VerificationMode = "target" | "regression" | "package";
+
+export interface VerificationRequest {
+  mode: VerificationMode;
+  targets: string[];
+}
+
+export const DEFAULT_TARGETS = [
+  "tests/claude-messages-data-plane.test.ts",
+  "tests/messages-bridge.test.ts",
+  "tests/messages-bridge-lifecycle.test.ts",
+  "tests/anthropic-adapter.test.ts",
+  "tests/anthropic-stop-reason.test.ts",
+  "tests/anthropic-thinking-boundary.test.ts",
+  "tests/adapter-error-inline.test.ts",
+  "tests/error-fidelity.test.ts",
+  "tests/provider-fallback-chain.test.ts",
+  "tests/openai-responses-upstream.test.ts",
+] as const;
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const REPOSITORY_ROOT = resolve(SCRIPT_DIR, "..");
+const MODES = new Set<VerificationMode>(["target", "regression", "package"]);
+
+export class VerificationInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "VerificationInputError";
+  }
+}
+
+function validatedTarget(candidate: string, repositoryRoot: string): string {
+  if (!candidate || candidate.startsWith("-")) {
+    throw new VerificationInputError(`invalid target test: ${candidate || "<empty>"}`);
+  }
+
+  const testsRoot = resolve(repositoryRoot, "tests");
+  const absolute = resolve(repositoryRoot, candidate);
+  const withinTests = absolute.startsWith(`${testsRoot}${sep}`);
+  if (!withinTests || !absolute.endsWith(".test.ts")) {
+    throw new VerificationInputError(`target must be a tests/*.test.ts file: ${candidate}`);
+  }
+  if (!existsSync(absolute) || !statSync(absolute).isFile()) {
+    throw new VerificationInputError(`target test does not exist: ${candidate}`);
+  }
+
+  return relative(repositoryRoot, absolute).split(sep).join("/");
+}
+
+export function parseVerificationRequest(
+  args: readonly string[],
+  repositoryRoot = REPOSITORY_ROOT,
+): VerificationRequest {
+  const [modeValue, ...requestedTargets] = args;
+  if (!modeValue || !MODES.has(modeValue as VerificationMode)) {
+    throw new VerificationInputError("usage: scripts/verify target [tests/*.test.ts ...] | regression | package");
+  }
+
+  const mode = modeValue as VerificationMode;
+  if (mode !== "target" && requestedTargets.length > 0) {
+    throw new VerificationInputError(`${mode} does not accept target test arguments`);
+  }
+
+  const targets = mode === "target"
+    ? (requestedTargets.length > 0 ? requestedTargets : DEFAULT_TARGETS).map((target) =>
+      validatedTarget(target, repositoryRoot)
+    )
+    : [];
+
+  return { mode, targets };
+}
+
+function displayCommand(args: readonly string[]): string {
+  return ["bun", ...args].map((part) => JSON.stringify(part)).join(" ");
+}
+
+function runBun(args: readonly string[]): void {
+  process.stdout.write(`verify: ${displayCommand(args)}\n`);
+  const result = spawnSync(process.execPath, args, {
+    cwd: REPOSITORY_ROOT,
+    env: process.env,
+    stdio: "inherit",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`verification command failed with exit ${result.status ?? "unknown"}: ${displayCommand(args)}`);
+  }
+}
+
+function captureBun(args: readonly string[]): string {
+  const result = spawnSync(process.execPath, args, {
+    cwd: REPOSITORY_ROOT,
+    env: process.env,
+    encoding: "utf8",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    process.stderr.write(result.stderr);
+    throw new Error(`verification command failed with exit ${result.status ?? "unknown"}: ${displayCommand(args)}`);
+  }
+  return result.stdout.trim();
+}
+
+function installRootDependencies(): void {
+  runBun(["install", "--frozen-lockfile"]);
+}
+
+function installGuiDependencies(): void {
+  runBun(["install", "--frozen-lockfile", "--cwd", "gui"]);
+}
+
+function verifyTarget(targets: readonly string[]): void {
+  installRootDependencies();
+  runBun(["run", "typecheck"]);
+  runBun(["test", "--isolate", ...targets]);
+}
+
+function verifyRegression(): void {
+  installRootDependencies();
+  installGuiDependencies();
+  runBun(["run", "typecheck"]);
+  runBun(["test", "--isolate", "./tests"]);
+}
+
+function verifyPackage(): void {
+  installRootDependencies();
+  runBun(["run", "build:gui"]);
+  runBun(["run", "dev:package", "build", "--skip-gates"]);
+
+  const tarball = captureBun(["scripts/dev-package.ts", "path"]);
+  if (!tarball || !existsSync(tarball)) {
+    throw new Error("dev package build did not produce a tarball");
+  }
+
+  const tempRoot = mkdtempSync(join(tmpdir(), "frogprogsy-verify-package-"));
+  const stagingDir = join(tempRoot, "dist-tarball");
+  mkdirSync(stagingDir);
+  copyFileSync(tarball, join(stagingDir, basename(tarball)));
+  try {
+    runBun(["scripts/package-lifecycle-smoke.ts", "--tarball-dir", stagingDir]);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+export function runVerification(request: VerificationRequest): void {
+  switch (request.mode) {
+    case "target":
+      verifyTarget(request.targets);
+      break;
+    case "regression":
+      verifyRegression();
+      break;
+    case "package":
+      verifyPackage();
+      break;
+  }
+  process.stdout.write(`verify: ${request.mode} passed\n`);
+}
+
+if (import.meta.main) {
+  try {
+    runVerification(parseVerificationRequest(process.argv.slice(2)));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`verify: ${message}\n`);
+    process.exitCode = 1;
+  }
+}
