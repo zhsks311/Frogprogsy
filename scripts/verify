@@ -135,16 +135,16 @@ function verifyPackage(): void {
   runBun(["run", "build:gui"]);
   runBun(["run", "dev:package", "build", "--skip-gates"]);
 
-  const tarball = captureBun(["scripts/dev-package.ts", "path"]);
+  const tarball = captureBun(["run", "dev:package", "path"]);
   if (!tarball || !existsSync(tarball)) {
     throw new Error("dev package build did not produce a tarball");
   }
 
   const tempRoot = mkdtempSync(join(tmpdir(), "frogprogsy-verify-package-"));
-  const stagingDir = join(tempRoot, "dist-tarball");
-  mkdirSync(stagingDir);
-  copyFileSync(tarball, join(stagingDir, basename(tarball)));
   try {
+    const stagingDir = join(tempRoot, "dist-tarball");
+    mkdirSync(stagingDir);
+    copyFileSync(tarball, join(stagingDir, basename(tarball)));
     runBun(["scripts/package-lifecycle-smoke.ts", "--tarball-dir", stagingDir]);
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
