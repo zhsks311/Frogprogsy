@@ -23,6 +23,7 @@
     "start": "bun run src/cli.ts start",
     "test": "bun test --isolate ./tests",
     "typecheck": "bun x tsc --noEmit",
+    "verify": "scripts/verify",
     "capture:fixtures": "bun tools/capture-claude-code-fixtures.ts --write-safe-blocked",
     "capture:fixtures:live": "bun tools/capture-claude-code-fixtures.ts --capture",
     "generate:model-metadata": "bun scripts/generate-model-metadata.ts",
