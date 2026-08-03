@@ -34,6 +34,14 @@ interface ModelRow {
   authReady?: boolean;
 }
 
+export async function fetchProfileModels(request: () => Promise<Response>): Promise<ModelRow[]> {
+  const response = await request();
+  if (!response.ok) throw new Error("models load failed");
+  const models: unknown = await response.json();
+  if (!Array.isArray(models)) throw new Error("invalid models response");
+  return models as ModelRow[];
+}
+
 export function sonnetModelCandidates(models: readonly ModelRow[]): ModelRow[] {
   return models
     .filter(model =>
@@ -185,12 +193,13 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   const [grantsFailed, setGrantsFailed] = useState(false);
   const [selectedSonnet, setSelectedSonnet] = useState("");
   const [sonnetCopyState, setSonnetCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  // Distinguishes "this home has no usable Sonnet model" from "models are still loading" so the
-  // empty-state guidance never flashes while a home switch is in flight.
+  // Keeps loading and request failure separate from a successfully loaded home with no usable Sonnet model.
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsLoadFailedFor, setModelsLoadFailedFor] = useState<string | null>(null);
   const modelRequestId = useRef(0);
 
   const selected = useMemo(() => profiles.find(profile => profile.id === selectedId) ?? profiles[0], [profiles, selectedId]);
+  const modelsLoadFailed = modelsLoadFailedFor === selected?.id;
   const sonnetCandidates = useMemo(() => sonnetModelCandidates(models), [models]);
   const selectedSonnetModel = sonnetCandidates.find(model => model.namespaced === selectedSonnet);
   const sonnetCommand = selectedSonnetModel ? sonnetModelCommand(selectedSonnetModel.namespaced) : "";
@@ -227,15 +236,22 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
     // must also release the flag — otherwise nothing left in flight can ever clear it.
     if (!profile) {
       setModelsLoading(false);
+      setModelsLoadFailedFor(null);
       return;
     }
+    setRenameValue(profile.name);
+    setModelsLoadFailedFor(null);
     setModelsLoading(true);
     try {
-      const modelsRes = await fetch(`${apiBase}/api/models?profileId=${encodeURIComponent(profile.id)}`);
-      const modelRows = modelsRes.ok ? await modelsRes.json() as ModelRow[] : [];
+      const modelRows = await fetchProfileModels(
+        () => fetch(`${apiBase}/api/models?profileId=${encodeURIComponent(profile.id)}`),
+      );
       if (requestId !== modelRequestId.current) return;
-      setModels(Array.isArray(modelRows) ? modelRows : []);
-      setRenameValue(profile.name);
+      setModels(modelRows);
+    } catch {
+      if (requestId !== modelRequestId.current) return;
+      setModels([]);
+      setModelsLoadFailedFor(profile.id);
     } finally {
       // A superseded request must not clear the flag; the newest request still owns it.
       if (requestId === modelRequestId.current) setModelsLoading(false);
@@ -547,6 +563,7 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
             <div className="stat"><div className="muted">{t("claudeProfiles.discoveryAuth")}</div><div className="stat-value" style={{ fontSize: 16 }}>{t(discoveryAuthKey(discoveryAuthMode))}</div><div className="muted stat-caption">{t("claudeProfiles.discoveryAuthHint")}</div></div>
             <div className="stat"><div className="muted">{t("claudeProfiles.preview")}</div><div className="stat-value" style={{ fontSize: 16 }}>{models.filter(m => !m.disabled).length}</div><div className="muted stat-caption">{t("claudeProfiles.previewHint")}</div></div>
           </div>
+          {modelsLoadFailed && <Notice tone="err">{t("models.loadFail")}</Notice>}
 
           <div className="settings-grid" style={{ marginTop: 16 }}>
             <label><span>{t("claudeProfiles.rename")}</span><input className="input" value={renameValue} onChange={e => setRenameValue(e.target.value)} /></label>
@@ -582,7 +599,7 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
                 <Notice tone="err">{t("claudeProfiles.autoModeClassifierCaveat")}</Notice>
                 {modelsLoading ? (
                   <div className="row muted" style={{ marginTop: 12 }}><span className="spin" /> {t("common.loading")}</div>
-                ) : sonnetCandidates.length > 0 ? (
+                ) : modelsLoadFailed ? null : sonnetCandidates.length > 0 ? (
                   <>
                     <div className="settings-grid" style={{ marginTop: 12 }}>
                       <label>

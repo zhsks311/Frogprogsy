@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { pageToHash, parsePageHash, shouldPushPageHash } from "../gui/src/hash-routing";
-import { sonnetModelCandidates, sonnetModelCommand } from "../gui/src/pages/ClaudeProfiles";
+import { fetchProfileModels, sonnetModelCandidates, sonnetModelCommand } from "../gui/src/pages/ClaudeProfiles";
 
 function read(path: string): string {
   return readFileSync(path, "utf8");
@@ -104,6 +104,19 @@ describe("GUI interaction stability", () => {
       "zeta/Claude-SONNET-4",
     ]);
     expect(sonnetModelCommand(candidates[1]!.namespaced)).toBe("/model zeta/Claude-SONNET-4");
+  });
+
+  test("Claude profile model loading rejects request failures instead of reporting an empty result", async () => {
+    expect(await fetchProfileModels(async () => Response.json([]))).toEqual([]);
+
+    for (const request of [
+      async () => new Response("upstream failed", { status: 503 }),
+      async () => new Response("not json", { headers: { "Content-Type": "application/json" } }),
+      async () => Response.json({ models: [] }),
+      async () => { throw new Error("network failed"); },
+    ]) {
+      expect(fetchProfileModels(request)).rejects.toThrow();
+    }
   });
 
   test("Claude profile Sonnet command UI is opt-in, local-only, and clipboard-safe", () => {
