@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,8 +48,12 @@ function validatedTarget(candidate: string, repositoryRoot: string): string {
   if (!withinTests || !absolute.endsWith(".test.ts")) {
     throw new VerificationInputError(`target must be a tests/*.test.ts file: ${candidate}`);
   }
-  if (!existsSync(absolute) || !statSync(absolute).isFile()) {
+  if (!existsSync(absolute)) {
     throw new VerificationInputError(`target test does not exist: ${candidate}`);
+  }
+  const targetStat = lstatSync(absolute);
+  if (!targetStat.isFile() || targetStat.isSymbolicLink()) {
+    throw new VerificationInputError(`target test is not a regular file: ${candidate}`);
   }
 
   return relative(repositoryRoot, absolute).split(sep).join("/");
@@ -117,6 +121,24 @@ function installGuiDependencies(): void {
   runBun(["install", "--frozen-lockfile", "--cwd", "gui"]);
 }
 
+export function trackedRegressionTargets(repositoryRoot = REPOSITORY_ROOT): string[] {
+  const result = spawnSync("git", ["ls-files", "-z", "--", "tests"], {
+    cwd: repositoryRoot,
+    env: process.env,
+    encoding: "utf8",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`could not enumerate tracked regression tests: ${result.stderr.trim()}`);
+  }
+  const targets = result.stdout
+    .split("\0")
+    .filter((candidate) => candidate.endsWith(".test.ts"))
+    .map((candidate) => validatedTarget(candidate, repositoryRoot));
+  if (targets.length === 0) throw new Error("no tracked regression tests found");
+  return targets;
+}
+
 function verifyTarget(targets: readonly string[]): void {
   installRootDependencies();
   runBun(["run", "typecheck"]);
@@ -127,6 +149,7 @@ function verifyRegression(): void {
   installRootDependencies();
   installGuiDependencies();
   runBun(["run", "typecheck"]);
+  runBun(["test", "--isolate", ...trackedRegressionTargets()]);
   runBun(["test", "--isolate", "./tests"]);
 }
 
