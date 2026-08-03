@@ -2507,22 +2507,28 @@ function anthropicForwardProvider(config: FrogConfig): [string, FrogProviderConf
 }
 
 function rawForwardCatalogModel(providerName: string, provider: FrogProviderConfig, id: string): CatalogModel {
-  const normalizedMetadataProvider = provider.baseUrl.endsWith("/v1/")
-    ? { ...provider, baseUrl: provider.baseUrl.slice(0, -1) }
-    : provider;
-  const metadataContextWindow = isAllowedClaudeGrantBaseUrl(normalizedMetadataProvider)
-    ? getJawcodeModelMetadata("anthropic", id)?.contextWindow
-    : undefined;
   return {
     id,
     provider: providerName,
     owned_by: provider.adapter,
-    ...(metadataContextWindow !== undefined ? { contextWindow: metadataContextWindow } : {}),
   };
 }
 
-function forwardCatalogModel(providerName: string, provider: FrogProviderConfig, id: string): CatalogModel {
-  return applyProviderConfigHints(providerName, provider, rawForwardCatalogModel(providerName, provider, id));
+function forwardCatalogModel(providerName: string, provider: FrogProviderConfig, model: CatalogModel): CatalogModel {
+  const rawModel = { ...model };
+  delete rawModel.contextWindow;
+  const normalizedMetadataProvider = provider.baseUrl.endsWith("/v1/")
+    ? { ...provider, baseUrl: provider.baseUrl.slice(0, -1) }
+    : provider;
+  const metadataContextWindow = isAllowedClaudeGrantBaseUrl(normalizedMetadataProvider)
+    ? getJawcodeModelMetadata("anthropic", model.id)?.contextWindow
+    : undefined;
+  return applyProviderConfigHints(providerName, provider, {
+    ...rawModel,
+    provider: providerName,
+    owned_by: provider.adapter,
+    ...(metadataContextWindow !== undefined ? { contextWindow: metadataContextWindow } : {}),
+  });
 }
 
 function parseAnthropicModelList(providerName: string, provider: FrogProviderConfig, json: unknown): CatalogModel[] {
@@ -2548,14 +2554,17 @@ function configuredForwardCatalogModels(config: FrogConfig): CatalogModel[] {
     for (const model of provider.models ?? []) {
       if (model.trim()) ids.add(model.trim());
     }
-    for (const id of ids) out.push(forwardCatalogModel(providerName, provider, id));
+    for (const id of ids) {
+      const rawModel = rawForwardCatalogModel(providerName, provider, id);
+      out.push(forwardCatalogModel(providerName, provider, rawModel));
+    }
   }
   return out;
 }
 
 
 function applyForwardProfileConfig(providerName: string, provider: FrogProviderConfig, models: CatalogModel[]): CatalogModel[] {
-  return models.map(model => applyProviderConfigHints(providerName, provider, { ...model, provider: providerName }));
+  return models.map(model => forwardCatalogModel(providerName, provider, model));
 }
 
 async function fetchAnthropicProfileModels(config: FrogConfig, profileId: string | undefined, headers?: Headers): Promise<CatalogModel[]> {

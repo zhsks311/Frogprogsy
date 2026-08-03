@@ -588,6 +588,40 @@ describe("Claude Code home management API", () => {
     expect(fetchCalls).toBe(1);
   });
 
+  test("pass-through Anthropic model cache recomputes generated metadata from the current base URL", async () => {
+    const cfg = config();
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response(JSON.stringify({ data: [{ id: "claude-sonnet-4-6" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const headers = new Headers({ authorization: "Bearer subscription-token" });
+
+    const official = await __requestLogTest.effectiveModelView(cfg, {
+      profileId: "cp_metadata_source",
+      headers,
+    });
+    expect(official.models.find(model => model.provider === "anthropic" && model.id === "claude-sonnet-4-6")?.contextWindow).toBe(200_000);
+
+    cfg.providers.anthropic!.baseUrl = "https://anthropic-compatible.example/v1";
+    const compatible = await __requestLogTest.effectiveModelView(cfg, {
+      profileId: "cp_metadata_source",
+      headers,
+    });
+    expect(compatible.models.find(model => model.provider === "anthropic" && model.id === "claude-sonnet-4-6")?.contextWindow).toBeUndefined();
+
+    cfg.modelCacheTtlMs = 0;
+    cfg.providers.anthropic!.baseUrl = "https://api.anthropic.com/v1/";
+    const staleOfficial = await __requestLogTest.effectiveModelView(cfg, {
+      profileId: "cp_metadata_source",
+    });
+    expect(staleOfficial.models.find(model => model.provider === "anthropic" && model.id === "claude-sonnet-4-6")?.contextWindow).toBe(200_000);
+    expect(fetchCalls).toBe(1);
+  });
+
   test("data-plane routing rejects a globally hidden model for the selected profile", async () => {
     const cfg = config();
     cfg.disabledModels = ["test/alpha"];
