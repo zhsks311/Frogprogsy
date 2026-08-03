@@ -47,6 +47,21 @@ describe("zsh account-shortcut setup", () => {
     }
   });
 
+  test("adds an active block when the shortcut path appears only in a comment", () => {
+    const { root, rcPath, binDir } = fixture();
+    try {
+      writeFileSync(rcPath, `#${zshManualPathLine()}\n`, "utf8");
+      const result = configureZshAccountShortcuts({ rcPath, binDir });
+      const content = readFileSync(rcPath, "utf8");
+
+      expect(result.state).toBe("configured");
+      expect(content).toContain(`#${zshManualPathLine()}`);
+      expect(content).toContain(`\n${zshManualPathLine()}\n`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("refuses symlink rc files and edited marker blocks", () => {
     const { root, rcPath, binDir } = fixture();
     try {

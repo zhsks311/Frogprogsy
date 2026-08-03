@@ -45,8 +45,11 @@ function hash(content: string): string {
 }
 
 function containsShortcutPath(content: string, binDir: string): boolean {
-  const normalized = content.replaceAll("${HOME}", "$HOME");
-  return normalized.includes("$HOME/.frogprogsy/bin") || normalized.includes(binDir);
+  return content.split(/\r?\n/).some(line => {
+    if (line.trimStart().startsWith("#")) return false;
+    const normalized = line.replaceAll("${HOME}", "$HOME");
+    return normalized.includes("$HOME/.frogprogsy/bin") || normalized.includes(binDir);
+  });
 }
 
 function ownedBlock(eol: string): string {
