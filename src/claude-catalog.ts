@@ -359,7 +359,7 @@ function configuredInputModalities(prov: FrogProviderConfig, id: string): string
   return capabilities?.input && capabilities.input.length > 0 ? [...capabilities.input] : undefined;
 }
 
-function applyProviderConfigHints(name: string, prov: FrogProviderConfig, model: CatalogModel): CatalogModel {
+export function applyProviderConfigHints(name: string, prov: FrogProviderConfig, model: CatalogModel): CatalogModel {
   void name;
   const contextCap = configuredContextWindow(prov, model.id);
   const inputModalities = configuredInputModalities(prov, model.id);
