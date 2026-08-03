@@ -2506,16 +2506,23 @@ function anthropicForwardProvider(config: FrogConfig): [string, FrogProviderConf
   }) ?? null;
 }
 
-function forwardCatalogModel(providerName: string, provider: FrogProviderConfig, id: string): CatalogModel {
-  const metadataContextWindow = isAllowedClaudeGrantBaseUrl(provider)
+function rawForwardCatalogModel(providerName: string, provider: FrogProviderConfig, id: string): CatalogModel {
+  const normalizedMetadataProvider = provider.baseUrl.endsWith("/v1/")
+    ? { ...provider, baseUrl: provider.baseUrl.slice(0, -1) }
+    : provider;
+  const metadataContextWindow = isAllowedClaudeGrantBaseUrl(normalizedMetadataProvider)
     ? getJawcodeModelMetadata("anthropic", id)?.contextWindow
     : undefined;
-  return applyProviderConfigHints(providerName, provider, {
+  return {
     id,
     provider: providerName,
     owned_by: provider.adapter,
     ...(metadataContextWindow !== undefined ? { contextWindow: metadataContextWindow } : {}),
-  });
+  };
+}
+
+function forwardCatalogModel(providerName: string, provider: FrogProviderConfig, id: string): CatalogModel {
+  return applyProviderConfigHints(providerName, provider, rawForwardCatalogModel(providerName, provider, id));
 }
 
 function parseAnthropicModelList(providerName: string, provider: FrogProviderConfig, json: unknown): CatalogModel[] {
@@ -2528,7 +2535,7 @@ function parseAnthropicModelList(providerName: string, provider: FrogProviderCon
     if (!item || typeof item !== "object") continue;
     const id = (item as { id?: unknown }).id;
     if (typeof id !== "string" || !id.trim()) continue;
-    out.push(forwardCatalogModel(providerName, provider, id.trim()));
+    out.push(rawForwardCatalogModel(providerName, provider, id.trim()));
   }
   return out;
 }
@@ -2547,12 +2554,20 @@ function configuredForwardCatalogModels(config: FrogConfig): CatalogModel[] {
 }
 
 
+function applyForwardProfileConfig(providerName: string, provider: FrogProviderConfig, models: CatalogModel[]): CatalogModel[] {
+  return models.map(model => applyProviderConfigHints(providerName, provider, { ...model, provider: providerName }));
+}
+
 async function fetchAnthropicProfileModels(config: FrogConfig, profileId: string | undefined, headers?: Headers): Promise<CatalogModel[]> {
   if (!profileId) return [];
+  const providerEntry = anthropicForwardProvider(config);
+  if (!providerEntry) return [];
+  const [providerName, provider] = providerEntry;
+  const applyCurrentConfig = (models: CatalogModel[]): CatalogModel[] => applyForwardProfileConfig(providerName, provider, models);
   const cacheKey = profileModelsCacheKey(profileId);
   const ttlMs = config.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS;
   const fresh = getFreshCached(cacheKey, ttlMs);
-  if (fresh) return fresh;
+  if (fresh) return applyCurrentConfig(fresh);
 
   const forwardedAuthorization = headers?.get("authorization")?.trim();
   const forwardedApiKey = headers?.get("x-api-key")?.trim();
@@ -2562,11 +2577,8 @@ async function fetchAnthropicProfileModels(config: FrogConfig, profileId: string
       ? { name: "Authorization", value: forwardedAuthorization! }
       : null;
 
-  if (!authHeader) return getStaleCached(cacheKey) ?? [];
+  if (!authHeader) return applyCurrentConfig(getStaleCached(cacheKey) ?? []);
 
-  const providerEntry = anthropicForwardProvider(config);
-  if (!providerEntry) return getStaleCached(cacheKey) ?? [];
-  const [providerName, provider] = providerEntry;
   const base = provider.baseUrl.replace(/\/v1\/?$/, "").replace(/\/$/, "");
   const requestHeaders: Record<string, string> = {
     ...(provider.headers ?? {}),
@@ -2580,13 +2592,13 @@ async function fetchAnthropicProfileModels(config: FrogConfig, profileId: string
     const res = await fetch(`${base}/v1/models?limit=1000`, { headers: requestHeaders, signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) updateClaudeProfileAuthState(config, profileId, "oauth_rejected");
-      return getStaleCached(cacheKey) ?? [];
+      return applyCurrentConfig(getStaleCached(cacheKey) ?? []);
     }
     const models = parseAnthropicModelList(providerName, provider, await res.json());
     setCached(cacheKey, models);
-    return models;
+    return applyCurrentConfig(models);
   } catch {
-    return getStaleCached(cacheKey) ?? [];
+    return applyCurrentConfig(getStaleCached(cacheKey) ?? []);
   }
 }
 
