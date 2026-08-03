@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { assertPublicHttpUrl, buildNoKeyQueryVariants, canonicalSearchUrl, planNoKeySearch, rrfFuse, runNoKeySearch } from "../src/web-search-fallback/no-key";
 
+const publicDnsLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+
 describe("no-key web search fallback", () => {
   test("canonicalizes URLs, fuses duplicate rankings, and blocks private URLs", async () => {
     expect(canonicalSearchUrl("https://Example.com/path?utm_source=x&b=2&a=1#frag")).toBe("https://example.com/path?a=1&b=2");
@@ -53,7 +55,7 @@ describe("no-key web search fallback", () => {
       return new Response("direct page", { status: 200, headers: { "content-type": "text/plain" } });
     }) as typeof fetch;
     try {
-      const outcome = await runNoKeySearch("frog search", { enabled: true, maxResults: 4, timeoutMs: 5000 });
+      const outcome = await runNoKeySearch("frog search", { enabled: true, maxResults: 4, timeoutMs: 5000 }, undefined, { lookup: publicDnsLookup });
 
       expect(requestedHosts).toEqual(expect.arrayContaining(["api.duckduckgo.com", "registry.npmjs.org", "api.github.com", "export.arxiv.org"]));
       expect(outcome.error).toBeUndefined();
@@ -78,7 +80,7 @@ describe("no-key web search fallback", () => {
       return new Response("", { status: 404 });
     }) as typeof fetch;
     try {
-      const outcome = await runNoKeySearch("frog search", { enabled: true, maxResults: 4, timeoutMs: 5000 });
+      const outcome = await runNoKeySearch("frog search", { enabled: true, maxResults: 4, timeoutMs: 5000 }, undefined, { lookup: publicDnsLookup });
       expect(outcome.error).toBeUndefined();
       expect(outcome.sources.map(source => source.url)).toContain("https://example.com/ddg");
       expect(outcome.answer).toContain("DDG abstract");
@@ -102,7 +104,7 @@ describe("no-key web search fallback", () => {
       return new Response("", { status: 404 });
     }) as typeof fetch;
     try {
-      const outcome = await runNoKeySearch("github repo private candidate", { enabled: true, maxResults: 4, timeoutMs: 5000 });
+      const outcome = await runNoKeySearch("github repo private candidate", { enabled: true, maxResults: 4, timeoutMs: 5000 }, undefined, { lookup: publicDnsLookup });
       expect(outcome.sources).toEqual([]);
       expect(outcome.answer).toBe("");
     } finally {

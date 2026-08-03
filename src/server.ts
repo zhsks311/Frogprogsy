@@ -33,7 +33,7 @@ import { buildWebSearchTool, planWebSearch, resolveWebSearchLadderPlan, runWithW
 import type { WebSearchUnavailablePlan } from "./web-search-fallback";
 import { runWebSearch, type WebSearchFallbackOutcome } from "./web-search-fallback/executor";
 import { runSearchApi, type SearchApiOutcome } from "./web-search-fallback/search-api";
-import { runNoKeySearch } from "./web-search-fallback/no-key";
+import { runNoKeySearch, type PublicDnsLookup } from "./web-search-fallback/no-key";
 import { decideImageFallback, describeImagesInPlace } from "./image-fallback";
 import { removeCredential } from "./oauth/store";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
@@ -708,7 +708,7 @@ async function handleMessages(
   req: Request,
   config: FrogConfig,
   logCtx: RequestLogContext,
-  options: { abortSignal?: AbortSignal; profileId?: string } = {},
+  options: { abortSignal?: AbortSignal; profileId?: string; noKeyDnsLookup?: PublicDnsLookup } = {},
 ): Promise<Response> {
   const parseStarted = Date.now();
   let body: unknown;
@@ -883,7 +883,7 @@ async function handleMessages(
         ? await runWebSearch(query, webSearchPlan.hostedTool, webSearchPlan.forwardProvider, webSearchPlan.forwardProviderName, req.headers, webSearchPlan.settings, options.abortSignal)
         : webSearchPlan.tier === "search_api"
           ? await runSearchApi(query, webSearchPlan.apiProvider, options.abortSignal)
-          : await runNoKeySearch(query, config.webSearchFallback?.noKey, options.abortSignal);
+          : await runNoKeySearch(query, config.webSearchFallback?.noKey, options.abortSignal, { lookup: options.noKeyDnsLookup });
       const evidence = buildWebSearchEvidencePacket(outcome);
       const ok = !evidence.insufficient;
       logCtx.entry.fallbacks = {
