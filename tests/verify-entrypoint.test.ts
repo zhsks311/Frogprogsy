@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   DEFAULT_TARGETS,
   parseVerificationRequest,
+  trackedRegressionTargets,
   VerificationInputError,
 } from "../scripts/verify";
 
@@ -26,6 +27,13 @@ describe("shared verification entrypoint", () => {
       mode: "target",
       targets: ["tests/messages-bridge.test.ts", "tests/error-fidelity.test.ts"],
     });
+  });
+
+  test("enumerates the immutable tracked regression oracle without directory discovery", () => {
+    const targets = trackedRegressionTargets(repositoryRoot);
+    expect(targets.length).toBeGreaterThan(100);
+    expect(targets).toContain("tests/verify-entrypoint.test.ts");
+    expect(targets.every((target) => target.endsWith(".test.ts"))).toBe(true);
   });
 
   test("rejects command options, traversal, non-tests, and missing tests", () => {
