@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { pageToHash, parsePageHash, shouldPushPageHash } from "../gui/src/hash-routing";
+import { fetchProfileModels, sonnetModelCandidates, sonnetModelCommand } from "../gui/src/pages/ClaudeProfiles";
 
 function read(path: string): string {
   return readFileSync(path, "utf8");
@@ -83,6 +84,118 @@ describe("GUI interaction stability", () => {
       expect(source).toContain("models.visibilityAutoSave");
       expect(source).toContain("models.priorityManualSave");
       expect(source).toContain("models.priorityNoChanges");
+    }
+  });
+
+  test("Claude profile Sonnet candidates stay explicit, usable, and namespaced", () => {
+    const models = [
+      { provider: "zeta", id: "Claude-SONNET-4", namespaced: "zeta/Claude-SONNET-4" },
+      { provider: "alpha", id: "sonnet-latest", namespaced: "alpha/sonnet-latest", authReady: true },
+      { provider: "alpha", id: "sonnet-disabled", namespaced: "alpha/sonnet-disabled", disabled: true },
+      { provider: "alpha", id: "sonnet-login-required", namespaced: "alpha/sonnet-login-required", authReady: false },
+      { provider: "alpha", id: "opus", namespaced: "alpha/opus" },
+      { provider: "alpha", id: "sonnet-empty", namespaced: "   " },
+    ];
+
+    const candidates = sonnetModelCandidates(models);
+
+    expect(candidates.map(model => model.namespaced)).toEqual([
+      "alpha/sonnet-latest",
+      "zeta/Claude-SONNET-4",
+    ]);
+    expect(sonnetModelCommand(candidates[1]!.namespaced)).toBe("/model zeta/Claude-SONNET-4");
+  });
+
+  test("Claude profile model loading rejects request failures instead of reporting an empty result", async () => {
+    expect(await fetchProfileModels(async () => Response.json([]))).toEqual([]);
+
+    for (const request of [
+      async () => new Response("upstream failed", { status: 503 }),
+      async () => new Response("not json", { headers: { "Content-Type": "application/json" } }),
+      async () => Response.json({ models: [] }),
+      async () => { throw new Error("network failed"); },
+    ]) {
+      expect(fetchProfileModels(request)).rejects.toThrow();
+    }
+  });
+
+  test("Claude profile Sonnet command UI is opt-in, local-only, and clipboard-safe", () => {
+    const profiles = read("gui/src/pages/ClaudeProfiles.tsx");
+    const copyStart = profiles.indexOf("const copySonnetCommand");
+    const copyEnd = profiles.indexOf("\n  };", copyStart);
+    const copyHandler = profiles.slice(copyStart, copyEnd);
+    const sonnetUiStart = profiles.indexOf("{selected.routeAutoModeClassifier === true && (");
+    const sonnetUiEnd = profiles.indexOf("\n            )}", sonnetUiStart);
+    const sonnetUi = profiles.slice(sonnetUiStart, sonnetUiEnd);
+    // Region-scoped (not exact-format) so reformatting the effect cannot fail a test that guards
+    // behavior: switching Claude homes must drop the previous home's models and Sonnet selection.
+    const switchEffectEnd = profiles.indexOf("[selected?.id]);");
+    const switchEffectStart = profiles.lastIndexOf("useEffect(", switchEffectEnd);
+    const switchEffect = profiles.slice(switchEffectStart, switchEffectEnd);
+
+    expect(profiles).toContain("authReady?: boolean");
+    expect(profiles).toContain('const [selectedSonnet, setSelectedSonnet] = useState("")');
+    expect(switchEffectStart).toBeGreaterThan(-1);
+    expect(switchEffectEnd).toBeGreaterThan(switchEffectStart);
+    expect(switchEffect).toContain("setModels([])");
+    expect(switchEffect).toContain('setSelectedSonnet("")');
+    expect(switchEffect).toContain('setSonnetCopyState("idle")');
+    expect(switchEffect).toContain("loadProfileDetails(selected)");
+    // Turning routing off and on again must not resurrect the previous command's copy result.
+    const toggleEnd = profiles.indexOf("routeAutoModeClassifier: !selected.routeAutoModeClassifier");
+    const toggleStart = profiles.lastIndexOf("onClick={() => {", toggleEnd);
+    const toggleHandler = profiles.slice(toggleStart, toggleEnd);
+    expect(toggleStart).toBeGreaterThan(-1);
+    expect(toggleHandler).toContain('setSelectedSonnet("")');
+    expect(toggleHandler).toContain('setSonnetCopyState("idle")');
+    expect(profiles).toContain("const requestId = ++modelRequestId.current");
+    expect(profiles).toContain("if (requestId !== modelRequestId.current) return");
+    expect(profiles).not.toContain("setSelectedSonnet(sonnetCandidates[0]");
+
+    expect(sonnetUiStart).toBeGreaterThan(-1);
+    expect(sonnetUiEnd).toBeGreaterThan(sonnetUiStart);
+    // Upper bound: a reformat that breaks the region markers must fail here, not silently widen the
+    // slice until the negative assertions below stop meaning anything. Sized to catch a runaway
+    // file-scale slice (~49k chars), NOT to cap ordinary growth of this block (~3k).
+    expect(sonnetUi.length).toBeLessThan(12000);
+    // Loading and empty are distinct states: the "no Sonnet model" guidance must not claim a home has
+    // no usable model while its models are still loading.
+    expect(sonnetUi).toContain("modelsLoading ? (");
+    expect(sonnetUi.indexOf("modelsLoading ? (")).toBeLessThan(sonnetUi.indexOf("claudeProfiles.noSonnetModels"));
+    expect(sonnetUi).toContain('disabled={!sonnetCommand}');
+    expect(sonnetUi).toContain("{model.provider}/{model.id}");
+    expect(sonnetUi).toContain('<code className="text-anywhere">{sonnetCommand}</code>');
+    expect(sonnetUi).toContain('navigate("models", "model-visibility-row")');
+    expect(sonnetUi).not.toContain("fetch(");
+    expect(sonnetUi).not.toContain("patchSelected(");
+
+    expect(copyStart).toBeGreaterThan(-1);
+    expect(copyEnd).toBeGreaterThan(copyStart);
+    expect(copyHandler.length).toBeLessThan(600);
+    expect(copyHandler).toContain("if (!navigator.clipboard)");
+    expect(copyHandler).toContain("await navigator.clipboard.writeText(sonnetCommand)");
+    expect(copyHandler).toContain('setSonnetCopyState("copied")');
+    expect(copyHandler).toContain('setSonnetCopyState("failed")');
+    expect(copyHandler).not.toContain("fetch(");
+    expect(copyHandler).not.toContain("patchSelected(");
+
+    const keys = [
+      "claudeProfiles.sonnetPickerLabel",
+      "claudeProfiles.sonnetPickerPlaceholder",
+      "claudeProfiles.sonnetSessionHint",
+      "claudeProfiles.sonnetCommand",
+      "claudeProfiles.copySonnetCommand",
+      "claudeProfiles.sonnetCommandCopied",
+      "claudeProfiles.sonnetCommandCopyFailed",
+      "claudeProfiles.noSonnetModels",
+      "claudeProfiles.noSonnetModelsHint",
+    ];
+    for (const source of [
+      read("gui/src/i18n/en.ts"),
+      read("gui/src/i18n/ko.ts"),
+      read("gui/src/i18n/zh.ts"),
+    ]) {
+      for (const key of keys) expect(source).toContain(`"${key}"`);
     }
   });
 });

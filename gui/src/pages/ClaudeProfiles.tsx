@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { IconBot, IconCheck, IconPlus, IconTrash } from "../icons";
 import { useT, type TFn, type TKey } from "../i18n";
 import type { Navigate } from "../navigation";
@@ -26,7 +26,38 @@ interface ClaudeProfile {
   isDefault?: boolean;
 }
 
-interface ModelRow { provider: string; id: string; namespaced: string; disabled?: boolean }
+interface ModelRow {
+  provider: string;
+  id: string;
+  namespaced: string;
+  disabled?: boolean;
+  authReady?: boolean;
+}
+
+export async function fetchProfileModels(request: () => Promise<Response>): Promise<ModelRow[]> {
+  const response = await request();
+  if (!response.ok) throw new Error("models load failed");
+  const models: unknown = await response.json();
+  if (!Array.isArray(models)) throw new Error("invalid models response");
+  return models as ModelRow[];
+}
+
+export function sonnetModelCandidates(models: readonly ModelRow[]): ModelRow[] {
+  return models
+    .filter(model =>
+      model.disabled !== true
+      && model.authReady !== false
+      && model.id.toLowerCase().includes("sonnet")
+      && model.namespaced.trim().length > 0)
+    .sort((a, b) =>
+      a.provider.localeCompare(b.provider)
+      || a.id.localeCompare(b.id)
+      || a.namespaced.localeCompare(b.namespaced));
+}
+
+export function sonnetModelCommand(namespaced: string): string {
+  return `/model ${namespaced}`;
+}
 
 type ModelReloadStatus = "synced" | "partial" | "skipped" | "failed" | "unknown" | "proxy_down";
 type GitProtectionState = "tracked" | "ignored" | "excluded" | "untracked" | "not_git" | "unwritable" | "unknown";
@@ -160,8 +191,18 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   const [grants, setGrants] = useState<ClaudeGrantSummary[]>([]);
   const [realClaude, setRealClaude] = useState<RealClaudeInfo | undefined>();
   const [grantsFailed, setGrantsFailed] = useState(false);
+  const [selectedSonnet, setSelectedSonnet] = useState("");
+  const [sonnetCopyState, setSonnetCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  // Keeps loading and request failure separate from a successfully loaded home with no usable Sonnet model.
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsLoadFailedFor, setModelsLoadFailedFor] = useState<string | null>(null);
+  const modelRequestId = useRef(0);
 
   const selected = useMemo(() => profiles.find(profile => profile.id === selectedId) ?? profiles[0], [profiles, selectedId]);
+  const modelsLoadFailed = modelsLoadFailedFor === selected?.id;
+  const sonnetCandidates = useMemo(() => sonnetModelCandidates(models), [models]);
+  const selectedSonnetModel = sonnetCandidates.find(model => model.namespaced === selectedSonnet);
+  const sonnetCommand = selectedSonnetModel ? sonnetModelCommand(selectedSonnetModel.namespaced) : "";
   const runCommand = selected ? `frogp claude run ${JSON.stringify(selected.name)} --` : "frogp claude run <profile> --";
   const reloadCommand = selected ? `frogp claude reload-models ${selected.id}` : "frogp claude reload-models <profile-id>";
   const discoveryAuthMode: DiscoveryAuthMode = selected?.gateway?.discoveryAuth ?? (selected?.gateway?.modelDiscoveryReady ? "settings" : selected?.injected ? "launcher" : "direct");
@@ -190,11 +231,31 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   };
 
   const loadProfileDetails = async (profile: ClaudeProfile | undefined) => {
-    if (!profile) return;
-    const modelsRes = await fetch(`${apiBase}/api/models?profileId=${encodeURIComponent(profile.id)}`);
-    const modelRows = modelsRes.ok ? await modelsRes.json() as ModelRow[] : [];
-    setModels(Array.isArray(modelRows) ? modelRows : []);
+    const requestId = ++modelRequestId.current;
+    // Still bumps the id so an in-flight load cannot write models for a no-longer-selected home, but
+    // must also release the flag — otherwise nothing left in flight can ever clear it.
+    if (!profile) {
+      setModelsLoading(false);
+      setModelsLoadFailedFor(null);
+      return;
+    }
     setRenameValue(profile.name);
+    setModelsLoadFailedFor(null);
+    setModelsLoading(true);
+    try {
+      const modelRows = await fetchProfileModels(
+        () => fetch(`${apiBase}/api/models?profileId=${encodeURIComponent(profile.id)}`),
+      );
+      if (requestId !== modelRequestId.current) return;
+      setModels(modelRows);
+    } catch {
+      if (requestId !== modelRequestId.current) return;
+      setModels([]);
+      setModelsLoadFailedFor(profile.id);
+    } finally {
+      // A superseded request must not clear the flag; the newest request still owns it.
+      if (requestId === modelRequestId.current) setModelsLoading(false);
+    }
   };
 
   const loadProjects = async (root = projectRoot) => {
@@ -241,7 +302,12 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   };
 
   useEffect(() => { void reload(); }, [apiBase]);
-  useEffect(() => { void loadProfileDetails(selected); }, [selected?.id]);
+  useEffect(() => {
+    setModels([]);
+    setSelectedSonnet("");
+    setSonnetCopyState("idle");
+    void loadProfileDetails(selected);
+  }, [selected?.id]);
 
   const addProfile = async () => {
     setBusy(true);
@@ -417,6 +483,17 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
     notify(t("claudeProfiles.copied"), true);
   };
 
+  const copySonnetCommand = async () => {
+    if (!sonnetCommand) return;
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(sonnetCommand);
+      setSonnetCopyState("copied");
+    } catch {
+      setSonnetCopyState("failed");
+    }
+  };
+
   if (loading) return <div className="row muted"><span className="spin" /> {t("common.loading")}</div>;
 
   return (
@@ -486,6 +563,7 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
             <div className="stat"><div className="muted">{t("claudeProfiles.discoveryAuth")}</div><div className="stat-value" style={{ fontSize: 16 }}>{t(discoveryAuthKey(discoveryAuthMode))}</div><div className="muted stat-caption">{t("claudeProfiles.discoveryAuthHint")}</div></div>
             <div className="stat"><div className="muted">{t("claudeProfiles.preview")}</div><div className="stat-value" style={{ fontSize: 16 }}>{models.filter(m => !m.disabled).length}</div><div className="muted stat-caption">{t("claudeProfiles.previewHint")}</div></div>
           </div>
+          {modelsLoadFailed && <Notice tone="err">{t("models.loadFail")}</Notice>}
 
           <div className="settings-grid" style={{ marginTop: 16 }}>
             <label><span>{t("claudeProfiles.rename")}</span><input className="input" value={renameValue} onChange={e => setRenameValue(e.target.value)} /></label>
@@ -503,15 +581,74 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
                 aria-label={t("claudeProfiles.autoModeClassifierTitle")}
                 aria-pressed={selected.routeAutoModeClassifier === true}
                 disabled={busy}
-                onClick={() => patchSelected(
-                  { routeAutoModeClassifier: !selected.routeAutoModeClassifier },
-                  t(selected.routeAutoModeClassifier ? "claudeProfiles.autoModeClassifierDisabled" : "claudeProfiles.autoModeClassifierEnabled"),
-                )}
+                onClick={() => {
+                  // Toggling routing invalidates the previous Sonnet command and its copy result.
+                  setSelectedSonnet("");
+                  setSonnetCopyState("idle");
+                  void patchSelected(
+                    { routeAutoModeClassifier: !selected.routeAutoModeClassifier },
+                    t(selected.routeAutoModeClassifier ? "claudeProfiles.autoModeClassifierDisabled" : "claudeProfiles.autoModeClassifierEnabled"),
+                  );
+                }}
               >
                 <span className="knob" />
               </button>
             </div>
-            <p className="muted" style={{ fontSize: 13, marginBottom: 0 }}>{t("claudeProfiles.autoModeClassifierCaveat")}</p>
+            {selected.routeAutoModeClassifier === true && (
+              <div style={{ marginTop: 12 }}>
+                <Notice tone="err">{t("claudeProfiles.autoModeClassifierCaveat")}</Notice>
+                {modelsLoading ? (
+                  <div className="row muted" style={{ marginTop: 12 }}><span className="spin" /> {t("common.loading")}</div>
+                ) : modelsLoadFailed ? null : sonnetCandidates.length > 0 ? (
+                  <>
+                    <div className="settings-grid" style={{ marginTop: 12 }}>
+                      <label>
+                        <span>{t("claudeProfiles.sonnetPickerLabel")}</span>
+                        <select
+                          className="input"
+                          value={selectedSonnet}
+                          onChange={event => {
+                            setSelectedSonnet(event.target.value);
+                            setSonnetCopyState("idle");
+                          }}
+                        >
+                          <option value="">{t("claudeProfiles.sonnetPickerPlaceholder")}</option>
+                          {sonnetCandidates.map(model => (
+                            <option key={model.namespaced} value={model.namespaced}>
+                              {model.provider}/{model.id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div style={{ alignSelf: "end" }}>
+                        <button className="btn btn-primary" type="button" onClick={copySonnetCommand} disabled={!sonnetCommand}>
+                          <IconCheck /> {t("claudeProfiles.copySonnetCommand")}
+                        </button>
+                      </div>
+                    </div>
+                    <p className="muted" style={{ fontSize: 13 }}>{t("claudeProfiles.sonnetSessionHint")}</p>
+                    {sonnetCommand && (
+                      <div className="mini-list">
+                        <div>
+                          <span>{t("claudeProfiles.sonnetCommand")}</span>
+                          <code className="text-anywhere">{sonnetCommand}</code>
+                        </div>
+                      </div>
+                    )}
+                    {sonnetCopyState === "copied" && <Notice tone="ok">{t("claudeProfiles.sonnetCommandCopied")}</Notice>}
+                    {sonnetCopyState === "failed" && <Notice tone="err">{t("claudeProfiles.sonnetCommandCopyFailed")}</Notice>}
+                  </>
+                ) : (
+                  <div style={{ marginTop: 12 }}>
+                    <p style={{ fontWeight: 650, marginBottom: 4 }}>{t("claudeProfiles.noSonnetModels")}</p>
+                    <p className="muted" style={{ fontSize: 13 }}>{t("claudeProfiles.noSonnetModelsHint")}</p>
+                    <button className="btn btn-primary btn-sm" type="button" onClick={() => navigate("models", "model-visibility-row")}>
+                      {t("claudeProfiles.openModelPicker")}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </section>
 
           <section className="panel-soft" style={{ marginTop: 16 }}>
