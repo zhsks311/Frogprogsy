@@ -2132,11 +2132,56 @@ function isLoopbackHostname(hostname: string): boolean {
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
 }
 
+/** True for the loopback interface, including IPv4-mapped IPv6 peers. `undefined` means an in-process
+ *  call (no socket), which is loopback by construction. */
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (address === undefined) return true;
+  const normalized = address.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/^::ffff:/, "");
+  if (normalized === "::1" || normalized === "localhost") return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized);
+}
+
+/**
+ * Local-only guard for management/state-changing requests.
+ *
+ * A browser Origin must be loopback. A missing Origin (non-browser client) requires BOTH a loopback
+ * peer socket and a loopback request Host: the host in `req.url` comes from the client-supplied Host
+ * header, so on its own it proves nothing about where the request came from.
+ */
+function isLocalRequest(req: Request, clientAddress?: string): boolean {
+  const origin = req.headers.get("Origin");
+  try {
+    if (!origin) return isLoopbackAddress(clientAddress) && isLoopbackHostname(new URL(req.url).hostname);
+    return isLoopbackHostname(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Browser-CSRF-only guard for the data plane: a real Origin must be loopback, and a request without
+ * an Origin is admitted. A deliberately exposed bind (Docker port publishing) relays for non-browser
+ * clients that never send one, so the peer address is intentionally not required here.
+ */
 function isLocalOrigin(req: Request): boolean {
   const origin = req.headers.get("Origin");
   try {
-    const url = new URL(origin || req.url);
-    return isLoopbackHostname(url.hostname);
+    return isLoopbackHostname(new URL(origin || req.url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reject a request whose Host is not the loopback interface the relay is bound to, so a page on a
+ * hostname that resolves to 127.0.0.1 (DNS rebinding) cannot read the management API same-origin.
+ * A deliberate non-loopback bind is reachable under many legitimate Hosts, so the check applies only
+ * to loopback binds.
+ */
+function isAllowedRequestHost(req: Request, bindHostname: string): boolean {
+  if (!isLoopbackHostname(bindHostname)) return true;
+  try {
+    return isLoopbackHostname(new URL(req.url).hostname);
   } catch {
     return false;
   }
@@ -2146,6 +2191,8 @@ interface ManagementAPIDeps {
   saveConfig?: (config: FrogConfig) => void;
   /** Branch-B claude-grant management fixtures (keep the API off real network/Keychain/native homes in tests). */
   claudeGrants?: ClaudeGrantManagementDeps;
+  /** Peer address of the request socket. Omitted for in-process calls (tests, direct invocation). */
+  clientAddress?: string;
 }
 
 // ── Branch-B claude-grant management API: metadata / lifecycle / provider binding (fail-closed) ──
@@ -2650,7 +2697,7 @@ function noteClaudeProfileRequest(config: FrogConfig, profileId: string | undefi
 
 
 async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, deps: ManagementAPIDeps = {}): Promise<Response | null> {
-  if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && !isLocalOrigin(req)) {
+  if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && !isLocalRequest(req, deps.clientAddress)) {
     return jsonResponse({ error: "cross-origin request blocked" }, 403);
   }
   const persistConfig = deps.saveConfig ?? saveConfig;
@@ -2819,7 +2866,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     }
   }
 
-  if (url.pathname.startsWith("/api/claude-projects") && !isLocalOrigin(req)) {
+  if (url.pathname.startsWith("/api/claude-projects") && !isLocalRequest(req, deps.clientAddress)) {
     return jsonResponse({ error: "cross-origin request blocked" }, 403);
   }
 
@@ -3092,7 +3139,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
   }
 
   // ── Branch-B claude-grant management API (local-origin only; fail-closed; no credential/path leaks) ──
-  if (url.pathname.startsWith("/api/claude-grants") && !isLocalOrigin(req)) {
+  if (url.pathname.startsWith("/api/claude-grants") && !isLocalRequest(req, deps.clientAddress)) {
     return jsonResponse({ error: "cross-origin request blocked" }, 403);
   }
 
@@ -3864,25 +3911,40 @@ export function startServer(port?: number) {
       `Disable routeAutoModeClassifier or fix ${getConfigPath()}.`,
     );
   }
+  // `localAccess` describes per-key relay authentication (hashed secrets, request limits, provider /
+  // model scopes) that no request path enforces. Starting with it enabled would advertise protection
+  // the relay does not apply, so fail closed instead.
+  if (config.localAccess?.enabled === true) {
+    throw new Error(
+      `localAccess is not implemented: the relay applies no per-key authentication, request limit, or ` +
+      `provider/model scope. Remove localAccess.enabled from ${getConfigPath()} and keep the relay bound to loopback.`,
+    );
+  }
   const listenPort = port ?? config.port ?? DEFAULT_PORT;
   setCorsOrigin(listenPort);
+  const bindHostname = config.hostname ?? "127.0.0.1";
 
   const server = Bun.serve<WsData>({
     port: listenPort,
-    hostname: config.hostname ?? "127.0.0.1",
+    hostname: bindHostname,
     idleTimeout: 255,
-    async fetch(req) {
+    async fetch(req, srv) {
       const url = new URL(req.url);
+      const clientAddress = srv.requestIP(req)?.address;
 
       if (req.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: corsHeaders() });
+      }
+
+      if ((url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/")) && !isAllowedRequestHost(req, bindHostname)) {
+        return formatErrorResponse(403, "origin_rejected", "request Host is not the loopback interface this relay is bound to");
       }
 
       // Responses WebSocket is a Codex/OpenAI Responses-only behavior and is retired for the
       // Claude Messages data plane. Keep the old path explicit instead of silently inventing a
       // Claude Code WebSocket equivalent.
       if (url.pathname === "/v1/responses" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-        if (!isLocalOrigin(req)) {
+        if (!isLocalRequest(req, clientAddress)) {
           return formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin");
         }
         return formatErrorResponse(410, "unsupported_endpoint", "Responses WebSocket is retired; use POST /v1/messages streaming SSE.");
@@ -3893,7 +3955,7 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname.startsWith("/api/")) {
-        const mgmtResponse = await handleManagementAPI(req, url, config);
+        const mgmtResponse = await handleManagementAPI(req, url, config, { clientAddress });
         return mgmtResponse ?? jsonResponse({ error: `Unknown API endpoint: ${req.method} ${url.pathname}` }, 404);
       }
 
