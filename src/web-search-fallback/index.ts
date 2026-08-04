@@ -7,8 +7,7 @@ import type {
   FrogWebSearchSkipReason,
 } from "../types";
 import { resolveModelCapabilities, supportsImageInput, supportsNativeWebSearch } from "../model-capabilities";
-import { isOpenAIResponsesFallbackProvider } from "../fallback-openai-responses";
-import { isLocalAccessSecret } from "../local-access";
+import { findOpenAIResponsesFallbackProviderEntry, hasUsableForwardAuthorization } from "../fallback-openai-responses";
 import type { WebSearchFallbackSettings } from "./executor";
 import { resolveSearchApiProvider, type ResolvedSearchApiProvider } from "./search-api";
 import { resolveNoKeySettings, type NoKeySearchSettings } from "./no-key";
@@ -24,25 +23,8 @@ const DEFAULT_FALLBACK_REASONING = "low";
 const DEFAULT_MAX_SEARCHES = 3;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-function hasUsableForwardAuthorization(headers: Headers): boolean {
-  const value = headers.get("authorization")?.trim();
-  if (!value || isLocalAccessSecret(value)) return false;
-  return value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
-}
-
-/** Configured OpenAI Responses helper provider — forward-auth, OAuth, or API-key backed. */
-function findForwardProviderEntry(config: FrogConfig, preferredName?: string): { name: string; provider: FrogProviderConfig } | undefined {
-  if (preferredName && isOpenAIResponsesFallbackProvider(config.providers[preferredName])) {
-    return { name: preferredName, provider: config.providers[preferredName] };
-  }
-  for (const [name, prov] of Object.entries(config.providers)) {
-    if (isOpenAIResponsesFallbackProvider(prov)) return { name, provider: prov };
-  }
-  return undefined;
-}
-
 export function findForwardProvider(config: FrogConfig, preferredName?: string): FrogProviderConfig | undefined {
-  return findForwardProviderEntry(config, preferredName)?.provider;
+  return findOpenAIResponsesFallbackProviderEntry(config, preferredName)?.provider;
 }
 
 export interface WebSearchNativePlan {
@@ -188,7 +170,7 @@ export function resolveWebSearchLadderPlan(
   const cfg = config.webSearchFallback ?? {};
   const hostedTool = fallbackHostedTool(parsed, request);
   if (cfg.enabled === true) {
-    const forwardProviderEntry = findForwardProviderEntry(config, cfg.provider);
+    const forwardProviderEntry = findOpenAIResponsesFallbackProviderEntry(config, cfg.provider);
     if (!forwardProviderEntry) {
       skippedReasonCodes.push("fallback_model_provider_unavailable");
     } else if (forwardProviderEntry.provider.authMode === "forward" && !hasUsableForwardAuthorization(incomingHeaders)) {
