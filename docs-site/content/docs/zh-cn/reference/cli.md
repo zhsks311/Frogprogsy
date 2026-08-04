@@ -57,8 +57,8 @@ frogp --version
 | `frogp login <catalog-provider>` | config 或 OAuth store | 添加 provider registry 中的 API-key/OAuth/local provider。拼写接近时会输出 `Did you mean: frogp login <provider>?` 建议；OAuth 失败以 `Login failed for <provider>: <原因>` 加重试指引报告，而不是 raw 堆栈。 |
 | `frogp logout <provider>` | OAuth store | 删除该 provider 的已保存 OAuth credential。缺少参数或该 provider 未登录时会失败，并列出当前已保存的登录。它不是 API-key provider 删除命令。 |
 | `frogp local-key list` | 无 | 列出 relay access key（id、label、request limit）以及 relay 认证是否启用。不会输出 key 本身。|
-| `frogp local-key add <label> [--limit <maxRequests>/<windowSec>]` | config | 创建 relay access key、启用 `localAccess`，并一次性输出明文 key。config 只保留其 SHA-256 hash。需重启 proxy 生效。|
-| `frogp local-key remove <id-or-label>` | config | 删除一个 relay access key。删除最后一个 key 会关闭 relay 认证，此时非 loopback 的 `hostname` 将拒绝启动。|
+| `frogp local-key add <label> [--limit <maxRequests>/<windowSec>]` | config | 创建 relay access key、启用 `localAccess`，并一次性输出明文 key。config 只保留其 SHA-256 hash。需先停止 proxy：运行中的 proxy 会用启动时的快照重写 config，从而丢失新 key。|
+| `frogp local-key remove <id-or-label>` | config | 删除一个 relay access key（同样需先停止 proxy）。删除最后一个 key 会关闭 relay 认证，此时非 loopback 的 `hostname` 将拒绝启动。|
 
 Credential 位置与暴露规则：
 

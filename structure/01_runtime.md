@@ -53,6 +53,9 @@ Trust is per request, not per network position. `src/local-access.ts` owns relay
   (mode `0600`, `config.ts`), not with a configured key: reading it already implies access to the config
   directory that holds the provider credentials. The dashboard instead asks for a key and keeps it in
   sessionStorage, attached by a single `window.fetch` wrapper (`gui/src/local-key.ts`).
+- `frogp local-key add`/`remove` refuse while a healthy proxy is running: the server keeps the config it
+  loaded at start and rewrites the whole file on profile writes, which would drop the edit — and a created
+  key's plaintext is unrecoverable.
 - Per-key `providers`/`models` scopes exist in `LocalAccessKeyConfig` but no request path narrows a route
   to a key yet, so a key declaring them is rejected at startup instead of running unscoped.
 

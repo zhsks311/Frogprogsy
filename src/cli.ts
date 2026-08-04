@@ -1636,7 +1636,19 @@ function parseLocalKeyLimit(values: string[]): { windowSec: number; maxRequests:
   return { windowSec, maxRequests };
 }
 
-function handleLocalKeyCommand(values: string[]): void {
+/**
+ * A running proxy keeps the config it loaded at start and rewrites the whole file on profile writes, so a
+ * key added meanwhile is dropped — and its plaintext is unrecoverable. Refuse instead of racing it.
+ */
+async function requireStoppedProxyForKeyEdit(action: string): Promise<void> {
+  if (!readPid()) return;
+  if (!(await proxyHealthy(loadConfig().port))) return;
+  console.error(`❌ Stop the proxy before you ${action} a relay access key: frogp stop`);
+  console.error("   A running proxy rewrites the config from the snapshot it loaded at start, which would drop the change.");
+  process.exit(1);
+}
+
+async function handleLocalKeyCommand(values: string[]): Promise<void> {
   const config = loadConfig();
   const keys = config.localAccess?.keys ?? [];
   switch (values[0] ?? "list") {
@@ -1660,6 +1672,7 @@ function handleLocalKeyCommand(values: string[]): void {
         process.exit(1);
       }
       const requestLimit = parseLocalKeyLimit(values);
+      await requireStoppedProxyForKeyEdit("add");
       const secret = generateLocalAccessSecret();
       const id = `lk_${randomBytes(4).toString("hex")}`;
       config.localAccess = {
@@ -1673,7 +1686,7 @@ function handleLocalKeyCommand(values: string[]): void {
       console.log("");
       console.log("This is the only time the key is shown — the config stores only its SHA-256 hash.");
       console.log("Send it as x-frogp-local-key, x-api-key, or Authorization: Bearer. For Claude Code, set ANTHROPIC_AUTH_TOKEN to it.");
-      console.log("Relay authentication is now enabled; restart the proxy to apply: frogp stop && frogp start");
+      console.log("Relay authentication is now enabled; start the proxy to apply: frogp start");
       return;
     }
     case "remove": {
@@ -1683,6 +1696,7 @@ function handleLocalKeyCommand(values: string[]): void {
         console.error(`❌ Unknown relay access key: ${selector || "(missing)"}. List them with: frogp local-key list`);
         process.exit(1);
       }
+      await requireStoppedProxyForKeyEdit("remove");
       const remaining = keys.filter(key => key !== match);
       // Dropping the last key would silently unauthenticate the relay, and a non-loopback bind then
       // refuses to start. Disable authentication explicitly instead of leaving an empty enabled list.
@@ -1692,7 +1706,7 @@ function handleLocalKeyCommand(values: string[]): void {
       if (remaining.length === 0) {
         console.log("No keys remain, so relay authentication is now disabled. A non-loopback hostname will refuse to start.");
       }
-      console.log("Restart the proxy to apply: frogp stop && frogp start");
+      console.log("Start the proxy to apply: frogp start");
       return;
     }
     default:
@@ -1746,7 +1760,7 @@ switch (command) {
     await handleProvidersCommand(args.slice(1));
     break;
   case "local-key":
-    handleLocalKeyCommand(args.slice(1));
+    await handleLocalKeyCommand(args.slice(1));
     break;
   case "login": {
     const { handleLogin } = await import("./oauth/login-cli");
