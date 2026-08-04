@@ -555,7 +555,7 @@ describe("Claude Code home management API", () => {
     delete cfg.providers.anthropic;
     cfg.providers["anthropic-work"] = {
       adapter: "anthropic",
-      baseUrl: "https://api.anthropic.com",
+      baseUrl: "https://api.anthropic.com/v1/",
       authMode: "forward",
       models: ["claude-opus-4-8", "claude-sonnet-4-6"],
     };
@@ -564,6 +564,62 @@ describe("Claude Code home management API", () => {
 
     expect(view.models.find(model => model.provider === "anthropic-work" && model.id === "claude-opus-4-8")?.contextWindow).toBe(1_000_000);
     expect(view.models.find(model => model.provider === "anthropic-work" && model.id === "claude-sonnet-4-6")?.contextWindow).toBe(200_000);
+  });
+
+  test("pass-through Anthropic model cache reapplies the current context cap", async () => {
+    const cfg = config();
+    cfg.providers.anthropic!.contextWindow = 80_000;
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response(JSON.stringify({ data: [{ id: "claude-sonnet-4-6" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const headers = new Headers({ authorization: "Bearer subscription-token" });
+
+    const first = await __requestLogTest.effectiveModelView(cfg, { profileId: "cp_context_cap", headers });
+    expect(first.models.find(model => model.provider === "anthropic" && model.id === "claude-sonnet-4-6")?.contextWindow).toBe(80_000);
+
+    cfg.providers.anthropic!.contextWindow = 150_000;
+    const second = await __requestLogTest.effectiveModelView(cfg, { profileId: "cp_context_cap", headers });
+    expect(second.models.find(model => model.provider === "anthropic" && model.id === "claude-sonnet-4-6")?.contextWindow).toBe(150_000);
+    expect(fetchCalls).toBe(1);
+  });
+
+  test("pass-through Anthropic model cache recomputes generated metadata from the current base URL", async () => {
+    const cfg = config();
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response(JSON.stringify({ data: [{ id: "claude-sonnet-4-6" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const headers = new Headers({ authorization: "Bearer subscription-token" });
+
+    const official = await __requestLogTest.effectiveModelView(cfg, {
+      profileId: "cp_metadata_source",
+      headers,
+    });
+    expect(official.models.find(model => model.provider === "anthropic" && model.id === "claude-sonnet-4-6")?.contextWindow).toBe(200_000);
+
+    cfg.providers.anthropic!.baseUrl = "https://anthropic-compatible.example/v1";
+    const compatible = await __requestLogTest.effectiveModelView(cfg, {
+      profileId: "cp_metadata_source",
+      headers,
+    });
+    expect(compatible.models.find(model => model.provider === "anthropic" && model.id === "claude-sonnet-4-6")?.contextWindow).toBeUndefined();
+
+    cfg.modelCacheTtlMs = 0;
+    cfg.providers.anthropic!.baseUrl = "https://api.anthropic.com/v1/";
+    const staleOfficial = await __requestLogTest.effectiveModelView(cfg, {
+      profileId: "cp_metadata_source",
+    });
+    expect(staleOfficial.models.find(model => model.provider === "anthropic" && model.id === "claude-sonnet-4-6")?.contextWindow).toBe(200_000);
+    expect(fetchCalls).toBe(1);
   });
 
   test("data-plane routing rejects a globally hidden model for the selected profile", async () => {

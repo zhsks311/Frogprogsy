@@ -35,6 +35,15 @@ interface LimitedTextResponse {
   text: string;
 }
 
+export type PublicDnsLookup = (
+  hostname: string,
+  options: { all: true; verbatim: true },
+) => Promise<Array<{ address: string; family: number }>>;
+
+export interface NoKeySearchDependencies {
+  lookup?: PublicDnsLookup;
+}
+
 const DEFAULT_TIMEOUT_MS = 12_000;
 const DEFAULT_MAX_RESULTS = 6;
 const FETCH_BYTES = 80_000;
@@ -119,7 +128,7 @@ function isPrivateIp(ip: string): boolean {
   return false;
 }
 
-async function resolvePublicDns(host: string): Promise<PublicAddress[]> {
+async function resolvePublicDns(host: string, lookupFn: PublicDnsLookup = lookup): Promise<PublicAddress[]> {
   const normalized = normalizeHost(host);
   const literalFamily = isIP(normalized);
   if (literalFamily) {
@@ -127,18 +136,18 @@ async function resolvePublicDns(host: string): Promise<PublicAddress[]> {
     return [{ address: normalized, family: literalFamily as 4 | 6 }];
   }
   if (normalized === "localhost" || normalized.endsWith(".localhost") || normalized.endsWith(".local")) throw new Error("blocked local hostname");
-  const records = await lookup(normalized, { all: true, verbatim: true });
+  const records = await lookupFn(normalized, { all: true, verbatim: true });
   if (records.length === 0) throw new Error("hostname has no DNS records");
   const publicRecords = records.filter(record => !isPrivateIp(record.address));
   if (publicRecords.length !== records.length) throw new Error("blocked private DNS address");
   return publicRecords.map(record => ({ address: record.address, family: record.family as 4 | 6 }));
 }
 
-export async function assertPublicHttpUrl(raw: string): Promise<URL> {
+export async function assertPublicHttpUrl(raw: string, lookupFn: PublicDnsLookup = lookup): Promise<URL> {
   const canonical = canonicalSearchUrl(raw);
   if (!canonical) throw new Error("unsupported URL scheme");
   const url = new URL(canonical);
-  await resolvePublicDns(url.hostname);
+  await resolvePublicDns(url.hostname, lookupFn);
   return url;
 }
 
@@ -201,7 +210,12 @@ export function rrfFuse(lists: Candidate[][], limit: number): Candidate[] {
     .slice(0, limit);
 }
 
-export async function runNoKeySearch(query: string, cfg: FrogNoKeyWebSearchConfig | undefined, abortSignal?: AbortSignal): Promise<SearchApiOutcome> {
+export async function runNoKeySearch(
+  query: string,
+  cfg: FrogNoKeyWebSearchConfig | undefined,
+  abortSignal?: AbortSignal,
+  dependencies: NoKeySearchDependencies = {},
+): Promise<SearchApiOutcome> {
   const settings = resolveNoKeySettings(cfg);
   const linked = signalWithTimeout(settings.timeoutMs, abortSignal);
   try {
@@ -212,7 +226,7 @@ export async function runNoKeySearch(query: string, cfg: FrogNoKeyWebSearchConfi
     const settled = await Promise.allSettled(jobs);
     const lists = settled.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
     const fused = rrfFuse(lists, settings.maxResults);
-    const sources = await enrichSources(fused.slice(0, settings.maxResults), linked.signal);
+    const sources = await enrichSources(fused.slice(0, settings.maxResults), linked.signal, dependencies.lookup ?? lookup);
     return { provider: "no-key", answer: answerFromSources(query, sources), sources };
   } catch (err) {
     return { provider: "no-key", answer: "", sources: [], error: err instanceof Error ? err.message : String(err) };
@@ -299,8 +313,8 @@ function cleanXml(text: string): string {
   return text.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
 }
 
-async function fetchPublicText(url: URL, signal: AbortSignal, limit: number): Promise<LimitedTextResponse> {
-  const [pinned] = await resolvePublicDns(url.hostname);
+async function fetchPublicText(url: URL, signal: AbortSignal, limit: number, lookupFn: PublicDnsLookup): Promise<LimitedTextResponse> {
+  const [pinned] = await resolvePublicDns(url.hostname, lookupFn);
   const request = url.protocol === "https:" ? httpsRequest : httpRequest;
   return await new Promise((resolve, reject) => {
     let settled = false;
@@ -356,12 +370,12 @@ async function fetchPublicText(url: URL, signal: AbortSignal, limit: number): Pr
   });
 }
 
-async function enrichSources(sources: Candidate[], signal: AbortSignal): Promise<NormalizedSearchApiSource[]> {
+async function enrichSources(sources: Candidate[], signal: AbortSignal, lookupFn: PublicDnsLookup): Promise<NormalizedSearchApiSource[]> {
   const out: NormalizedSearchApiSource[] = [];
   for (const source of sources) {
     let url: URL;
     try {
-      url = await assertPublicHttpUrl(source.url);
+      url = await assertPublicHttpUrl(source.url, lookupFn);
     } catch {
       continue;
     }
@@ -370,9 +384,9 @@ async function enrichSources(sources: Candidate[], signal: AbortSignal): Promise
       continue;
     }
     try {
-      const response = await fetchPublicText(url, signal, FETCH_BYTES);
+      const response = await fetchPublicText(url, signal, FETCH_BYTES, lookupFn);
       if (response.status >= 300 && response.status < 400) {
-        if (response.location) await assertPublicHttpUrl(new URL(response.location, url).toString());
+        if (response.location) await assertPublicHttpUrl(new URL(response.location, url).toString(), lookupFn);
         out.push(source);
         continue;
       }

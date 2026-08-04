@@ -5,6 +5,8 @@ import { planWebSearch, resolveWebSearchLadderPlan } from "../src/web-search-fal
 import { __requestLogTest } from "../src/server";
 import type { FrogConfig, FrogProviderConfig } from "../src/types";
 
+const publicDnsLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+
 const anthropicNativeProvider: FrogProviderConfig = {
   adapter: "anthropic",
   baseUrl: "https://api.anthropic.test",
@@ -468,7 +470,7 @@ describe("web_search ladder resolver", () => {
           messages: [{ role: "user", content: "Search current docs" }],
           tools: [{ type: "web_search_20250305", name: "web_search" }],
         }),
-      }), cfg, logCtx, {});
+      }), cfg, logCtx, { noKeyDnsLookup: publicDnsLookup });
       const body = await res.json() as Record<string, unknown>;
       const content = body.content as Array<Record<string, unknown>>;
 

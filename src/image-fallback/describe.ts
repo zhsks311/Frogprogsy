@@ -1,5 +1,5 @@
 import type { FrogProviderConfig } from "../types";
-import { buildOpenAIResponsesFallbackFetch, resolveOpenAIResponsesFallbackProvider } from "../fallback-openai-responses";
+import { postOpenAIResponsesFallback } from "../fallback-openai-responses";
 import { signalWithTimeout } from "../abort";
 import { parseFallbackSSE } from "../web-search-fallback/parse";
 
@@ -75,19 +75,16 @@ export async function describeImage(
   };
   const linkedSignal = signalWithTimeout(settings.timeoutMs, abortSignal);
   try {
-    const resolvedProvider = await resolveOpenAIResponsesFallbackProvider(forwardProviderName, forwardProvider);
-    const { url, headers } = buildOpenAIResponsesFallbackFetch(resolvedProvider, incomingHeaders);
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
+    const posted = await postOpenAIResponsesFallback({
+      forwardProvider,
+      forwardProviderName,
+      incomingHeaders,
+      body,
       signal: linkedSignal.signal,
+      errorLabel: "vision fallback",
     });
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      return { text: "", error: `vision fallback HTTP ${res.status}: ${t.slice(0, 200)}` };
-    }
-    const parsed = await parseFallbackSSE(res);
+    if (posted.error !== undefined) return { text: "", error: posted.error };
+    const parsed = await parseFallbackSSE(posted.response);
     // The backend can return HTTP 200 then stream a `response.failed`/`error` event with no text;
     // surface that as a describe error instead of an empty (silently-blank) description.
     if (!parsed.text.trim() && parsed.error) return { text: "", error: parsed.error };

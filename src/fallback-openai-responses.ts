@@ -57,6 +57,62 @@ export function resolveOpenAIResponsesFallbackProvider(
   return resolveProviderAuth(config, providerName ?? "", provider);
 }
 
+/**
+ * True when the caller supplied a real upstream Authorization header. The local discovery sentinel
+ * (`local-frogprogsy`) is not a usable upstream credential for a `forward`-auth fallback.
+ */
+export function hasUsableForwardAuthorization(headers: Headers): boolean {
+  const value = headers.get("authorization")?.trim();
+  return !!value && value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
+}
+
+/** Configured OpenAI Responses helper provider — forward-auth, OAuth, or API-key backed. */
+export function findOpenAIResponsesFallbackProviderEntry(
+  config: FrogConfig,
+  preferredName?: string,
+): { name: string; provider: FrogProviderConfig } | undefined {
+  if (preferredName && isOpenAIResponsesFallbackProvider(config.providers[preferredName])) {
+    return { name: preferredName, provider: config.providers[preferredName] };
+  }
+  for (const [name, prov] of Object.entries(config.providers)) {
+    if (isOpenAIResponsesFallbackProvider(prov)) return { name, provider: prov };
+  }
+  return undefined;
+}
+
+/**
+ * POST one Responses request to the fallback helper provider. Never throws: returns the raw upstream
+ * response on success, or an `error` string (auth/transport failure, or a non-2xx body excerpt) so the
+ * caller can surface a graceful degraded result.
+ */
+export async function postOpenAIResponsesFallback(options: {
+  forwardProvider: FrogProviderConfig;
+  forwardProviderName: string | undefined;
+  incomingHeaders: Headers;
+  body: unknown;
+  signal: AbortSignal;
+  /** Prefix used in the returned error string, e.g. "fallback" or "vision fallback". */
+  errorLabel: string;
+}): Promise<{ response: Response; error?: undefined } | { response?: undefined; error: string }> {
+  try {
+    const resolvedProvider = await resolveOpenAIResponsesFallbackProvider(options.forwardProviderName, options.forwardProvider);
+    const { url, headers } = buildOpenAIResponsesFallbackFetch(resolvedProvider, options.incomingHeaders);
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(options.body),
+      signal: options.signal,
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      return { error: `${options.errorLabel} HTTP ${response.status}: ${text.slice(0, 200)}` };
+    }
+    return { response };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export function buildOpenAIResponsesFallbackFetch(
   provider: FrogProviderConfig,
   incomingHeaders: Headers,

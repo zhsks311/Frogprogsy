@@ -22,6 +22,7 @@ import { applyModelMixingPatch, modelMixingSettingsSnapshot } from "./model-mixi
 import { runWithMixing } from "./model-mixing/loop";
 import { namespacedToolName } from "./types";
 import { signalWithTimeout } from "./abort";
+import { debugSwallowed } from "./debug";
 import {
   clearLoginState, getLoginStatus, isOAuthProvider,
   listOAuthProviders, reconcileOAuthProviders, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
@@ -34,7 +35,7 @@ import { buildWebSearchTool, planWebSearch, resolveWebSearchLadderPlan, runWithW
 import type { WebSearchUnavailablePlan } from "./web-search-fallback";
 import { runWebSearch, type WebSearchFallbackOutcome } from "./web-search-fallback/executor";
 import { runSearchApi, type SearchApiOutcome } from "./web-search-fallback/search-api";
-import { runNoKeySearch } from "./web-search-fallback/no-key";
+import { runNoKeySearch, type PublicDnsLookup } from "./web-search-fallback/no-key";
 import { decideImageFallback, describeImagesInPlace } from "./image-fallback";
 import { removeCredential } from "./oauth/store";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
@@ -45,7 +46,7 @@ import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
 import { resolveModelCapabilities, supportsImageInput, supportsNativeWebSearch } from "./model-capabilities";
 import { isOpenAIResponsesFallbackProvider } from "./fallback-openai-responses";
-import { buildAttemptContexts, cloneParsedForAttempt, isSameProviderRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
+import { applyParsedModelId, buildAttemptContexts, cloneParsedForAttempt, isSameProviderRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
 import { redactConfigForApi, redactProviderForApi } from "./provider-redaction";
 import { effectiveKeyCandidates } from "./provider-keys";
 import { testProviderConnection as runProviderConnectionTest } from "./provider-test";
@@ -119,6 +120,18 @@ function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
+}
+
+/** A header-timeout abort from `fetchWithHeaderTimeout`, as opposed to a transport failure. */
+function isUpstreamConnectTimeout(err: unknown): boolean {
+  return err instanceof Error && err.name === "TimeoutError";
+}
+
+/** Shared 502 message for an upstream connect failure. */
+function upstreamConnectErrorMessage(err: unknown, connectMs: number): string {
+  return isUpstreamConnectTimeout(err)
+    ? `Provider connect timeout after ${connectMs}ms`
+    : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
 }
 
 function findGuiDist(): string | null {
@@ -263,10 +276,7 @@ async function applyModelMixing(
   const res = await resolveMix(config, parsed, complete, signal);
   if (res.warning) console.error(`frogprogsy: ${res.warning}`);
   const target = `${res.target.provider}/${res.target.model}`;
-  if (parsed._rawBody && typeof parsed._rawBody === "object") {
-    (parsed._rawBody as { model?: string }).model = target;
-  }
-  parsed.modelId = target;
+  applyParsedModelId(parsed, target);
 }
 
 /** No-LLM mixing rewrite for side calls (token counting): first roster agent or default. */
@@ -274,10 +284,7 @@ function applyModelMixingCheap(config: FrogConfig, parsed: FrogParsedRequest): v
   if (!isModelMixingRequest(config, parsed.modelId)) return;
   const t = cheapMixTarget(config);
   const target = `${t.provider}/${t.model}`;
-  if (parsed._rawBody && typeof parsed._rawBody === "object") {
-    (parsed._rawBody as { model?: string }).model = target;
-  }
-  parsed.modelId = target;
+  applyParsedModelId(parsed, target);
 }
 
 /**
@@ -407,14 +414,8 @@ async function handleResponses(
   }
 
   // Apply the routed model id upstream: routing may strip a "<provider>/" namespace
-  // (e.g. "opencode-go/deepseek-v4-pro" → "deepseek-v4-pro"). Adapters read parsed.modelId,
-  // and Responses-style adapters serialize parsed._rawBody, so rewrite both.
-  if (route.modelId !== parsed.modelId) {
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      (parsed._rawBody as { model?: string }).model = route.modelId;
-    }
-    parsed.modelId = route.modelId;
-  }
+  // (e.g. "opencode-go/deepseek-v4-pro" → "deepseek-v4-pro").
+  if (route.modelId !== parsed.modelId) applyParsedModelId(parsed, route.modelId);
   setRouteLog(logCtx, route, route.routeKind, route.ambiguousCandidates);
 
   // OAuth / Claude-grant providers: resolve a fresh access token (auto-refreshed) as the Bearer key
@@ -458,10 +459,7 @@ async function handleResponses(
       }, upstream.signal, connectMs);
     } catch (err) {
       upstream.abort();
-      const msg = err instanceof Error && err.name === "TimeoutError"
-        ? `Provider connect timeout after ${connectMs}ms`
-        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
-      return formatErrorResponse(502, "upstream_error", msg);
+      return formatErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
     }
     const headers = sanitizeRelayedHeaders(upstreamResponse.headers);
     const isEventStream = headers.get("content-type")?.toLowerCase().includes("text/event-stream") ?? false;
@@ -506,10 +504,7 @@ async function handleResponses(
     }, upstream.signal, connectMs);
   } catch (err) {
     upstream.abort();
-    const msg = err instanceof Error && err.name === "TimeoutError"
-      ? `Provider connect timeout after ${connectMs}ms`
-      : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
-    return formatErrorResponse(502, "upstream_error", msg);
+    return formatErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
   }
 
   if (!upstreamResponse.ok) {
@@ -705,32 +700,46 @@ function directMessageResponse(text: string, parsed: FrogParsedRequest, response
   return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
 }
 
-async function handleMessages(
+/**
+ * Read and parse an Anthropic Messages request body, recording the read/parse log phases. Returns the
+ * parsed request, or the 400 response to return as-is when the body is not valid JSON/schema.
+ */
+async function readParsedMessagesRequest(
   req: Request,
-  config: FrogConfig,
   logCtx: RequestLogContext,
-  options: { abortSignal?: AbortSignal; profileId?: string } = {},
-): Promise<Response> {
-  const parseStarted = Date.now();
+  parseStarted: number,
+): Promise<{ parsed: FrogParsedRequest; error?: undefined } | { parsed?: undefined; error: Response }> {
   let body: unknown;
   try {
     body = await req.json();
   } catch {
     recordLogPhase(logCtx, "read_request", "error", "invalid_json", parseStarted);
     finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "invalid_json" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", "Invalid JSON body");
+    return { error: formatAnthropicErrorResponse(400, "invalid_request_error", "Invalid JSON body") };
   }
 
-  let parsed: FrogParsedRequest;
   try {
-    parsed = parseMessagesRequest(body);
+    const parsed = parseMessagesRequest(body);
     setParsedLog(logCtx, parsed);
     recordLogPhase(logCtx, "parse", "ok", undefined, parseStarted);
+    return { parsed };
   } catch (err) {
     recordLogPhase(logCtx, "parse", "error", "parse_error", parseStarted);
     finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "parse_error" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
+    return { error: formatAnthropicErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err)) };
   }
+}
+
+async function handleMessages(
+  req: Request,
+  config: FrogConfig,
+  logCtx: RequestLogContext,
+  options: { abortSignal?: AbortSignal; profileId?: string; noKeyDnsLookup?: PublicDnsLookup } = {},
+): Promise<Response> {
+  const parseStarted = Date.now();
+  const read = await readParsedMessagesRequest(req, logCtx, parseStarted);
+  if (read.error) return read.error;
+  const parsed = read.parsed;
   // Keep Claude Code-facing response metadata on the requested model/alias; only upstream calls use
   // the resolved provider model. Otherwise resumed sessions persist unsupported ids like "gpt-5.5".
   const responseModelId = parsed.modelId;
@@ -884,7 +893,7 @@ async function handleMessages(
         ? await runWebSearch(query, webSearchPlan.hostedTool, webSearchPlan.forwardProvider, webSearchPlan.forwardProviderName, req.headers, webSearchPlan.settings, options.abortSignal)
         : webSearchPlan.tier === "search_api"
           ? await runSearchApi(query, webSearchPlan.apiProvider, options.abortSignal)
-          : await runNoKeySearch(query, config.webSearchFallback?.noKey, options.abortSignal);
+          : await runNoKeySearch(query, config.webSearchFallback?.noKey, options.abortSignal, { lookup: options.noKeyDnsLookup });
       const evidence = buildWebSearchEvidencePacket(outcome);
       const ok = !evidence.insufficient;
       logCtx.entry.fallbacks = {
@@ -939,7 +948,7 @@ async function handleMessages(
       recordLogPhase(logCtx, "upstream_connect", upstreamResponse.ok ? "ok" : "error", upstreamResponse.ok ? undefined : "provider_non_2xx", upstreamStarted);
     } catch (err) {
       upstream.abort();
-      const timeout = err instanceof Error && err.name === "TimeoutError";
+      const timeout = isUpstreamConnectTimeout(err);
       const code = timeout ? "connect_timeout" : "upstream_unreachable";
       recordLogPhase(logCtx, "upstream_connect", "error", code, upstreamStarted);
       recordAttemptLog(logCtx, attempt, "error", code);
@@ -951,11 +960,8 @@ async function handleMessages(
         attemptIndex = nextIndex;
         continue;
       }
-      const msg = timeout
-        ? `Provider connect timeout after ${connectMs}ms`
-        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
       finalizeRequestLog(logCtx, timeout ? "timeout" : "upstream_abort", 502, { kind: timeout ? "timeout" : "upstream", code });
-      return formatAnthropicErrorResponse(502, "upstream_error", msg);
+      return formatAnthropicErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
     }
 
     if (!upstreamResponse.ok) {
@@ -1027,25 +1033,9 @@ async function handleCountTokens(
   options: { abortSignal?: AbortSignal; profileId?: string } = {},
 ): Promise<Response> {
   const parseStarted = Date.now();
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    recordLogPhase(logCtx, "read_request", "error", "invalid_json", parseStarted);
-    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "invalid_json" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", "Invalid JSON body");
-  }
-
-  let parsed: FrogParsedRequest;
-  try {
-    parsed = parseMessagesRequest(body);
-    setParsedLog(logCtx, parsed);
-    recordLogPhase(logCtx, "parse", "ok", undefined, parseStarted);
-  } catch (err) {
-    recordLogPhase(logCtx, "parse", "error", "parse_error", parseStarted);
-    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "parse_error" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
-  }
+  const read = await readParsedMessagesRequest(req, logCtx, parseStarted);
+  if (read.error) return read.error;
+  const parsed = read.parsed;
 
   applyModelMixingCheap(config, parsed);
   const routeStarted = Date.now();
@@ -1065,12 +1055,7 @@ async function handleCountTokens(
     return formatAnthropicErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
 
-  if (route.modelId !== parsed.modelId) {
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      (parsed._rawBody as { model?: string }).model = route.modelId;
-    }
-    parsed.modelId = route.modelId;
-  }
+  if (route.modelId !== parsed.modelId) applyParsedModelId(parsed, route.modelId);
   setRouteLog(logCtx, route, route.routeKind, route.ambiguousCandidates);
 
   const oauthStarted = Date.now();
@@ -1136,13 +1121,10 @@ async function handleCountTokens(
     recordLogPhase(logCtx, "upstream_connect", upstreamResponse.ok ? "ok" : "error", upstreamResponse.ok ? undefined : "provider_non_2xx", upstreamStarted);
   } catch (err) {
     upstream.abort();
-    const timeout = err instanceof Error && err.name === "TimeoutError";
-    const msg = timeout
-      ? `Provider connect timeout after ${connectMs}ms`
-      : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+    const timeout = isUpstreamConnectTimeout(err);
     recordLogPhase(logCtx, "upstream_connect", "error", timeout ? "connect_timeout" : "upstream_unreachable", upstreamStarted);
     finalizeRequestLog(logCtx, timeout ? "timeout" : "upstream_abort", 502, { kind: timeout ? "timeout" : "upstream", code: timeout ? "connect_timeout" : "upstream_unreachable" });
-    return formatAnthropicErrorResponse(502, "upstream_error", msg);
+    return formatAnthropicErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
   }
 
   if (!upstreamResponse.ok) {
@@ -1803,7 +1785,13 @@ function usagePricingSnapshot(config: FrogConfig, rangeInput?: string | null) {
 
 function createRequestLog(endpoint: string, method: string, headers: Headers): RequestLogContext {
   const contentLength = headers.get("content-length");
-  const requestBytes = contentLength && /^\d+$/.test(contentLength) ? Number(contentLength) : undefined;
+  const requestBytes =
+    contentLength && /^\d+$/.test(contentLength)
+      ? (() => {
+          const n = Number(contentLength);
+          return Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+        })()
+      : undefined;
   const entry: RequestLogEntry = {
     id: crypto.randomUUID(),
     startedAt: Date.now(),
@@ -1900,8 +1888,9 @@ function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
       usageStatus: usageStatusForFinalLog(usage),
       ...(usage ? { usage, totalTokens: usageTotalTokens(usage) } : {}),
     });
-  } catch {
+  } catch (err) {
     /* usage accounting must never break the data plane */
+    debugSwallowed("usage-log", err);
   }
 }
 
@@ -2506,12 +2495,25 @@ function anthropicForwardProvider(config: FrogConfig): [string, FrogProviderConf
   }) ?? null;
 }
 
-function forwardCatalogModel(providerName: string, provider: FrogProviderConfig, id: string): CatalogModel {
-  const metadataContextWindow = isAllowedClaudeGrantBaseUrl(provider)
-    ? getJawcodeModelMetadata("anthropic", id)?.contextWindow
+function rawForwardCatalogModel(providerName: string, provider: FrogProviderConfig, id: string): CatalogModel {
+  return {
+    id,
+    provider: providerName,
+    owned_by: provider.adapter,
+  };
+}
+
+function forwardCatalogModel(providerName: string, provider: FrogProviderConfig, model: CatalogModel): CatalogModel {
+  const rawModel = { ...model };
+  delete rawModel.contextWindow;
+  const normalizedMetadataProvider = provider.baseUrl.endsWith("/v1/")
+    ? { ...provider, baseUrl: provider.baseUrl.slice(0, -1) }
+    : provider;
+  const metadataContextWindow = isAllowedClaudeGrantBaseUrl(normalizedMetadataProvider)
+    ? getJawcodeModelMetadata("anthropic", model.id)?.contextWindow
     : undefined;
   return applyProviderConfigHints(providerName, provider, {
-    id,
+    ...rawModel,
     provider: providerName,
     owned_by: provider.adapter,
     ...(metadataContextWindow !== undefined ? { contextWindow: metadataContextWindow } : {}),
@@ -2528,7 +2530,7 @@ function parseAnthropicModelList(providerName: string, provider: FrogProviderCon
     if (!item || typeof item !== "object") continue;
     const id = (item as { id?: unknown }).id;
     if (typeof id !== "string" || !id.trim()) continue;
-    out.push(forwardCatalogModel(providerName, provider, id.trim()));
+    out.push(rawForwardCatalogModel(providerName, provider, id.trim()));
   }
   return out;
 }
@@ -2541,18 +2543,29 @@ function configuredForwardCatalogModels(config: FrogConfig): CatalogModel[] {
     for (const model of provider.models ?? []) {
       if (model.trim()) ids.add(model.trim());
     }
-    for (const id of ids) out.push(forwardCatalogModel(providerName, provider, id));
+    for (const id of ids) {
+      const rawModel = rawForwardCatalogModel(providerName, provider, id);
+      out.push(forwardCatalogModel(providerName, provider, rawModel));
+    }
   }
   return out;
 }
 
 
+function applyForwardProfileConfig(providerName: string, provider: FrogProviderConfig, models: CatalogModel[]): CatalogModel[] {
+  return models.map(model => forwardCatalogModel(providerName, provider, model));
+}
+
 async function fetchAnthropicProfileModels(config: FrogConfig, profileId: string | undefined, headers?: Headers): Promise<CatalogModel[]> {
   if (!profileId) return [];
+  const providerEntry = anthropicForwardProvider(config);
+  if (!providerEntry) return [];
+  const [providerName, provider] = providerEntry;
+  const applyCurrentConfig = (models: CatalogModel[]): CatalogModel[] => applyForwardProfileConfig(providerName, provider, models);
   const cacheKey = profileModelsCacheKey(profileId);
   const ttlMs = config.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS;
   const fresh = getFreshCached(cacheKey, ttlMs);
-  if (fresh) return fresh;
+  if (fresh) return applyCurrentConfig(fresh);
 
   const forwardedAuthorization = headers?.get("authorization")?.trim();
   const forwardedApiKey = headers?.get("x-api-key")?.trim();
@@ -2562,11 +2575,8 @@ async function fetchAnthropicProfileModels(config: FrogConfig, profileId: string
       ? { name: "Authorization", value: forwardedAuthorization! }
       : null;
 
-  if (!authHeader) return getStaleCached(cacheKey) ?? [];
+  if (!authHeader) return applyCurrentConfig(getStaleCached(cacheKey) ?? []);
 
-  const providerEntry = anthropicForwardProvider(config);
-  if (!providerEntry) return getStaleCached(cacheKey) ?? [];
-  const [providerName, provider] = providerEntry;
   const base = provider.baseUrl.replace(/\/v1\/?$/, "").replace(/\/$/, "");
   const requestHeaders: Record<string, string> = {
     ...(provider.headers ?? {}),
@@ -2580,13 +2590,13 @@ async function fetchAnthropicProfileModels(config: FrogConfig, profileId: string
     const res = await fetch(`${base}/v1/models?limit=1000`, { headers: requestHeaders, signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) updateClaudeProfileAuthState(config, profileId, "oauth_rejected");
-      return getStaleCached(cacheKey) ?? [];
+      return applyCurrentConfig(getStaleCached(cacheKey) ?? []);
     }
     const models = parseAnthropicModelList(providerName, provider, await res.json());
     setCached(cacheKey, models);
-    return models;
+    return applyCurrentConfig(models);
   } catch {
-    return getStaleCached(cacheKey) ?? [];
+    return applyCurrentConfig(getStaleCached(cacheKey) ?? []);
   }
 }
 
