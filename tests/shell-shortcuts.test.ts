@@ -69,7 +69,7 @@ describe("zsh account-shortcut setup", () => {
     }
   });
 
-  test.skipIf(process.platform === "win32")("quotes an override bin path so zsh sources it as one PATH entry", () => {
+  test.skipIf(!existsSync("/bin/zsh"))("quotes an override bin path so zsh sources it as one PATH entry", () => {
     const { root, rcPath } = fixture();
     const binDir = join(root, "frog's account shortcuts", "bin");
     mkdirSync(binDir, { recursive: true });
