@@ -866,7 +866,7 @@ function renderDoctorHuman(report: ClaudeDoctorReport, paint: boolean): void {
   }
 
   console.log(`raw claude: ${report.rawClaude.kind} ${report.rawClaude.path ?? "(missing)"}`);
-  console.log(`real claude target: ${report.realClaude.path}`);
+  console.log(`real claude target: ${report.realClaude.path ?? "(missing)"}`);
 
   const launcherMissing = report.launchers.filter(launcher => !launcher.installed || !launcher.onPath);
   if (launcherMissing.length === 0) {
