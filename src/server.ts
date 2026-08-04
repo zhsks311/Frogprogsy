@@ -1785,7 +1785,13 @@ function usagePricingSnapshot(config: FrogConfig, rangeInput?: string | null) {
 
 function createRequestLog(endpoint: string, method: string, headers: Headers): RequestLogContext {
   const contentLength = headers.get("content-length");
-  const requestBytes = contentLength && /^\d+$/.test(contentLength) ? Number(contentLength) : undefined;
+  const requestBytes =
+    contentLength && /^\d+$/.test(contentLength)
+      ? (() => {
+          const n = Number(contentLength);
+          return Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+        })()
+      : undefined;
   const entry: RequestLogEntry = {
     id: crypto.randomUUID(),
     startedAt: Date.now(),
