@@ -92,7 +92,10 @@ describe("eval fusion stats", () => {
     const parent = Bun.spawn(["python3", "-c", [
       "import os, subprocess, sys, time",
       "child = subprocess.Popen([sys.executable, '-c', 'import os; os._exit(0)'])",
-      "open(os.environ['CHILD_PID_PATH'], 'w').write(str(child.pid))",
+      // Publish the pid by rename so the reader never observes a created-but-empty file.
+      "tmp = os.environ['CHILD_PID_PATH'] + '.tmp'",
+      "open(tmp, 'w').write(str(child.pid))",
+      "os.replace(tmp, os.environ['CHILD_PID_PATH'])",
       "sys.stdout.flush()",
       "time.sleep(30)",
     ].join("\n")], { env: { ...process.env, CHILD_PID_PATH: childPidPath }, stdout: "ignore", stderr: "ignore" });
