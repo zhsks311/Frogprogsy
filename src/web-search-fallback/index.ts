@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import { resolveModelCapabilities, supportsImageInput, supportsNativeWebSearch } from "../model-capabilities";
 import { isOpenAIResponsesFallbackProvider } from "../fallback-openai-responses";
+import { isLocalAccessSecret } from "../local-access";
 import type { WebSearchFallbackSettings } from "./executor";
 import { resolveSearchApiProvider, type ResolvedSearchApiProvider } from "./search-api";
 import { resolveNoKeySettings, type NoKeySearchSettings } from "./no-key";
@@ -25,7 +26,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 function hasUsableForwardAuthorization(headers: Headers): boolean {
   const value = headers.get("authorization")?.trim();
-  return !!value && value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
+  if (!value || isLocalAccessSecret(value)) return false;
+  return value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
 }
 
 /** Configured OpenAI Responses helper provider — forward-auth, OAuth, or API-key backed. */

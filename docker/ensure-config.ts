@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { generateLocalAccessSecret, hashLocalAccessSecret } from "../src/local-access";
 
 const home = process.env.FROGPROGSY_HOME || "/config";
 const configPath = join(home, "config.json");
@@ -48,6 +50,26 @@ if (existsSync(configPath)) {
 config.hostname = bindHostname;
 if (typeof config.port !== "number" || !Number.isFinite(config.port)) {
   config.port = 3764;
+}
+
+// A published container port is reachable from outside the container, so the relay refuses to bind a
+// non-loopback hostname without request authentication. Mint one key on first run and print the
+// plaintext once: it exists nowhere else, and callers send it as ANTHROPIC_AUTH_TOKEN / x-api-key.
+// FROGP_LOCAL_ACCESS_KEY pins a caller-chosen key instead (compose secret, redeploy with a known key).
+const existingLocalAccess = config.localAccess as { enabled?: boolean; keys?: unknown[] } | undefined;
+const hasKey = Array.isArray(existingLocalAccess?.keys) && existingLocalAccess.keys.length > 0;
+const pinnedKey = process.env.FROGP_LOCAL_ACCESS_KEY?.trim();
+if (bindHostname !== "127.0.0.1" && bindHostname !== "localhost" && bindHostname !== "::1" && (!hasKey || pinnedKey)) {
+  const secret = pinnedKey || generateLocalAccessSecret();
+  config.localAccess = {
+    enabled: true,
+    keys: [{ id: `lk_${randomBytes(4).toString("hex")}`, label: "docker", secretHash: hashLocalAccessSecret(secret) }],
+  };
+  if (!pinnedKey) {
+    console.log("frogprogsy: created a relay access key for this container (shown once):");
+    console.log(`frogprogsy:   ${secret}`);
+    console.log("frogprogsy: send it as ANTHROPIC_AUTH_TOKEN, x-api-key, or x-frogp-local-key. Set FROGP_LOCAL_ACCESS_KEY to pin your own.");
+  }
 }
 
 atomicWrite(configPath, `${JSON.stringify(config, null, 2)}\n`);

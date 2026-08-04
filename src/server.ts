@@ -11,7 +11,7 @@ import { bridgeToMessagesSSE, buildMessageJSON, formatAnthropicErrorResponse } f
 import { classifyError, parseUpstreamErrorDetails, type UpstreamErrorDetails } from "./errors";
 import { safeResponseHeaders, type WsData } from "./ws-bridge";
 import type { ServerWebSocket } from "bun";
-import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, loadConfig, readActivePort, readPid, saveConfig, websocketsEnabled } from "./config";
+import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, loadConfig, readActivePort, readPid, saveConfig, websocketsEnabled, writeLocalAccessToken } from "./config";
 import { parseRequest } from "./responses/parser";
 import { estimateMessagesInputTokens, parseMessagesRequest, buildResponsesBody } from "./messages/parser";
 import { materializeModelAliases, type ModelAliasEntry } from "./model-aliases";
@@ -27,6 +27,7 @@ import {
   listOAuthProviders, reconcileOAuthProviders, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
 } from "./oauth/index";
 import { isAllowedClaudeGrantBaseUrl, resolveProviderAuth } from "./provider-auth";
+import { authorizeLocalAccess, generateLocalAccessSecret, isLocalAccessEnabled, isLocalAccessSecret, LOCAL_ACCESS_HEADER, localAccessConfigIssue, registerLocalAccessKeys, setRuntimeAccessToken, type LocalAccessDenied } from "./local-access";
 import { applyProviderConfigHints, type CatalogModel } from "./claude-catalog";
 import { getJawcodeModelMetadata } from "./generated/jawcode-model-metadata";
 import type { ClaudeCodeCatalogRefreshResult, ClaudeCodeGatewayModelsCacheSyncResult } from "./claude-refresh";
@@ -1265,7 +1266,8 @@ function hasForwardedAuthHeader(headers: Record<string, string>): boolean {
   const lower = new Map(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
   return ["authorization", "x-api-key", "api-key", "chatgpt-account-id"].some(key => {
     const value = lower.get(key)?.trim();
-    return !!value && value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
+    if (!value || isLocalAccessSecret(value)) return false;
+    return value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
   });
 }
 
@@ -2187,6 +2189,20 @@ function isAllowedRequestHost(req: Request, bindHostname: string): boolean {
   }
 }
 
+/** Deny an unauthenticated relay request without hinting whether the presented key exists. */
+function localAccessDenialResponse(decision: LocalAccessDenied): Response {
+  if (decision.reason === "rate_limited") {
+    const response = formatErrorResponse(429, "rate_limit_error", "local access key request limit exceeded");
+    if (decision.retryAfterSec !== undefined) response.headers.set("Retry-After", String(decision.retryAfterSec));
+    return response;
+  }
+  return formatErrorResponse(
+    401,
+    "authentication_error",
+    `a valid local access key is required; send it as ${LOCAL_ACCESS_HEADER}, x-api-key, or Authorization: Bearer`,
+  );
+}
+
 interface ManagementAPIDeps {
   saveConfig?: (config: FrogConfig) => void;
   /** Branch-B claude-grant management fixtures (keep the API off real network/Keychain/native homes in tests). */
@@ -2512,6 +2528,9 @@ const ANTHROPIC_PROFILE_MODELS_CACHE_PREFIX = "anthropic-profile";
 function isRealForwardAuthValue(value: string | undefined | null): boolean {
   const trimmed = value?.trim();
   if (!trimmed) return false;
+  // A relay-local access key authenticates the caller against THIS relay; relaying it upstream as the
+  // caller's provider credential would leak it and fail there anyway.
+  if (isLocalAccessSecret(trimmed)) return false;
   return trimmed !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(trimmed);
 }
 
@@ -3911,18 +3930,33 @@ export function startServer(port?: number) {
       `Disable routeAutoModeClassifier or fix ${getConfigPath()}.`,
     );
   }
-  // `localAccess` describes per-key relay authentication (hashed secrets, request limits, provider /
-  // model scopes) that no request path enforces. Starting with it enabled would advertise protection
-  // the relay does not apply, so fail closed instead.
-  if (config.localAccess?.enabled === true) {
-    throw new Error(
-      `localAccess is not implemented: the relay applies no per-key authentication, request limit, or ` +
-      `provider/model scope. Remove localAccess.enabled from ${getConfigPath()} and keep the relay bound to loopback.`,
-    );
-  }
   const listenPort = port ?? config.port ?? DEFAULT_PORT;
   setCorsOrigin(listenPort);
   const bindHostname = config.hostname ?? "127.0.0.1";
+  // Trust is per request, not per network position: a bind reachable from outside this machine must
+  // authenticate every relay request, and an enabled key list that cannot authenticate anything must
+  // not come up at all.
+  const localAccessEnabled = isLocalAccessEnabled(config);
+  if (localAccessEnabled) {
+    const issue = localAccessConfigIssue(config);
+    if (issue) throw new Error(`Invalid localAccess (${issue}). Fix ${getConfigPath()}.`);
+    registerLocalAccessKeys(config);
+    // Same-machine tooling (frogp models/doctor) authenticates with a per-start token readable only by
+    // this user, so enabling relay authentication does not require pasting a key into the CLI.
+    const runtimeToken = generateLocalAccessSecret();
+    setRuntimeAccessToken(runtimeToken);
+    try {
+      writeLocalAccessToken(runtimeToken);
+    } catch (error) {
+      throw new Error(`Could not write the same-machine relay token: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else if (!isLoopbackHostname(bindHostname)) {
+    throw new Error(
+      `Refusing to bind ${bindHostname} without request authentication: every client that can reach this ` +
+      `address could use the configured provider credentials. Run "frogp local-key add <label>" to enable ` +
+      `localAccess, or set hostname to 127.0.0.1 in ${getConfigPath()}.`,
+    );
+  }
 
   const server = Bun.serve<WsData>({
     port: listenPort,
@@ -3936,8 +3970,14 @@ export function startServer(port?: number) {
         return new Response(null, { status: 204, headers: corsHeaders() });
       }
 
-      if ((url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/")) && !isAllowedRequestHost(req, bindHostname)) {
+      const guardedPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/");
+      if (guardedPath && !isAllowedRequestHost(req, bindHostname)) {
         return formatErrorResponse(403, "origin_rejected", "request Host is not the loopback interface this relay is bound to");
+      }
+
+      if (guardedPath && localAccessEnabled) {
+        const decision = authorizeLocalAccess(config, req.headers);
+        if (!decision.ok) return localAccessDenialResponse(decision);
       }
 
       // Responses WebSocket is a Codex/OpenAI Responses-only behavior and is retired for the

@@ -284,6 +284,27 @@ export function getWatchdogPidPath(): string {
   return join(resolveConfigDir(), "watchdog.pid");
 }
 
+/** Per-start same-machine relay credential (mode 0600); written by the server, read by the CLI. */
+export function getLocalAccessTokenPath(): string {
+  return join(resolveConfigDir(), "local-access.token");
+}
+
+export function writeLocalAccessToken(token: string): void {
+  ensureConfigDirForWrite("writeLocalAccessToken");
+  const path = getLocalAccessTokenPath();
+  writeFileSync(path, token, { encoding: "utf-8", mode: 0o600 });
+  // An existing file keeps its old mode, so narrow it explicitly: only this user may read the token.
+  chmodSync(path, 0o600);
+}
+
+/** The running relay's same-machine token, or `null` when the relay does not authenticate requests. */
+export function readLocalAccessToken(): string | null {
+  const path = getLocalAccessTokenPath();
+  if (!existsSync(path)) return null;
+  const token = readFileSync(path, "utf-8").trim();
+  return token || null;
+}
+
 export function getWatchdogStatusPath(): string {
   return join(resolveConfigDir(), "frogp-watchdog-status.json");
 }

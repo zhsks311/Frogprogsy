@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,7 @@ import {
   getConfigDir,
   getWatchdogStatusPath,
   loadConfig,
+  readLocalAccessToken,
   readPid,
   readActivePort,
   removeActivePort,
@@ -23,6 +25,7 @@ import {
   writeActivePort,
   writeShutdownIntent,
 } from "./config";
+import { generateLocalAccessSecret, hashLocalAccessSecret, LOCAL_ACCESS_HEADER } from "./local-access";
 import { findAvailablePort } from "./ports";
 import { startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
@@ -129,6 +132,7 @@ Usage:
   frogp login [--list|<provider>]  Login or add a key (codex, openai, xai, kimi, API-key catalog)
   frogp logout <provider>       Remove a stored OAuth login
   frogp providers set <name> --auth claude-grant --grant <id>   Bind a provider to an isolated Claude subscription grant
+  frogp local-key <command>     Manage relay access keys (required to bind a non-loopback hostname)
   frogp update [--no-restart]   Update frogprogsy to the latest published version
   frogp version                 Print the installed version and development build id
   frogp help [command]          Show this help, or usage for one command
@@ -170,6 +174,7 @@ const HELP_TOPICS = new Set([
   "login",
   "logout",
   "providers",
+  "local-key",
   "gui",
   "update",
   "version",
@@ -200,6 +205,9 @@ function printSubcommandUsage(name: string | undefined): boolean {
       break;
     case "providers":
       console.log("Usage: frogp providers set <name> --auth claude-grant --grant <id>\n\nBind an existing provider to an isolated Claude subscription grant. Unknown provider or grant is a hard error. This never touches OAuth or API-key logins; it only sets the provider's authMode to claude-grant and records the grant id. It does not log in and does not auto-rebind on grant removal.");
+      break;
+    case "local-key":
+      console.log("Usage: frogp local-key list|add|remove ...\n\nManage relay access keys (config `localAccess`). Every /api/* and /v1/* request must then present a key as x-frogp-local-key, x-api-key, or Authorization: Bearer — Claude Code sends whatever ANTHROPIC_AUTH_TOKEN holds, so setting it to the key is enough. Config stores only the SHA-256 hash; the plaintext is printed once, at creation. A non-loopback `hostname` requires at least one key: the relay refuses to start otherwise, because every client that can reach the bind could otherwise spend the configured provider credentials.\n\n  frogp local-key list\n  frogp local-key add <label> [--limit <maxRequests>/<windowSec>]\n  frogp local-key remove <id-or-label>\n\nRestart the proxy (frogp stop && frogp start) after changing keys.");
       break;
     case "doctor":
       console.log("Usage: frogp doctor claude [--json]\n\nRead-only diagnostics for Claude Code /model visibility plus isolated Claude subscription grants (resolved real claude path/kind, grant config-dir confinement, expected scoped Keychain service, provider dangling bindings, native auth env conflicts). Never reads or writes native Claude homes or the global/unscoped Keychain. --json prints one redacted JSON object on stdout; credential values, JSON, email, and absolute home paths are never emitted.");
@@ -787,6 +795,15 @@ function renderHumanModels(models: Record<string, unknown>[], paint: boolean): v
 }
 
 /**
+ * Same-machine credential for an authenticated relay: the running server writes a per-start token
+ * readable only by this user, so `frogp` keeps working without the user pasting a relay access key.
+ */
+function localAccessHeaders(): Record<string, string> {
+  const token = readLocalAccessToken();
+  return token ? { [LOCAL_ACCESS_HEADER]: token } : {};
+}
+
+/**
  * Online-only model listing: delegates to the running proxy's existing GET /api/models
  * (the same list the dashboard and Claude Code catalog use). Never synthesizes an
  * offline list from config/registry/catalog state.
@@ -810,6 +827,7 @@ async function handleModels(flags: string[]) {
   let models: unknown;
   try {
     const res = await fetch(`http://${healthHost(config.hostname)}:${port}/api/models`, {
+      headers: localAccessHeaders(),
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -832,6 +850,7 @@ async function fetchApiModelRowsForDoctor(config: ReturnType<typeof loadConfig>,
   if (!readPid() || !(await proxyHealthy(port))) return [];
   try {
     const res = await fetch(`http://${healthHost(config.hostname)}:${port}/api/models`, {
+      headers: localAccessHeaders(),
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) return [];
@@ -1613,6 +1632,85 @@ async function handleProvidersCommand(values: string[]): Promise<void> {
   console.log(`   Verify the grant is logged in with: frogp claude grants status ${grant.id}`);
 }
 
+/** `--limit <maxRequests>/<windowSec>` → a per-key sliding-window limit. */
+function parseLocalKeyLimit(values: string[]): { windowSec: number; maxRequests: number } | undefined {
+  const raw = optionValue(values, "--limit");
+  if (raw === undefined) return undefined;
+  const match = /^(\d+)\/(\d+)$/.exec(raw.trim());
+  const maxRequests = match ? Number(match[1]) : 0;
+  const windowSec = match ? Number(match[2]) : 0;
+  if (!maxRequests || !windowSec) {
+    console.error("❌ --limit takes <maxRequests>/<windowSec>, e.g. --limit 60/60 for 60 requests per minute.");
+    process.exit(1);
+  }
+  return { windowSec, maxRequests };
+}
+
+function handleLocalKeyCommand(values: string[]): void {
+  const config = loadConfig();
+  const keys = config.localAccess?.keys ?? [];
+  switch (values[0] ?? "list") {
+    case "list": {
+      if (keys.length === 0) {
+        console.log("No relay access keys. Create one with: frogp local-key add <label>");
+        console.log(`Relay authentication is ${config.localAccess?.enabled === true ? "enabled" : "disabled"}; a non-loopback hostname requires at least one key.`);
+        return;
+      }
+      for (const key of keys) {
+        const limit = key.requestLimit ? `  limit=${key.requestLimit.maxRequests}/${key.requestLimit.windowSec}s` : "";
+        console.log(`${key.id}  ${key.label ?? "(no label)"}${limit}`);
+      }
+      console.log(`Relay authentication: ${config.localAccess?.enabled === true ? "enabled" : "disabled"}`);
+      return;
+    }
+    case "add": {
+      const label = values.slice(1).filter(value => !value.startsWith("--") && value !== optionValue(values, "--limit")).join(" ").trim();
+      if (!label) {
+        console.error("Usage: frogp local-key add <label> [--limit <maxRequests>/<windowSec>]");
+        process.exit(1);
+      }
+      const requestLimit = parseLocalKeyLimit(values);
+      const secret = generateLocalAccessSecret();
+      const id = `lk_${randomBytes(4).toString("hex")}`;
+      config.localAccess = {
+        enabled: true,
+        keys: [...keys, { id, label, secretHash: hashLocalAccessSecret(secret), ...(requestLimit ? { requestLimit } : {}) }],
+      };
+      saveConfig(config);
+      console.log(`✅ Relay access key created: ${label} (${id})`);
+      console.log("");
+      console.log(`   ${secret}`);
+      console.log("");
+      console.log("This is the only time the key is shown — the config stores only its SHA-256 hash.");
+      console.log("Send it as x-frogp-local-key, x-api-key, or Authorization: Bearer. For Claude Code, set ANTHROPIC_AUTH_TOKEN to it.");
+      console.log("Relay authentication is now enabled; restart the proxy to apply: frogp stop && frogp start");
+      return;
+    }
+    case "remove": {
+      const selector = values.slice(1).join(" ").trim();
+      const match = keys.find(key => key.id === selector || key.label === selector);
+      if (!selector || !match) {
+        console.error(`❌ Unknown relay access key: ${selector || "(missing)"}. List them with: frogp local-key list`);
+        process.exit(1);
+      }
+      const remaining = keys.filter(key => key !== match);
+      // Dropping the last key would silently unauthenticate the relay, and a non-loopback bind then
+      // refuses to start. Disable authentication explicitly instead of leaving an empty enabled list.
+      config.localAccess = { enabled: remaining.length > 0, keys: remaining };
+      saveConfig(config);
+      console.log(`✅ Relay access key removed: ${match.label ?? match.id} (${match.id})`);
+      if (remaining.length === 0) {
+        console.log("No keys remain, so relay authentication is now disabled. A non-loopback hostname will refuse to start.");
+      }
+      console.log("Restart the proxy to apply: frogp stop && frogp start");
+      return;
+    }
+    default:
+      console.error("Usage: frogp local-key list|add <label> [--limit <maxRequests>/<windowSec>]|remove <id-or-label>");
+      process.exit(1);
+  }
+}
+
 switch (command) {
   case "init": {
     const { runInit } = await import("./init");
@@ -1656,6 +1754,9 @@ switch (command) {
     break;
   case "providers":
     await handleProvidersCommand(args.slice(1));
+    break;
+  case "local-key":
+    handleLocalKeyCommand(args.slice(1));
     break;
   case "login": {
     const { handleLogin } = await import("./oauth/login-cli");

@@ -31,6 +31,31 @@ cancelled. If the adapter generator ends without an explicit done/error event, t
 The server exposes `POST /api/stop` which writes shutdown intent, restores every configured Claude Code home,
 and exits the process. The GUI sidebar stop button calls this endpoint.
 
+## Relay access control
+
+Trust is per request, not per network position. `src/local-access.ts` owns relay authentication
+(`config.localAccess`) and is the only place that decides whether a caller may use the relay:
+
+- Keys are stored as `sha256:<hex>`; verification is a constant-time digest comparison. The plaintext
+  exists only in the `frogp local-key add` / Docker-entrypoint output that created it.
+- A key is presented in `x-frogp-local-key`, `x-api-key`, or `Authorization: Bearer` — the slot Claude
+  Code already fills from `ANTHROPIC_AUTH_TOKEN`, so an existing client needs no new header.
+- `requestLimit` is a per-key in-process sliding window (the relay is single-process); an exhausted
+  window answers `429` with `Retry-After`. Windows do not survive a restart.
+- `isLocalAccessSecret` marks a presented key as a relay-local credential, so `forward` authMode and the
+  web-search/image fallbacks never relay it upstream as the caller's provider credential.
+- Fail-closed startup (`startServer`): an enabled key list that cannot authenticate anything (empty,
+  duplicate ids, malformed `secretHash`, non-positive `requestLimit`) refuses to start, and a
+  non-loopback `hostname` without `localAccess` refuses to start — a published bind must authenticate,
+  because `Origin`/`Host` are caller-controlled and cannot carry trust.
+- When enabled, every `/api/*` and `/v1/*` request is authenticated; `/healthz` and GUI assets are not.
+- Same-machine tooling authenticates with a per-start token written to `~/.frogprogsy/local-access.token`
+  (mode `0600`, `config.ts`), not with a configured key: reading it already implies access to the config
+  directory that holds the provider credentials. The dashboard instead asks for a key and keeps it in
+  sessionStorage, attached by a single `window.fetch` wrapper (`gui/src/local-key.ts`).
+- Per-key `providers`/`models` scopes exist in `LocalAccessKeyConfig` but no request path narrows a route
+  to a key yet, so a key declaring them is rejected at startup instead of running unscoped.
+
 ## Providers and adapters
 
 | Path | Responsibility |

@@ -23,6 +23,11 @@ export const en = {
 
   "app.buildSkewTitle": "Dashboard build mismatch.",
   "app.buildSkewBody": "The served GUI and running proxy do not agree ({detail}). Run {cmd} to rebuild/restart before trusting this page.",
+  "localKey.title": "Relay access key required",
+  "localKey.body": "This relay authenticates every request (localAccess). Paste a key created with `frogp local-key add` — it is kept for this browser tab only.",
+  "localKey.placeholder": "frogp_…",
+  "localKey.submit": "Unlock dashboard",
+  "localKey.rejected": "The relay rejected that key.",
   // dashboard
   "dash.subtitle": "Live status of the local frogprogsy proxy, its providers, and the models routed into Claude Code.",
   "dash.status": "Status",

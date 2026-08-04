@@ -11,6 +11,7 @@ import { useI18n, useT, LOCALES, type TKey } from "./i18n";
 import { Notice } from "./ui";
 import { detectGuiBuildSkewNotice, type GuiBuildSkewNotice } from "./build-skew";
 import type { DeepLinkTarget, Navigate, Page } from "./navigation";
+import { probeLocalKey, setLocalKey, type LocalKeyProbe } from "./local-key";
 import { pageToHash, parsePageHash, shouldPushPageHash } from "./hash-routing";
 
 type Theme = "light" | "dark" | "system";
@@ -59,6 +60,8 @@ export default function App() {
   const [target, setTarget] = useState<DeepLinkTarget | null>(null);
   const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
   const [buildSkewNotice, setBuildSkewNotice] = useState<GuiBuildSkewNotice | null>(null);
+  const [localKeyProbe, setLocalKeyProbe] = useState<LocalKeyProbe | null>(null);
+  const [localKeyDraft, setLocalKeyDraft] = useState("");
   const { locale, setLocale } = useI18n();
   const t = useT();
 
@@ -91,6 +94,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    probeLocalKey(API_BASE).then(result => { if (!cancelled) setLocalKeyProbe(result); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
     const onHashChange = () => {
       setPage(parsePageHash(window.location.hash));
       setTarget(null);
@@ -117,6 +126,34 @@ export default function App() {
     setPage(nextPage);
     setTarget(nextTarget ?? null);
   };
+
+  const submitLocalKey = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLocalKey(localKeyDraft);
+    setLocalKeyDraft("");
+    setLocalKeyProbe(await probeLocalKey(API_BASE));
+  };
+
+  // The relay authenticates every /api request when localAccess is on, so the dashboard is unusable
+  // until a key is supplied — ask for it instead of rendering pages that would all fail with 401.
+  if (localKeyProbe === "required" || localKeyProbe === "rejected") {
+    return (
+      <div className="app">
+        <main className="main">
+          <div className="main-inner">
+            <h1>{t("localKey.title")}</h1>
+            <p>{t("localKey.body")}</p>
+            {localKeyProbe === "rejected" && <Notice tone="err">{t("localKey.rejected")}</Notice>}
+            <form onSubmit={submitLocalKey}>
+              <input type="password" autoFocus value={localKeyDraft} placeholder={t("localKey.placeholder")}
+                aria-label={t("localKey.title")} onChange={event => setLocalKeyDraft(event.target.value)} />
+              <button type="submit" disabled={localKeyDraft.trim().length === 0}>{t("localKey.submit")}</button>
+            </form>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="app">

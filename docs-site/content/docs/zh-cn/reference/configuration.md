@@ -30,6 +30,7 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 | --- | --- | --- | --- |
 | `port` | `number` | `10100` | Local relay listen port |
 | `hostname` | `string` | `"127.0.0.1"` | Bind hostname。`0.0.0.0` 会暴露到所有 interface，只应显式使用。 |
+| `localAccess` | object | — | Relay access key 配置。`{ enabled, keys }`，每个 key 含 `id`、`secretHash`（`sha256:<hex>`）以及可选的 `label` 与 `requestLimit`。参见 [Relay access keys](#relay-access-keys)。|
 | `providers` | object | fallback provider | Named provider lanes。key 会成为 route prefix。 |
 | `defaultProvider` | `string` | `"anthropic"` | model id 没有 provider prefix 时使用的 routing fallback lane |
 | `subagentModels` | `string[]` | default GPT native list | Claude Code subagent picker 前面优先显示的最多 5 个 routed/native model id |
@@ -43,6 +44,35 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 | `modelMixing` | object | — | `frogp/mix` 别名背后的模型混合（route/fusion/pipeline）。`enabled: true` 前为禁用。见 [Model mixing fields](#model-mixing-fields)。 |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field；Claude Messages data plane 使用 HTTP/SSE |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op；不修改 Claude Code history |
+
+## Relay access keys
+
+`localAccess` 是 relay 的按请求认证。当 `enabled` 为 `true` 时，每个 `/api/*` 与 `/v1/*` 请求都必须提供已配置的 key；`/healthz` 与 dashboard 静态资源保持开放。
+
+- key 通过 `x-frogp-local-key`、`x-api-key` 或 `Authorization: Bearer <key>` 传递。Claude Code 会原样发送 `ANTHROPIC_AUTH_TOKEN`，因此把该变量设为 key 即可。
+- config 只保存 key 的 `sha256:<hex>`。明文仅在 `frogp local-key add` 创建时输出一次，之后无法恢复。
+- `requestLimit` 是在 relay 进程内生效的按 key sliding window；超出后返回 `429` 并带 `Retry-After`。
+- 提供的 key 不会转发到 upstream，因此 `forward` lane 仍然只转发真实的调用方 provider credential。
+- 同一台机器上的工具不需要 key：运行中的 relay 会在每次启动时把 token 写入 `~/.frogprogsy/local-access.token`（mode `0600`），`frogp models` / `frogp doctor claude` 会发送它。该 token 不保存在 config 中，也不会在重启后保留。
+- 非 loopback 的 `hostname` 至少需要一个 key，否则 relay 拒绝启动：任何能访问该 bind 的 client 否则都能使用已配置的 provider credential。因此 Docker entrypoint 会在首次运行时生成一个 key 并输出一次（可用 `FROGP_LOCAL_ACCESS_KEY` 指定自己的 key）。
+- 按 key 的 `providers`/`models` scope 尚未生效；声明它们的 key 会在启动时被拒绝，而不是静默失效。
+
+```json
+{
+  "hostname": "0.0.0.0",
+  "localAccess": {
+    "enabled": true,
+    "keys": [
+      {
+        "id": "lk_9f2c41ab",
+        "label": "laptop",
+        "secretHash": "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+        "requestLimit": { "windowSec": 60, "maxRequests": 120 }
+      }
+    ]
+  }
+}
+```
 
 ## Provider lane fields
 

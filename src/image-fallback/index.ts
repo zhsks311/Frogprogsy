@@ -1,6 +1,7 @@
 import type { FrogConfig, FrogContentPart, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTextContent } from "../types";
 import { resolveModelCapabilities, supportsImageInput } from "../model-capabilities";
 import { isOpenAIResponsesFallbackProvider } from "../fallback-openai-responses";
+import { isLocalAccessSecret } from "../local-access";
 import { describeImage, type VisionSettings } from "./describe";
 
 export { describeImage } from "./describe";
@@ -16,7 +17,8 @@ const CONTEXT_MAX_CHARS = 800;
 
 function hasUsableForwardAuthorization(headers: Headers): boolean {
   const value = headers.get("authorization")?.trim();
-  return !!value && value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
+  if (!value || isLocalAccessSecret(value)) return false;
+  return value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
 }
 
 /** Run `worker` over `items` with bounded concurrency, preserving input order in the result array. */

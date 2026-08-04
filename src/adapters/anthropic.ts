@@ -20,12 +20,14 @@ import { namespacedToolName } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
 import { modelRecordValue } from "../model-capabilities";
 import { parseDataUrl } from "./image";
+import { isLocalAccessSecret } from "../local-access";
 
 const ANTHROPIC_FORWARD_AUTH_HEADERS = ["authorization", "x-api-key"] as const;
 const LOCAL_CLAUDE_AUTH_TOKEN = "local-frogprogsy";
 
 function isLocalClaudeAuthToken(value: string): boolean {
   const trimmed = value.trim();
+  if (isLocalAccessSecret(trimmed)) return true;
   return trimmed === LOCAL_CLAUDE_AUTH_TOKEN || /^Bearer\s+local-frogprogsy$/i.test(trimmed);
 }
 

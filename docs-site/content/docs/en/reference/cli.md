@@ -56,6 +56,9 @@ frogp --version
 | `frogp login kimi` | OAuth store, config | Creates a Kimi OAuth lane. |
 | `frogp login <catalog-provider>` | config or OAuth store | Adds an API-key, OAuth, or local provider from the provider registry. A close typo gets a `Did you mean: frogp login <provider>?` suggestion. OAuth failures are reported as `Login failed for <provider>: <reason>` with retry guidance instead of a raw stack trace. |
 | `frogp logout <provider>` | OAuth store | Removes the stored OAuth credential for that provider. Without an argument, or for a provider that is not logged in, it fails and lists the currently stored logins. It is not an API-key provider deletion command. |
+| `frogp local-key list` | none | Lists relay access keys (id, label, request limit) and whether relay authentication is enabled. Never prints a key. |
+| `frogp local-key add <label> [--limit <maxRequests>/<windowSec>]` | config | Creates a relay access key, enables `localAccess`, and prints the plaintext key once. Config keeps only its SHA-256 hash. Restart the proxy to apply. |
+| `frogp local-key remove <id-or-label>` | config | Removes one relay access key. Removing the last key disables relay authentication, which makes a non-loopback `hostname` refuse to start. |
 
 Credential locations and exposure rules:
 

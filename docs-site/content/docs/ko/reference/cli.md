@@ -58,6 +58,9 @@ frogp --version
 | `frogp login kimi` | OAuth store, config | Kimi OAuth lane을 생성합니다. |
 | `frogp login <catalog-provider>` | config 또는 OAuth store | Provider registry에 있는 API-key/OAuth/local provider를 추가합니다. 오타가 가까우면 `Did you mean: frogp login <provider>?` 제안이 나오고, OAuth 실패는 raw 스택트레이스 대신 `Login failed for <provider>: <원인>` + 재시도 안내로 보고됩니다. |
 | `frogp logout <provider>` | OAuth store | 해당 provider의 저장 OAuth credential을 제거합니다. 인자가 없거나 로그인돼 있지 않은 provider면 실패하고 현재 저장된 로그인 목록을 보여줍니다. API-key provider 삭제가 아니라 OAuth logout입니다. |
+| `frogp local-key list` | 없음 | Relay access key(id, label, request limit)와 relay 인증 활성화 여부를 출력합니다. key 자체는 출력하지 않습니다. |
+| `frogp local-key add <label> [--limit <maxRequests>/<windowSec>]` | config | Relay access key를 만들고 `localAccess`를 활성화하며 평문 key를 한 번만 출력합니다. config에는 SHA-256 hash만 남습니다. 적용에는 proxy 재시작이 필요합니다. |
+| `frogp local-key remove <id-or-label>` | config | Relay access key 한 개를 제거합니다. 마지막 key를 제거하면 relay 인증이 비활성화되고, loopback이 아닌 `hostname`은 시작을 거부합니다. |
 
 Credential 위치와 노출 규칙:
 
