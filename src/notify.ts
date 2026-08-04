@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { debugSwallowed } from "./debug";
 
 export const GIVE_UP_TITLE = "frogprogsy watchdog";
 export const GIVE_UP_MESSAGE =
@@ -56,7 +57,9 @@ export function notify(title: string, message: string): void {
     const argv = buildNotifyCommand(process.platform, title, message);
     if (!argv.length) return;
     spawnSync(argv[0], argv.slice(1), { timeout: 5000, stdio: "ignore" });
-  } catch {
-    // best-effort — swallow all failures
+  } catch (err) {
+    // best-effort — swallow all failures so the caller's control flow is never interrupted,
+    // but keep the cause observable with FROGP_DEBUG=1 instead of discarding it entirely.
+    debugSwallowed("notify", err);
   }
 }

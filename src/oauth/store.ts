@@ -22,7 +22,16 @@ export function loadAuthStore(): AuthStore {
   if (!existsSync(path)) return {};
   try {
     return JSON.parse(readFileSync(path, "utf-8")) as AuthStore;
-  } catch {
+  } catch (err) {
+    // An existing but unparseable auth.json reads as empty here, and the next saveCredential /
+    // removeCredential rewrites the file from that empty store — silently discarding every other
+    // provider's stored token. Warn so the corruption is visible before a save overwrites it,
+    // instead of losing credentials without a trace.
+    console.warn(
+      `[frogp] OAuth token store at ${path} could not be read; treating it as empty for this run — saving a credential now would overwrite the existing file: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
     return {};
   }
 }
