@@ -6,8 +6,7 @@
   "type": "module",
   "main": "src/index.ts",
   "bin": {
-    "frogp": "./src/cli.ts",
-    "claude": "./src/claude.ts"
+    "frogp": "./src/cli.ts"
   },
   "files": [
     "src",

@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { __requestLogTest } from "../src/server";
 import type { FrogConfig } from "../src/types";
+import { claudeLauncherFileName } from "../src/claude-launchers";
 import { AUTO_MODE_CLASSIFIER_ALIAS } from "../src/classifier-settings";
 
 let previousNoClaudeWrites: string | undefined;
@@ -58,6 +59,127 @@ afterEach(() => {
 });
 
 describe("Claude Code home management API", () => {
+  test("POST creates a name-only account home and returns its executable shortcut", async () => {
+    const cfg = config();
+    const homeRoot = mkdtempSync(join(tmpdir(), "frog-profile-api-add-"));
+    let saves = 0;
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles", {
+          method: "POST",
+          headers: { Origin: "http://localhost", "content-type": "application/json" },
+          body: JSON.stringify({ name: "team" }),
+        }),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        {
+          homeDir: homeRoot,
+          saveConfig: () => { saves++; },
+          syncClaudeLaunchers: () => ({ success: true }),
+        },
+      );
+
+      expect(res?.status).toBe(201);
+      const body = await json(res!);
+      expect(body.profile).toMatchObject({ name: "team", claudeHome: join(homeRoot, ".claude-team"), shortcut: { command: "claude-team", installed: true } });
+      expect(body.warning).toBeUndefined();
+      expect(saves).toBe(1);
+      expect(existsSync(join(homeRoot, ".claude-team"))).toBe(true);
+      if (process.platform !== "win32") expect(statSync(join(homeRoot, ".claude-team")).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(homeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("POST surfaces successful launcher sync warnings while keeping the shortcut installed", async () => {
+    const cfg = config();
+    const homeRoot = mkdtempSync(join(tmpdir(), "frog-profile-api-sync-success-warning-"));
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles", {
+          method: "POST",
+          headers: { Origin: "http://localhost", "content-type": "application/json" },
+          body: JSON.stringify({ name: "team" }),
+        }),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        {
+          homeDir: homeRoot,
+          saveConfig: () => {},
+          syncClaudeLaunchers: () => ({
+            success: true,
+            warnings: ["launcher cleanup deferred", "managed target was preserved"],
+          }),
+        },
+      );
+
+      expect(res?.status).toBe(201);
+      expect(await json(res!)).toMatchObject({
+        profile: { name: "team", shortcut: { command: "claude-team", installed: true } },
+        warning: "launcher cleanup deferred; managed target was preserved",
+        launcherSync: {
+          success: true,
+          warnings: ["launcher cleanup deferred", "managed target was preserved"],
+        },
+      });
+    } finally {
+      rmSync(homeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("POST keeps a saved account successful when shortcut sync fails", async () => {
+    const cfg = config();
+    const homeRoot = mkdtempSync(join(tmpdir(), "frog-profile-api-sync-warning-"));
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles", {
+          method: "POST",
+          headers: { Origin: "http://localhost", "content-type": "application/json" },
+          body: JSON.stringify({ name: "team" }),
+        }),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        {
+          homeDir: homeRoot,
+          saveConfig: () => {},
+          syncClaudeLaunchers: () => ({ success: false, error: "no safe Claude executable" }),
+        },
+      );
+
+      expect(res?.status).toBe(201);
+      expect(await json(res!)).toMatchObject({
+        profile: { name: "team", shortcut: { command: "claude-team", installed: false } },
+        warning: "The account was saved, but its shortcut could not be created. Fix the issue and run frogp refresh.",
+        launcherSync: { success: false, error: "no safe Claude executable" },
+      });
+      expect(cfg.claudeProfiles?.profiles.some(profile => profile.name === "team")).toBe(true);
+    } finally {
+      rmSync(homeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("POST returns an actionable stage error instead of a generic add failure", async () => {
+    const cfg = config();
+    const homeRoot = mkdtempSync(join(tmpdir(), "frog-profile-api-conflict-"));
+    mkdirSync(join(homeRoot, ".claude-team"));
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles", {
+          method: "POST",
+          headers: { Origin: "http://localhost", "content-type": "application/json" },
+          body: JSON.stringify({ name: "team" }),
+        }),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        { homeDir: homeRoot, saveConfig: () => {}, syncClaudeLaunchers: () => ({ success: true }) },
+      );
+      expect(res?.status).toBe(409);
+      expect(await json(res!)).toMatchObject({ code: "home_exists" });
+    } finally {
+      rmSync(homeRoot, { recursive: true, force: true });
+    }
+  });
+
   test("PATCH is local-origin guarded and renames homes", async () => {
     const cfg = config();
     let saves = 0;
@@ -79,18 +201,56 @@ describe("Claude Code home management API", () => {
       new Request("http://localhost/api/claude-profiles/cp_work", {
         method: "PATCH",
         headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
-        body: JSON.stringify({ name: "컬리 업무용" }),
+        body: JSON.stringify({ name: "Team" }),
       }),
       new URL("http://localhost/api/claude-profiles/cp_work"),
       cfg,
-      { saveConfig: () => { saves++; } },
+      { saveConfig: () => { saves++; }, syncClaudeLaunchers: () => ({ success: true, launchers: [{ name: "claude-team", profileId: "cp_work" }] }) },
     );
     expect(patched?.status).toBe(200);
+    const body = await json(patched!);
+    expect(body).toMatchObject({
+      profile: { id: "cp_work", name: "Team" },
+      launcherSync: { success: true, launchers: [{ name: "claude-team", profileId: "cp_work" }] },
+    });
+    expect(body.warning).toBeUndefined();
     const profile = cfg.claudeProfiles?.profiles.find(item => item.id === "cp_work");
-    expect(profile?.name).toBe("컬리 업무용");
+    expect(profile?.name).toBe("Team");
 
     expect(cfg.disabledModels).toEqual(["test/beta"]);
     expect(saves).toBeGreaterThanOrEqual(1);
+  });
+
+  test("PATCH surfaces successful launcher sync warnings after a saved rename", async () => {
+    const cfg = config();
+    const res = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/claude-profiles/cp_work", {
+        method: "PATCH",
+        headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
+        body: JSON.stringify({ name: "Team" }),
+      }),
+      new URL("http://localhost/api/claude-profiles/cp_work"),
+      cfg,
+      {
+        saveConfig: () => {},
+        syncClaudeLaunchers: () => ({
+          success: true,
+          launchers: [{ name: "claude-team", profileId: "cp_work" }],
+          warnings: ["launcher cleanup deferred", "managed target was preserved"],
+        }),
+      },
+    );
+
+    expect(res?.status).toBe(200);
+    expect(await json(res!)).toMatchObject({
+      profile: { id: "cp_work", name: "Team" },
+      warning: "launcher cleanup deferred; managed target was preserved",
+      launcherSync: {
+        success: true,
+        launchers: [{ name: "claude-team", profileId: "cp_work" }],
+        warnings: ["launcher cleanup deferred", "managed target was preserved"],
+      },
+    });
   });
 
   test("originless mutations must still target a loopback URL", async () => {
@@ -213,6 +373,291 @@ describe("Claude Code home management API", () => {
     } finally {
       rmSync(defaultHome, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("profile list does not advertise a colliding shortcut for the wrong account", async () => {
+    const cfg = config();
+    const defaultHome = mkdtempSync(join(tmpdir(), "frog-profile-collision-default-"));
+    const workHome = mkdtempSync(join(tmpdir(), "frog-profile-collision-work-"));
+    const otherHome = mkdtempSync(join(tmpdir(), "frog-profile-collision-other-"));
+    const defaultProfile = cfg.claudeProfiles!.profiles.find(item => item.id === "cp_default")!;
+    const work = cfg.claudeProfiles!.profiles.find(item => item.id === "cp_work")!;
+    defaultProfile.claudeHome = defaultHome;
+    work.name = "Work";
+    work.claudeHome = workHome;
+    cfg.claudeProfiles!.profiles.push({
+      id: "cp_other",
+      name: "work",
+      claudeHome: otherHome,
+      authState: "not_seen",
+    });
+
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles"),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        { saveConfig: () => {} },
+      );
+
+      expect(res?.status).toBe(200);
+      const body = await json(res!) as {
+        profiles: Array<{ id: string; shortcut?: { command: string }; shortcutIssue?: string }>;
+      };
+      expect(body.profiles.find(item => item.id === "cp_work")?.shortcut?.command).toBe("claude-work");
+      const conflicting = body.profiles.find(item => item.id === "cp_other");
+      expect(conflicting?.shortcut).toBeUndefined();
+      expect(conflicting?.shortcutIssue).toBe("name_conflict");
+    } finally {
+      rmSync(defaultHome, { recursive: true, force: true });
+      rmSync(workHome, { recursive: true, force: true });
+      rmSync(otherHome, { recursive: true, force: true });
+    }
+  });
+
+  test("profile list does not treat an unmarked replacement as an installed launcher", async () => {
+    const cfg = config();
+    const frogHome = mkdtempSync(join(tmpdir(), "frog-profile-unowned-launcher-"));
+    const defaultHome = mkdtempSync(join(tmpdir(), "frog-profile-unowned-default-"));
+    const workHome = mkdtempSync(join(tmpdir(), "frog-profile-unowned-work-"));
+    const previousHome = process.env.FROGPROGSY_HOME;
+    cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_default")!.claudeHome = defaultHome;
+    cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")!.claudeHome = workHome;
+    process.env.FROGPROGSY_HOME = frogHome;
+    const binDir = join(frogHome, "bin");
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, claudeLauncherFileName("claude-work")), "# user-owned replacement\n", "utf8");
+
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles"),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        { saveConfig: () => {} },
+      );
+      const body = await json(res!) as {
+        profiles: Array<{ id: string; shortcut?: { installed: boolean } }>;
+      };
+      expect(body.profiles.find(profile => profile.id === "cp_work")?.shortcut?.installed).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.FROGPROGSY_HOME;
+      else process.env.FROGPROGSY_HOME = previousHome;
+      rmSync(frogHome, { recursive: true, force: true });
+      rmSync(defaultHome, { recursive: true, force: true });
+      rmSync(workHome, { recursive: true, force: true });
+    }
+  });
+
+  test("POST reports a shortcut-name collision without advertising the other account's launcher", async () => {
+    const cfg = config();
+    cfg.claudeProfiles!.profiles.find(item => item.id === "cp_work")!.name = "Work";
+    const otherHome = mkdtempSync(join(tmpdir(), "frog-profile-collision-add-"));
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles", {
+          method: "POST",
+          headers: { Origin: "http://localhost", "content-type": "application/json" },
+          body: JSON.stringify({ name: "work", claudeHome: otherHome }),
+        }),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        { saveConfig: () => {}, syncClaudeLaunchers: () => ({ success: true }) },
+      );
+
+      expect(res?.status).toBe(409);
+      const body = await json(res!) as {
+        code?: string;
+        profile?: { shortcut?: { command: string } };
+      };
+      expect(body.code).toBe("shortcut_conflict");
+      expect(body.profile?.shortcut).toBeUndefined();
+      expect(cfg.claudeProfiles!.profiles.some(profile => profile.name === "work")).toBe(true);
+    } finally {
+      rmSync(otherHome, { recursive: true, force: true });
+    }
+  });
+
+  test("PATCH rejects a later profile rename before saving or syncing when its shortcut belongs to an earlier profile", async () => {
+    const cfg = config();
+    cfg.claudeProfiles!.profiles.find(item => item.id === "cp_work")!.name = "Work";
+    cfg.claudeProfiles!.profiles.push({
+      id: "cp_other",
+      name: "Personal",
+      claudeHome: "/tmp/.claude-personal",
+      authState: "not_seen",
+    });
+    let saves = 0;
+    let syncs = 0;
+
+    const res = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/claude-profiles/cp_other", {
+        method: "PATCH",
+        headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
+        body: JSON.stringify({ name: "work" }),
+      }),
+      new URL("http://localhost/api/claude-profiles/cp_other"),
+      cfg,
+      {
+        saveConfig: () => { saves++; },
+        syncClaudeLaunchers: () => {
+          syncs++;
+          return { success: true, launchers: [] };
+        },
+      },
+    );
+
+    expect(res?.status).toBe(409);
+    expect(await json(res!)).toMatchObject({ code: "shortcut_conflict" });
+    expect({
+      renamedName: cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_other")?.name,
+      ownerName: cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")?.name,
+      saves,
+      syncs,
+    }).toEqual({ renamedName: "Personal", ownerName: "Work", saves: 0, syncs: 0 });
+  });
+
+  test("PATCH rejects an earlier profile rename before saving or syncing when its shortcut belongs to a later profile", async () => {
+    const cfg = config();
+    cfg.claudeProfiles!.profiles.find(item => item.id === "cp_work")!.name = "Work";
+    cfg.claudeProfiles!.profiles.push({
+      id: "cp_other",
+      name: "Personal",
+      claudeHome: "/tmp/.claude-personal",
+      authState: "not_seen",
+    });
+    let saves = 0;
+    let syncs = 0;
+
+    const res = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/claude-profiles/cp_work", {
+        method: "PATCH",
+        headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
+        body: JSON.stringify({ name: "personal" }),
+      }),
+      new URL("http://localhost/api/claude-profiles/cp_work"),
+      cfg,
+      {
+        saveConfig: () => { saves++; },
+        syncClaudeLaunchers: () => {
+          syncs++;
+          return {
+            success: true,
+            launchers: [{ name: "claude-personal", profileId: "cp_work" }],
+          };
+        },
+      },
+    );
+
+    expect(res?.status).toBe(409);
+    expect(await json(res!)).toMatchObject({ code: "shortcut_conflict" });
+    expect({
+      renamedName: cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")?.name,
+      ownerName: cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_other")?.name,
+      saves,
+      syncs,
+    }).toEqual({ renamedName: "Work", ownerName: "Personal", saves: 0, syncs: 0 });
+  });
+
+  test("PATCH keeps a planned rename successful with a warning when launcher sync fails", async () => {
+    const cfg = config();
+
+    const res = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/claude-profiles/cp_work", {
+        method: "PATCH",
+        headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
+        body: JSON.stringify({ name: "Team" }),
+      }),
+      new URL("http://localhost/api/claude-profiles/cp_work"),
+      cfg,
+      {
+        saveConfig: () => {},
+        syncClaudeLaunchers: () => ({
+          success: false,
+          error: "the original Claude Code executable was not found",
+          launchers: [{ name: "claude-team", profileId: "cp_work" }],
+        }),
+      },
+    );
+
+    expect(res?.status).toBe(200);
+    expect(await json(res!)).toMatchObject({
+      profile: { id: "cp_work", name: "Team" },
+      warning: "The account rename was saved, but its shortcut could not be created. Fix the reported launcher issue and run frogp refresh.",
+      launcherSync: {
+        success: false,
+        error: "the original Claude Code executable was not found",
+      },
+    });
+    expect(cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")?.name).toBe("Team");
+  });
+
+  test("PATCH treats a missing planned launcher after sync as a saved partial rename, not a name conflict", async () => {
+    const cfg = config();
+
+    const res = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/claude-profiles/cp_work", {
+        method: "PATCH",
+        headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
+        body: JSON.stringify({ name: "Team" }),
+      }),
+      new URL("http://localhost/api/claude-profiles/cp_work"),
+      cfg,
+      {
+        saveConfig: () => {},
+        syncClaudeLaunchers: () => ({
+          success: true,
+          launchers: [],
+          warnings: ["launcher claude-team skipped; target is not owned by frogprogsy"],
+        }),
+      },
+    );
+
+    expect(res?.status).toBe(200);
+    const body = await json(res!);
+    expect(body).toMatchObject({
+      profile: { id: "cp_work", name: "Team" },
+      warning: "The account rename was saved, but its shortcut could not be created. Fix the reported launcher issue and run frogp refresh.",
+      launcherSync: {
+        success: true,
+        warnings: ["launcher claude-team skipped; target is not owned by frogprogsy"],
+      },
+    });
+    expect(body.code).toBeUndefined();
+    expect(cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")?.name).toBe("Team");
+  });
+
+  test("POST reports installed false when sync succeeds but skips the saved profile launcher", async () => {
+    const cfg = config();
+    const homeRoot = mkdtempSync(join(tmpdir(), "frog-profile-api-skipped-launcher-"));
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles", {
+          method: "POST",
+          headers: { Origin: "http://localhost", "content-type": "application/json" },
+          body: JSON.stringify({ name: "team" }),
+        }),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        {
+          homeDir: homeRoot,
+          saveConfig: () => {},
+          syncClaudeLaunchers: () => ({
+            success: true,
+            launchers: [{ name: "claude-work", profileId: "cp_work" }],
+            warnings: ["launcher claude-team skipped; target is not owned by frogprogsy"],
+          }),
+        },
+      );
+
+      expect(res?.status).toBe(201);
+      expect(await json(res!)).toMatchObject({
+        profile: { name: "team", shortcut: { command: "claude-team", installed: false } },
+        warning: "The account was saved, but its shortcut could not be created. Rename the account if the shortcut name conflicts, or fix the reported launcher issue.",
+      });
+      expect(cfg.claudeProfiles!.profiles.some(profile => profile.name === "team")).toBe(true);
+    } finally {
+      rmSync(homeRoot, { recursive: true, force: true });
     }
   });
 
@@ -364,12 +809,13 @@ describe("Claude Code home management API", () => {
         }),
         new URL("http://localhost/api/claude-profiles/cp_work"),
         cfg,
-        { saveConfig: () => {} },
+        { saveConfig: () => {}, syncClaudeLaunchers: () => ({ success: true }) },
       );
 
       expect(res?.status).toBe(200);
       const body = await json(res!);
       expect(body.launcherSync).toMatchObject({ success: true });
+      expect(body.warning).toBeUndefined();
       expect(cfg.claudeProjects?.projects[0]?.routingProfileId).toBeUndefined();
       const settings = JSON.parse(readFileSync(join(projectRoot, ".claude", "settings.local.json"), "utf8"));
       expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toBe("X-Other: keep");
@@ -383,6 +829,41 @@ describe("Claude Code home management API", () => {
       rmSync(defaultHome, { recursive: true, force: true });
       rmSync(workHome, { recursive: true, force: true });
       rmSync(frogHome, { recursive: true, force: true });
+    }
+  });
+
+  test("DELETE surfaces successful launcher sync warnings after removing the account", async () => {
+    const cfg = config();
+    const home = mkdtempSync(join(tmpdir(), "frog-profile-delete-warning-"));
+    cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")!.claudeHome = home;
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles/cp_work", {
+          method: "DELETE",
+          headers: { Origin: "http://localhost:10100" },
+        }),
+        new URL("http://localhost/api/claude-profiles/cp_work"),
+        cfg,
+        {
+          saveConfig: () => {},
+          syncClaudeLaunchers: () => ({
+            success: true,
+            warnings: ["launcher cleanup deferred", "managed target was preserved"],
+          }),
+        },
+      );
+
+      expect(res?.status).toBe(200);
+      expect(await json(res!)).toMatchObject({
+        removed: { id: "cp_work" },
+        warning: "launcher cleanup deferred; managed target was preserved",
+        launcherSync: {
+          success: true,
+          warnings: ["launcher cleanup deferred", "managed target was preserved"],
+        },
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 

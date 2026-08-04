@@ -334,6 +334,12 @@ function packageRootForCommand(binDir: string, command: "frogp" | "claude"): str
   return null;
 }
 
+export function verifyNoOwnedPlainClaude(binDir: string): void {
+  if (packageRootForCommand(binDir, "claude") !== null) {
+    throw new Error("The installed frogprogsy package still owns the plain claude command");
+  }
+}
+
 export function classifyDevInstall(
   latest: DevBuildManifest | null,
   installed: InstalledDevBuildManifest | null,
@@ -444,7 +450,7 @@ async function capturePreviousInstall(cacheRoot: string): Promise<PreviousGlobal
   return { kind: "dev", manifest, tarball: await verifyTarball(cacheRoot, manifest) };
 }
 
-function verifyInstalledPackageVersion(version: string): string {
+function verifyInstalledPackageIdentity(version: string): string {
   const binDir = bunBinDir();
   const packageRoot = packageRootForCommand(binDir, "frogp");
   if (!packageRoot) throw new Error("Bun reported success but the installed frogp binary is not owned by frogprogsy");
@@ -455,29 +461,40 @@ function verifyInstalledPackageVersion(version: string): string {
   if (pkg.name !== PACKAGE_NAME || pkg.version !== version) {
     throw new Error(`Installed package identity mismatch for frogprogsy@${version}`);
   }
-  const claudeRoot = packageRootForCommand(binDir, "claude");
-  if (claudeRoot !== packageRoot) throw new Error("Installed frogp and claude bins do not resolve to the same package");
   return packageRoot;
 }
 
-function verifyInstalledPackage(manifest: DevBuildManifest): string {
-  return verifyInstalledPackageVersion(manifest.version);
+/**
+ * Verify the new package contract: frogprogsy owns `frogp` and never owns the plain `claude` command.
+ * `packageRootForCommand` returns a root only when that command's package.json name is frogprogsy, so a
+ * Bun-global `claude` from another package correctly reads as null and does not cause a false failure.
+ */
+function verifyNewInstalledPackage(manifest: DevBuildManifest): string {
+  const packageRoot = verifyInstalledPackageIdentity(manifest.version);
+  verifyNoOwnedPlainClaude(bunBinDir());
+  return packageRoot;
 }
 
 function restorePreviousInstall(previous: PreviousGlobalInstall): void {
   if (!previous) return;
   if (previous.kind === "untracked") {
     run("bun", ["add", "-g", "--ignore-scripts", `${PACKAGE_NAME}@${previous.version}`]);
-    verifyInstalledPackageVersion(previous.version);
+    // A restored legacy version legitimately owns a `claude` bin. Rollback verifies package identity and
+    // version only; applying the new no-owned-claude invariant here would reject a successful recovery.
+    verifyInstalledPackageIdentity(previous.version);
     return;
   }
   if (previous.kind === "source") {
     run("bun", ["link", "--cwd", previous.packageRoot]);
+    const restoredRoot = packageRootForCommand(bunBinDir(), "frogp");
+    if (restoredRoot !== previous.packageRoot) {
+      throw new Error("Bun did not restore the previous frogprogsy source link");
+    }
     return;
   }
 
   run("bun", ["add", "-g", "--ignore-scripts", previous.tarball]);
-  const packageRoot = verifyInstalledPackage(previous.manifest);
+  const packageRoot = verifyInstalledPackageIdentity(previous.manifest.version);
   atomicWriteJson(join(packageRoot, INSTALLED_MANIFEST), previous.manifest);
 }
 
@@ -495,7 +512,7 @@ async function installBuild(manifest: DevBuildManifest, yes: boolean): Promise<v
 
   try {
     run("bun", ["add", "-g", "--ignore-scripts", path]);
-    const packageRoot = verifyInstalledPackage(manifest);
+    const packageRoot = verifyNewInstalledPackage(manifest);
     const installed: InstalledDevBuildManifest = { ...manifest, installedAt: new Date().toISOString() };
     atomicWriteJson(join(packageRoot, INSTALLED_MANIFEST), installed);
   } catch (error) {

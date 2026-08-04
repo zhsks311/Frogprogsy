@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { suggestClosest } from "./cli-suggest";
@@ -27,10 +27,13 @@ import { findAvailablePort } from "./ports";
 import { startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
 import { parseEnvFlag, resolveWatchdogEnabled } from "./watchdog";
+import { configureZshAccountShortcuts, maybeConfigureAccountShortcuts, removeZshAccountShortcuts, shellManualPathLine, zshAccountShortcutsSupported } from "./shell-shortcuts";
 import { injectClaudeSettingsWithRetry } from "./inject-retry";
 import { findGuiDistFromModuleDir, formatGuiBuildWarning, resolveGuiBuildIdentity } from "./build-identity";
 import {
   addClaudeProfile,
+  derivedClaudeHomeForShortcut,
+  expandHomePath,
   ensureClaudeProfiles,
   managedClaudeProfiles,
   listClaudeProfiles,
@@ -47,7 +50,7 @@ import {
   markClaudeProjectEnrolled,
   resolveClaudeProject,
 } from "./claude-projects";
-import { claudeLauncherBinDir, findRealClaudeExecutable, runClaudeProfile, syncClaudeLauncherShims } from "./claude-launchers";
+import { claudeLauncherBinDir, claudeProfileShortcutName, findRealClaudeExecutable, plannedClaudeLaunchers, REAL_CLAUDE_UNRESOLVED_WARNING, runClaudeProfile, syncClaudeLauncherShims } from "./claude-launchers";
 import {
   claudeProjectSettingsFilePath,
   injectClaudeProjectSettings,
@@ -181,7 +184,7 @@ function printSubcommandUsage(name: string | undefined): boolean {
       console.log("Usage: frogp init\n\nInteractive setup for providers and Claude Code config injection.");
       break;
     case "start":
-      console.log("Usage: frogp start [--port <port>]\n\nStart the proxy server, sync models to Claude Code, and generate plain claude/profile launchers.");
+      console.log("Usage: frogp start [--port <port>]\n\nStart the proxy server, sync models to Claude Code, and generate one shortcut per configured Claude account. The plain claude command always remains the user's installed Claude Code.");
       break;
     case "stop":
       console.log("Usage: frogp stop\n\nStop the proxy and restore every configured Claude Code home AND every enrolled project so new Claude Code sessions never target a stopped proxy after a successful stop. Global stop temporarily removes project-local gateway settings but retains enrollment intent (enrolled:true); the next start/refresh reapplies enrolled projects. Managed launchers remain installed and pass through to native Claude Code while the proxy is stopped.");
@@ -193,10 +196,10 @@ function printSubcommandUsage(name: string | undefined): boolean {
       console.log("Usage: frogp uninstall\n\nRemove local config, restore every configured Claude Code home and every enrolled project to native Claude Code, remove the config directory containing managed launchers, and remove the package.");
       break;
     case "refresh":
-      console.log("Usage: frogp refresh\n\nEnsure the proxy is running and re-sync every configured Claude Code home config/models/cache plus plain claude/profile launchers, and reapply every enrolled project's gateway routing with the active port and carrier (token-free migrates stale sentinel project settings).");
+      console.log("Usage: frogp refresh\n\nEnsure the proxy is running and re-sync every configured Claude Code home config/models/cache plus account shortcuts, and reapply every enrolled project's gateway routing with the active port and carrier (token-free migrates stale sentinel project settings).");
       break;
     case "claude":
-      console.log("Usage: frogp claude list|add|rename|remove|inject|refresh|reload-models|restore|status|run|project|grants|auth ...\n\nManage Claude Code config homes, isolated subscription grants, and project-scoped enrollment. For ordinary `claude` in a repository, prefer `frogp claude project enroll [path]`: it writes only <project>/.claude/settings.local.json with the frogprogsy base URL and gateway discovery flag. Token-free is the default; no synthetic auth token is written unless the explicit sentinel rollback is configured. Claude account/home selection remains Claude Code controlled and is not chosen by project enrollment.\n\nProject commands:\n  frogp claude project enroll [path] [--routing-profile <name-or-id>]\n  frogp claude project status [path]\n  frogp claude project restore [path]\n\nIsolated Claude subscription grants (Branch B) — never touch your native ~/.claude home or the global Keychain login:\n  frogp claude grants list\n  frogp claude grants add <label>            Create a grant and print a manual login using your real claude executable\n  frogp claude grants remove <id> [--force]  Deletes the grant's scoped local credential then removes it; refuses while a provider is bound unless --force (no auto-rebind); no server-side revocation\n  frogp claude grants status [id]            ok/none/unreadable/reauth_required/dangling (no secrets)\n  frogp claude auth probe-b --grant <id> [--live --yes] [--json] [--provider <name>]   Consented Branch-B probe; --live --yes verifies two real Anthropic surfaces with the bound grant only\n\nStale model picker recovery for a specific Claude home: frogp claude reload-models [name-or-id]\nRebuilds that home's gateway model cache/catalog. Claude Code may refetch /v1/models on process/session start and resume, not when an already-open /model screen is reopened.\n\nRollback only: set gatewayAuthCarrier:\"sentinel\" in frogprogsy config, or add --global-discovery-auth to one home inject/refresh/reload-models invocation. Sentinel mode may disable claude.ai connectors for that home.");
+      console.log("Usage: frogp claude list|add|rename|remove|shortcuts|inject|refresh|reload-models|restore|status|run|project|grants|auth ...\n\nManage Claude Code accounts, account shortcuts, isolated subscription grants, and project-scoped enrollment. For ordinary `claude` in a repository, prefer `frogp claude project enroll [path]`: it writes only <project>/.claude/settings.local.json with the frogprogsy base URL and gateway discovery flag. Token-free is the default; no synthetic auth token is written unless the explicit sentinel rollback is configured. Claude account/home selection remains Claude Code controlled and is not chosen by project enrollment.\n\nProject commands:\n  frogp claude project enroll [path] [--routing-profile <name-or-id>]\n  frogp claude project status [path]\n  frogp claude project restore [path]\n\nIsolated Claude subscription grants (Branch B) — never touch your native ~/.claude home or the global Keychain login:\n  frogp claude grants list\n  frogp claude grants add <label>            Create a grant and print a manual login using your real claude executable\n  frogp claude grants remove <id> [--force]  Deletes the grant's scoped local credential then removes it; refuses while a provider is bound unless --force (no auto-rebind); no server-side revocation\n  frogp claude grants status [id]            ok/none/unreadable/reauth_required/dangling (no secrets)\n  frogp claude auth probe-b --grant <id> [--live --yes] [--json] [--provider <name>]   Consented Branch-B probe; --live --yes verifies two real Anthropic surfaces with the bound grant only\n\nStale model picker recovery for a specific Claude home: frogp claude reload-models [name-or-id]\nRebuilds that home's gateway model cache/catalog. Claude Code may refetch /v1/models on process/session start and resume, not when an already-open /model screen is reopened.\n\nRollback only: set gatewayAuthCarrier:\"sentinel\" in frogprogsy config, or add --global-discovery-auth to one home inject/refresh/reload-models invocation. Sentinel mode may disable claude.ai connectors for that home.");
       break;
     case "providers":
       console.log("Usage: frogp providers set <name> --auth claude-grant --grant <id>\n\nBind an existing provider to an isolated Claude subscription grant. Unknown provider or grant is a hard error. This never touches OAuth or API-key logins; it only sets the provider's authMode to claude-grant and records the grant id. It does not log in and does not auto-rebind on grant removal.");
@@ -238,7 +241,9 @@ function suggestCommand(input: string): string | null {
   return suggestClosest(input, [...HELP_TOPICS, "help"], 2);
 }
 
-if (command !== undefined && command !== "help" && hasHelpFlag(args.slice(1))) {
+const payloadSeparator = args.indexOf("--");
+const frogpArgs = payloadSeparator === -1 ? args.slice(1) : args.slice(1, payloadSeparator);
+if (command !== undefined && command !== "help" && hasHelpFlag(frogpArgs)) {
   if (!HELP_TOPICS.has(command) || !printSubcommandUsage(command)) {
     console.error(`Unknown command: ${command}`);
     printUsage();
@@ -326,14 +331,10 @@ async function proxyHealthy(port?: number): Promise<boolean> {
 
 function printLauncherSync(result: ReturnType<typeof syncClaudeLauncherShims>): void {
   const names = result.launchers.map(entry => entry.name).join(", ");
-  console.log(`   launchers: ${names || "(none)"} in ${result.binDir}`);
-  if (result.realClaude === "claude") {
-    console.log("   warning: real Claude executable was not resolved; launchers will use PATH at runtime.");
-  } else {
-    console.log(`   real claude: ${result.realClaude}`);
-  }
+  console.log(`   account shortcuts: ${names || "(none)"} in ${result.binDir}`);
+  console.log(`   real claude: ${result.realClaude}`);
   for (const warning of result.warnings) console.log(`   warning: ${warning}`);
-  console.log(`   Put ${result.binDir} before the original Claude Code binary in PATH to make plain 'claude' and generated aliases route through frogprogsy.`);
+  console.log(`   Append ${result.binDir} to PATH to use account shortcuts. The plain 'claude' command remains your installed Claude Code.`);
 }
 
 function syncLaunchers(config: ReturnType<typeof loadConfig>): void {
@@ -616,6 +617,18 @@ async function handleUninstall() {
     console.error(`Uninstall finished with ${failures.length} failed step(s): ${failures.join(", ")}`);
     process.exit(1);
   }
+
+  try {
+    const shellCleanup = removeZshAccountShortcuts();
+    if (shellCleanup.state === "configured") console.log("✅ zsh account shortcuts removed");
+    else if (shellCleanup.state === "refused") {
+      console.error(`⚠️  ${shellCleanup.message}`);
+      console.error(`    Remove the frogprogsy marker block manually from ${shellCleanup.rcPath}.`);
+    }
+  } catch (error) {
+    console.error(`⚠️  zsh account shortcut cleanup skipped: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   runStep("frogprogsy config removed", () => {
     assertSafeConfigDirWrite("remove frogprogsy config");
     rmSync(getConfigDir(), { recursive: true, force: true });
@@ -853,7 +866,7 @@ function renderDoctorHuman(report: ClaudeDoctorReport, paint: boolean): void {
   }
 
   console.log(`raw claude: ${report.rawClaude.kind} ${report.rawClaude.path ?? "(missing)"}`);
-  console.log(`real claude target: ${report.realClaude.path}`);
+  console.log(`real claude target: ${report.realClaude.path ?? "(missing)"}`);
 
   const launcherMissing = report.launchers.filter(launcher => !launcher.installed || !launcher.onPath);
   if (launcherMissing.length === 0) {
@@ -1085,22 +1098,84 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       printClaudeProfiles(config);
       return;
     case "add": {
-      const home = parseClaudeHomeOption(values);
+      const explicitHome = parseClaudeHomeOption(values);
       const nameParts = values.slice(1).filter((value, index, arr) => {
         if (value === "--home") return false;
         if (arr[index - 1] === "--home") return false;
         return true;
       });
       const name = nameParts.join(" ").trim();
-      if (!name || !home) {
-        console.error("Usage: frogp claude add <name> --home <path>");
+      if (!name) {
+        console.error("Usage: frogp claude add <account-name> [--home <existing-path>]");
         process.exit(1);
       }
-      const profile = addClaudeProfile(config, { name, claudeHome: home });
-      saveConfig(config);
-      syncLaunchers(config);
-      console.log(`✅ Claude Code home added: ${profile.name} (${profile.id})`);
-      console.log(`   home: ${profile.claudeHome}`);
+
+      let home: string;
+      let createdHome = false;
+      if (explicitHome) {
+        home = expandHomePath(explicitHome);
+        if (!existsSync(home) || !statSync(home).isDirectory()) {
+          console.error("❌ --home must point at an existing Claude Code home directory.");
+          console.error(`   To create a new isolated home, run: frogp claude add ${name}`);
+          process.exit(1);
+        }
+      } else {
+        try {
+          home = derivedClaudeHomeForShortcut(name);
+        } catch (error) {
+          console.error(`❌ Account name rejected: ${error instanceof Error ? error.message : String(error)}`);
+          process.exit(1);
+        }
+        if (existsSync(home)) {
+          const kind = statSync(home).isDirectory() ? "directory" : "file";
+          console.error(`❌ Account home not created: the derived ${kind} already exists.`);
+          console.error(`   To adopt an existing Claude Code home intentionally, run: frogp claude add ${name} --home <path>`);
+          process.exit(1);
+        }
+        try {
+          mkdirSync(home, { mode: 0o700 });
+          chmodSync(home, 0o700);
+          createdHome = true;
+        } catch (error) {
+          console.error(`❌ Account home creation failed: ${error instanceof Error ? error.message : String(error)}`);
+          process.exit(1);
+        }
+      }
+
+      let profile: ReturnType<typeof addClaudeProfile>;
+      try {
+        profile = addClaudeProfile(config, { name, claudeHome: home });
+        saveConfig(config);
+      } catch (error) {
+        console.error(`❌ Account registration failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (createdHome) console.error("   The new empty home directory was kept; frogprogsy does not delete account directories automatically.");
+        process.exit(1);
+      }
+
+      if (!plannedClaudeLaunchers(config).launchers.some(entry => entry.profileId === profile.id)) {
+        console.error(`❌ Account was saved: ${profile.name} (${profile.id})`);
+        console.error("   Its shortcut name conflicts with another account. Run frogp claude rename with a distinct name.");
+        process.exit(1);
+      }
+
+      try {
+        const launchers = syncClaudeLauncherShims(config);
+        printLauncherSync(launchers);
+        const shortcut = launchers.launchers.find(entry => entry.profileId === profile.id)?.name;
+        if (!shortcut) {
+          console.error(`❌ Account was saved: ${profile.name} (${profile.id})`);
+          console.error("   Its shortcut name conflicts or could not be created. Run frogp claude rename with a distinct name.");
+          process.exit(1);
+        }
+        console.log(`✅ Claude account added: ${profile.name} (${profile.id})`);
+        console.log(`   home: ${profile.claudeHome}`);
+        console.log(`   next: open a new terminal and run ${shortcut} to sign in.`);
+        await maybeConfigureAccountShortcuts();
+      } catch (error) {
+        console.error(`❌ Account was saved, but its shortcut could not be created: ${error instanceof Error ? error.message : String(error)}`);
+        console.error("   Fix the reported issue, then run frogp refresh. The account home and registration were kept.");
+        process.exit(1);
+      }
       return;
     }
     case "rename": {
@@ -1110,9 +1185,45 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         console.error("Usage: frogp claude rename <name-or-id> <new-name>");
         process.exit(1);
       }
-      const profile = renameClaudeProfile(config, selector, nextName);
+      const profile = resolveClaudeProfile(config, selector);
+      const defaultProfileId = config.claudeProfiles?.defaultProfileId;
+      const isDefaultProfile = defaultProfileId === profile.id;
+      if (!isDefaultProfile) {
+        const prospectiveShortcutName = claudeProfileShortcutName({ ...profile, name: nextName });
+        const shortcutConflict = ensureClaudeProfiles(config).profiles.some(candidate =>
+          candidate.id !== profile.id
+          && candidate.id !== defaultProfileId
+          && claudeProfileShortcutName(candidate) === prospectiveShortcutName
+        );
+        if (shortcutConflict) {
+          console.error("❌ Account rename rejected: its shortcut name conflicts with another account.");
+          console.error("   Choose a distinct account name.");
+          process.exit(1);
+        }
+      }
+      renameClaudeProfile(config, profile.id, nextName);
       saveConfig(config);
-      syncLaunchers(config);
+      const plannedLauncher = plannedClaudeLaunchers(config).launchers.find(entry => entry.profileId === profile.id);
+      try {
+        const launchers = syncClaudeLauncherShims(config);
+        printLauncherSync(launchers);
+        if (!isDefaultProfile && !launchers.realClaudeResolved) {
+          console.error(`❌ Account rename was saved: ${profile.name} (${profile.id})`);
+          console.error(`   Its shortcut could not be created: ${REAL_CLAUDE_UNRESOLVED_WARNING}.`);
+          process.exit(1);
+        }
+        const installed = plannedLauncher
+          && launchers.launchers.some(entry => entry.profileId === profile.id && entry.name === plannedLauncher.name);
+        if (!isDefaultProfile && !installed) {
+          console.error(`❌ Account rename was saved: ${profile.name} (${profile.id})`);
+          console.error("   Its shortcut could not be created. Fix the reported launcher issue, then run frogp refresh.");
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error(`❌ Account rename was saved: ${profile.name} (${profile.id})`);
+        console.error(`   Its shortcut could not be created: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+      }
       console.log(`✅ Claude Code home renamed: ${profile.name} (${profile.id})`);
       return;
     }
@@ -1125,6 +1236,10 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       const profile = resolveClaudeProfile(config, selector);
       if (ensureClaudeProfiles(config).profiles.length <= 1) {
         console.error("❌ Cannot remove the only Claude Code home");
+        process.exit(1);
+      }
+      if (config.claudeProfiles?.defaultProfileId === profile.id) {
+        console.error("❌ Cannot remove the default Claude Code home");
         process.exit(1);
       }
       try {
@@ -1151,6 +1266,35 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
     case "project":
       await handleClaudeProjectCommand(values, config);
       return;
+    case "shortcuts": {
+      const action = values[1];
+      if (action !== "setup") {
+        console.error("Usage: frogp claude shortcuts setup");
+        process.exit(1);
+      }
+      if (!zshAccountShortcutsSupported(process.env)) {
+        console.log("Automatic shell setup currently supports zsh on POSIX only.");
+        console.log(`Add this line to your shell configuration: ${shellManualPathLine()}`);
+        return;
+      }
+      let result: ReturnType<typeof configureZshAccountShortcuts>;
+      try {
+        result = configureZshAccountShortcuts();
+      } catch (error) {
+        console.error(`❌ zsh setup failed: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`   Manual setup: ${shellManualPathLine()}`);
+        process.exit(1);
+      }
+      if (result.state === "refused") {
+        console.error(`❌ ${result.message}`);
+        console.error(`   Manual setup: ${shellManualPathLine()}`);
+        process.exit(1);
+      }
+      console.log(`${result.state === "configured" ? "✅" : "ℹ️"} ${result.message}`);
+      if (result.warning) console.error(`⚠️  ${result.warning}`);
+      console.log(`   file: ${result.rcPath}`);
+      return;
+    }
     case "inject":
     case "refresh":
     case "reload-models": {
@@ -1226,7 +1370,12 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       const selectorValues = separator === -1 ? values.slice(1, 2) : values.slice(1, separator);
       const claudeArgs = separator === -1 ? values.slice(2) : values.slice(separator + 1);
       const profile = resolveClaudeProfile(config, selectorValues.join(" ") || undefined);
-      await runClaudeProfile(profile, config, claudeArgs, { realClaude: process.env.FROGP_REAL_CLAUDE?.trim() || undefined });
+      try {
+        await runClaudeProfile(profile, config, claudeArgs, { realClaude: process.env.FROGP_REAL_CLAUDE?.trim() || undefined });
+      } catch {
+        console.error("frogprogsy: refused to launch Claude because the executable could not be validated.");
+        process.exit(1);
+      }
     }
     case "grants":
       await handleClaudeGrantsCommand(values, config);
@@ -1235,7 +1384,7 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       await handleClaudeAuthCommand(values, config);
       return;
     default:
-      console.error("Usage: frogp claude list|add|rename|remove|inject|refresh|reload-models|restore|status|run|project|grants|auth ...");
+      console.error("Usage: frogp claude list|add|rename|remove|shortcuts|inject|refresh|reload-models|restore|status|run|project|grants|auth ...");
       process.exit(1);
   }
 }

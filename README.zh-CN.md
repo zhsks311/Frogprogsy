@@ -97,7 +97,7 @@ frogp claude reload-models <profile-id>
 
 已经打开的 `/model` 页面不会 hot reload；需要启动新的 `claude` 会话或 resume 一个会话，让 Claude Code 重新获取 `/v1/models`。
 
-`frogp start`/`frogp refresh` 会在 `~/.frogprogsy/bin` 生成 launcher shim：默认目录得到 `claude`，各目录得到 `claude-work`、`claude-personal` 等 alias。把该目录放到 native Claude Code binary 之前的 `PATH`，或使用 package 提供且在 PATH 中优先命中的 `claude` bin。Proxy 停止时，这些 launcher 会按所选目录直通 native Claude Code。
+`frogp start`/`frogp refresh` 会在 `~/.frogprogsy/bin` 为每个附加 Claude 账户生成一个快捷命令，例如 `claude-work` 或 `claude-personal`。默认账户使用普通的 `claude` 命令，该名称始终保留给用户安装的 Claude Code。请将快捷命令目录追加到 `PATH` 末尾。Proxy 停止时，账户快捷命令会按所选目录直通原生 Claude Code。
 
 ### 4. 发送第一条 Claude Code 请求
 

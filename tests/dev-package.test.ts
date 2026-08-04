@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   classifyDevInstall,
   isDevBuildManifest,
   recordLatest,
+  verifyNoOwnedPlainClaude,
   type DevBuildManifest,
   type InstalledDevBuildManifest,
 } from "../scripts/dev-package";
@@ -94,6 +95,23 @@ describe("dev package install status", () => {
     expect(classifyDevInstall(latest, installed({ buildId: "latest" }), true)).toBe("current");
     expect(classifyDevInstall(latest, installed({ buildId: "older" }), true)).toBe("outdated");
     expect(classifyDevInstall(null, installed({ buildId: "only" }), true)).toBe("installed-no-latest");
+  });
+});
+
+describe("dev package command ownership", () => {
+  test("rejects plain claude owned by any frogprogsy package root", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogprogsy-owned-claude-"));
+    const packageRoot = join(root, "stale-package");
+    const binDir = join(packageRoot, "bin");
+    mkdirSync(binDir, { recursive: true });
+    try {
+      writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "frogprogsy" }), "utf8");
+      writeFileSync(join(binDir, "claude"), "#!/bin/sh\n", "utf8");
+
+      expect(() => verifyNoOwnedPlainClaude(binDir)).toThrow(/still owns the plain claude command/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

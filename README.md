@@ -97,7 +97,7 @@ frogp claude reload-models <profile-id>
 
 Already-open `/model` screens do not hot reload; start a new `claude` session or resume one so Claude Code refetches `/v1/models`.
 
-`frogp start`/`frogp refresh` generate launcher shims in `~/.frogprogsy/bin` (`claude` for the default home plus aliases such as `claude-work` or `claude-personal`). Put that directory before the native Claude Code binary in `PATH`, or use the package-provided `claude` bin when it wins PATH resolution. If the proxy is stopped, those launchers pass through to native Claude Code for the selected home.
+`frogp start`/`frogp refresh` generate one shortcut per additional Claude account in `~/.frogprogsy/bin`, such as `claude-work` or `claude-personal`. The default account uses plain `claude`, which always remains your installed Claude Code. Append the shortcut directory to `PATH`. If the proxy is stopped, account shortcuts pass through to native Claude Code for the selected home.
 
 ### 4. Send your first Claude Code request
 
