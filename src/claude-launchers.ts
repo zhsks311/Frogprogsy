@@ -458,7 +458,8 @@ export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaud
   // executable — so deleted and renamed accounts still lose their stale shortcuts, and the manifest is
   // rewritten with the launchers that survived on disk.
   if (!realClaude) {
-    const surviving = (previous?.launchers ?? []).filter(entry => !removed.includes(entry.name));
+    const surviving = (previous?.launchers ?? []).filter(entry =>
+      !removed.includes(entry.name) && existsSync(join(binDir, claudeLauncherFileName(entry.name))));
     if (previous) {
       atomicWriteFile(manifestPath(), JSON.stringify({ ...previous, generatedAt: new Date().toISOString(), launchers: surviving }, null, 2) + "\n");
     }
