@@ -47,7 +47,7 @@ The JSON fields map to the runtime `ProviderConfig` objects under `providers.*` 
 
 ## Relay access keys
 
-`localAccess` is request-scoped authentication for the relay. When `enabled` is `true`, every `/api/*` and `/v1/*` request must present a configured key; `/healthz` and the dashboard assets stay open.
+`localAccess` is request-scoped authentication for the relay. When `enabled` is `true`, every `/api/*`, `/v1/*`, and `/usage` request must present a configured key; `/healthz` and the dashboard assets stay open.
 
 - The key travels in `x-frogp-local-key`, `x-api-key`, or `Authorization: Bearer <key>`. Claude Code sends whatever `ANTHROPIC_AUTH_TOKEN` holds, so setting that variable to the key is enough.
 - Config stores only `sha256:<hex>` of a key. The plaintext is printed once, when `frogp local-key add` creates it, and cannot be recovered afterwards.

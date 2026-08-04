@@ -47,7 +47,7 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 
 ## Relay access keys
 
-`localAccess`는 relay의 요청 단위 인증입니다. `enabled`가 `true`이면 모든 `/api/*`, `/v1/*` 요청이 설정된 key를 제시해야 하고, `/healthz`와 dashboard asset은 그대로 열려 있습니다.
+`localAccess`는 relay의 요청 단위 인증입니다. `enabled`가 `true`이면 모든 `/api/*`, `/v1/*`, `/usage` 요청이 설정된 key를 제시해야 하고, `/healthz`와 dashboard asset은 그대로 열려 있습니다.
 
 - key는 `x-frogp-local-key`, `x-api-key`, `Authorization: Bearer <key>` 중 하나로 전달됩니다. Claude Code는 `ANTHROPIC_AUTH_TOKEN` 값을 그대로 보내므로 이 변수에 key를 넣으면 충분합니다.
 - config에는 key의 `sha256:<hex>`만 저장됩니다. 평문은 `frogp local-key add`가 생성할 때 한 번만 출력되고 이후에는 복구할 수 없습니다.

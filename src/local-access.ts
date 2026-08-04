@@ -17,6 +17,7 @@
  * caller's provider credential.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { readLocalAccessToken } from "./config";
 import type { FrogConfig, LocalAccessKeyConfig } from "./types";
 
 export const LOCAL_ACCESS_HEADER = "x-frogp-local-key";
@@ -125,6 +126,16 @@ export function isLocalAccessSecret(value: string | undefined | null): boolean {
   const secret = bareSecret(value);
   if (!secret) return false;
   return relayLocalSecretHashes.has(normalizedHash(hashLocalAccessSecret(secret)) ?? "");
+}
+
+/**
+ * Same-machine credential for an authenticated relay: the running server writes a per-start token
+ * readable only by this user, so local tooling keeps working without pasting a relay access key.
+ * Empty when the relay is unauthenticated (no token file), which those requests do not need.
+ */
+export function sameMachineAccessHeaders(): Record<string, string> {
+  const token = readLocalAccessToken();
+  return token ? { [LOCAL_ACCESS_HEADER]: token } : {};
 }
 
 /** Test seam: drop the registered digests so an isolated case starts from a clean process state. */

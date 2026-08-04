@@ -157,6 +157,33 @@ describe("relay enforcement", () => {
     }
   });
 
+  test("an enabled relay authenticates the usage summary", async () => {
+    saveConfig(baseConfig({ localAccess: { enabled: true, keys: [key()] } }));
+    const server = startServer(0);
+    try {
+      expect((await fetch(new URL("/usage", server.url))).status).toBe(401);
+      const authenticated = await fetch(new URL("/usage", server.url), { headers: { [LOCAL_ACCESS_HEADER]: SECRET } });
+      expect(authenticated.status).toBe(200);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("an authenticated exposed bind serves a remote caller whose Host is not loopback", async () => {
+    saveConfig(baseConfig({ hostname: "0.0.0.0", localAccess: { enabled: true, keys: [key()] } }));
+    const server = startServer(0);
+    try {
+      // A remote client sends the address it dialed as Host; that must not be read as a trust signal
+      // now that the key is what authenticates the request.
+      const remote = await fetch(`http://127.0.0.1:${server.port}/v1/models`, {
+        headers: { [LOCAL_ACCESS_HEADER]: SECRET, host: "relay.internal:3764" },
+      });
+      expect(remote.status).toBe(200);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("a spent request limit answers 429 with Retry-After", async () => {
     saveConfig(baseConfig({
       localAccess: { enabled: true, keys: [key({ requestLimit: { windowSec: 60, maxRequests: 1 } })] },

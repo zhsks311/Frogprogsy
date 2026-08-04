@@ -2150,8 +2150,9 @@ function isLocalRequest(req: Request, clientAddress?: string): boolean {
  */
 function isLocalOrigin(req: Request): boolean {
   const origin = req.headers.get("Origin");
+  if (!origin) return true;
   try {
-    return isLoopbackHostname(new URL(origin || req.url).hostname);
+    return isLoopbackHostname(new URL(origin).hostname);
   } catch {
     return false;
   }
@@ -3953,7 +3954,7 @@ export function startServer(port?: number) {
         return new Response(null, { status: 204, headers: corsHeaders() });
       }
 
-      const guardedPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/");
+      const guardedPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/") || url.pathname === "/usage";
       if (guardedPath && !isAllowedRequestHost(req, bindHostname)) {
         return formatErrorResponse(403, "origin_rejected", "request Host is not the loopback interface this relay is bound to");
       }

@@ -11,12 +11,11 @@ import { useI18n, useT, LOCALES, type TKey } from "./i18n";
 import { Notice } from "./ui";
 import { detectGuiBuildSkewNotice, type GuiBuildSkewNotice } from "./build-skew";
 import type { DeepLinkTarget, Navigate, Page } from "./navigation";
-import { probeLocalKey, setLocalKey, type LocalKeyProbe } from "./local-key";
+import { API_BASE, probeLocalKey, setLocalKey, type LocalKeyProbe } from "./local-key";
 import { pageToHash, parsePageHash, shouldPushPageHash } from "./hash-routing";
 
 type Theme = "light" | "dark" | "system";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "";
 const THEME_KEY = "frogp-theme";
 
 const NAV: { id: Page; tkey: TKey; Icon: typeof IconGrid }[] = [

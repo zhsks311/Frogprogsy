@@ -9,6 +9,17 @@
  */
 const STORAGE_KEY = "frogp.localKey";
 export const LOCAL_KEY_HEADER = "x-frogp-local-key";
+/** Empty (same-origin) in a served build; a dev server points it at the relay's own origin. */
+export const API_BASE: string = import.meta.env.VITE_API_BASE || "";
+
+/** The one origin the key may be sent to: the relay this dashboard talks to. */
+function relayOrigin(): string {
+  try {
+    return new URL(API_BASE || window.location.href, window.location.href).origin;
+  } catch {
+    return window.location.origin;
+  }
+}
 
 export function readLocalKey(): string {
   try {
@@ -30,7 +41,7 @@ export function storeLocalKey(key: string): void {
 
 let inMemoryKey = "";
 
-/** Attach the stored key to same-origin management/data-plane requests. Idempotent. */
+/** Attach the stored key to the relay's own management/data-plane requests. Idempotent. */
 export function installLocalKeyFetch(): void {
   const native = window.fetch;
   if ((native as { __frogpLocalKey?: boolean }).__frogpLocalKey) return;
@@ -39,9 +50,17 @@ export function installLocalKeyFetch(): void {
   const wrapped: typeof window.fetch = (input, init) => {
     const key = inMemoryKey || readLocalKey();
     if (!key) return native(input, init);
-    const url = input instanceof Request ? input.url : String(input);
-    const path = url.startsWith("http") ? new URL(url).pathname : url;
-    if (!path.startsWith("/api/") && !path.startsWith("/v1/")) return native(input, init);
+    const raw = input instanceof Request ? input.url : String(input);
+    // Resolve against the page so a relative URL and an absolute one are judged the same way: the key
+    // is a credential for this relay only and must never travel to another origin.
+    let url: URL;
+    try {
+      url = new URL(raw, window.location.href);
+    } catch {
+      return native(input, init);
+    }
+    if (url.origin !== relayOrigin()) return native(input, init);
+    if (!url.pathname.startsWith("/api/") && !url.pathname.startsWith("/v1/")) return native(input, init);
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
     headers.set(LOCAL_KEY_HEADER, key);
     return native(input, { ...init, headers });

@@ -57,7 +57,11 @@ if (typeof config.port !== "number" || !Number.isFinite(config.port)) {
 // plaintext once: it exists nowhere else, and callers send it as ANTHROPIC_AUTH_TOKEN / x-api-key.
 // FROGP_LOCAL_ACCESS_KEY pins a caller-chosen key instead (compose secret, redeploy with a known key).
 const existingLocalAccess = config.localAccess as { enabled?: boolean; keys?: unknown[] } | undefined;
-const hasKey = Array.isArray(existingLocalAccess?.keys) && existingLocalAccess.keys.length > 0;
+// A key list that is present but disabled authenticates nothing, so the relay would refuse to bind;
+// treat it as absent and mint a usable key rather than fail to start.
+const hasKey = existingLocalAccess?.enabled === true
+  && Array.isArray(existingLocalAccess.keys)
+  && existingLocalAccess.keys.length > 0;
 const pinnedKey = process.env.FROGP_LOCAL_ACCESS_KEY?.trim();
 if (bindHostname !== "127.0.0.1" && bindHostname !== "localhost" && bindHostname !== "::1" && (!hasKey || pinnedKey)) {
   const secret = pinnedKey || generateLocalAccessSecret();

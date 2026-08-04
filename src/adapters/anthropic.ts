@@ -36,7 +36,9 @@ function applyAnthropicForwardAuthHeaders(headers: Record<string, string>, incom
   for (const name of ANTHROPIC_FORWARD_AUTH_HEADERS) {
     const value = incoming.get(name);
     if (!value || !value.trim()) continue;
-    if (name === "authorization" && isLocalClaudeAuthToken(value)) continue;
+    // A relay-local credential (the discovery sentinel or a relay access key) is not an upstream key in
+    // either carrier: forwarding it leaks the key and guarantees a 401.
+    if (isLocalClaudeAuthToken(value)) continue;
     // A scheme-only value (e.g. "Bearer" / "Bearer   ") carries no credential — forwarding it
     // upstream guarantees a 401; drop it instead.
     if (name === "authorization" && /^[A-Za-z-]+\s*$/.test(value.trim())) continue;

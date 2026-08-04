@@ -48,7 +48,7 @@ Trust is per request, not per network position. `src/local-access.ts` owns relay
   duplicate ids, malformed `secretHash`, non-positive `requestLimit`) refuses to start, and a
   non-loopback `hostname` without `localAccess` refuses to start — a published bind must authenticate,
   because `Origin`/`Host` are caller-controlled and cannot carry trust.
-- When enabled, every `/api/*` and `/v1/*` request is authenticated; `/healthz` and GUI assets are not.
+- When enabled, every `/api/*`, `/v1/*`, and `/usage` request is authenticated; `/healthz` and GUI assets are not.
 - Same-machine tooling authenticates with a per-start token written to `~/.frogprogsy/local-access.token`
   (mode `0600`, `config.ts`), not with a configured key: reading it already implies access to the config
   directory that holds the provider credentials. The dashboard instead asks for a key and keeps it in

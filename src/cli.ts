@@ -15,7 +15,6 @@ import {
   getConfigDir,
   getWatchdogStatusPath,
   loadConfig,
-  readLocalAccessToken,
   readPid,
   readActivePort,
   removeActivePort,
@@ -25,7 +24,7 @@ import {
   writeActivePort,
   writeShutdownIntent,
 } from "./config";
-import { generateLocalAccessSecret, hashLocalAccessSecret, LOCAL_ACCESS_HEADER } from "./local-access";
+import { generateLocalAccessSecret, hashLocalAccessSecret, sameMachineAccessHeaders } from "./local-access";
 import { findAvailablePort } from "./ports";
 import { startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
@@ -795,15 +794,6 @@ function renderHumanModels(models: Record<string, unknown>[], paint: boolean): v
 }
 
 /**
- * Same-machine credential for an authenticated relay: the running server writes a per-start token
- * readable only by this user, so `frogp` keeps working without the user pasting a relay access key.
- */
-function localAccessHeaders(): Record<string, string> {
-  const token = readLocalAccessToken();
-  return token ? { [LOCAL_ACCESS_HEADER]: token } : {};
-}
-
-/**
  * Online-only model listing: delegates to the running proxy's existing GET /api/models
  * (the same list the dashboard and Claude Code catalog use). Never synthesizes an
  * offline list from config/registry/catalog state.
@@ -827,7 +817,7 @@ async function handleModels(flags: string[]) {
   let models: unknown;
   try {
     const res = await fetch(`http://${healthHost(config.hostname)}:${port}/api/models`, {
-      headers: localAccessHeaders(),
+      headers: sameMachineAccessHeaders(),
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -850,7 +840,7 @@ async function fetchApiModelRowsForDoctor(config: ReturnType<typeof loadConfig>,
   if (!readPid() || !(await proxyHealthy(port))) return [];
   try {
     const res = await fetch(`http://${healthHost(config.hostname)}:${port}/api/models`, {
-      headers: localAccessHeaders(),
+      headers: sameMachineAccessHeaders(),
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) return [];

@@ -47,7 +47,7 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 
 ## Relay access keys
 
-`localAccess` 是 relay 的按请求认证。当 `enabled` 为 `true` 时，每个 `/api/*` 与 `/v1/*` 请求都必须提供已配置的 key；`/healthz` 与 dashboard 静态资源保持开放。
+`localAccess` 是 relay 的按请求认证。当 `enabled` 为 `true` 时，每个 `/api/*`、`/v1/*` 与 `/usage` 请求都必须提供已配置的 key；`/healthz` 与 dashboard 静态资源保持开放。
 
 - key 通过 `x-frogp-local-key`、`x-api-key` 或 `Authorization: Bearer <key>` 传递。Claude Code 会原样发送 `ANTHROPIC_AUTH_TOKEN`，因此把该变量设为 key 即可。
 - config 只保存 key 的 `sha256:<hex>`。明文仅在 `frogp local-key add` 创建时输出一次，之后无法恢复。
