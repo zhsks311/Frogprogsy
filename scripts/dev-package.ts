@@ -334,6 +334,12 @@ function packageRootForCommand(binDir: string, command: "frogp" | "claude"): str
   return null;
 }
 
+export function verifyNoOwnedPlainClaude(binDir: string): void {
+  if (packageRootForCommand(binDir, "claude") !== null) {
+    throw new Error("The installed frogprogsy package still owns the plain claude command");
+  }
+}
+
 export function classifyDevInstall(
   latest: DevBuildManifest | null,
   installed: InstalledDevBuildManifest | null,
@@ -465,9 +471,7 @@ function verifyInstalledPackageIdentity(version: string): string {
  */
 function verifyNewInstalledPackage(manifest: DevBuildManifest): string {
   const packageRoot = verifyInstalledPackageIdentity(manifest.version);
-  if (packageRootForCommand(bunBinDir(), "claude") === packageRoot) {
-    throw new Error("The installed frogprogsy package still owns the plain claude command");
-  }
+  verifyNoOwnedPlainClaude(bunBinDir());
   return packageRoot;
 }
 

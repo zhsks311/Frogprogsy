@@ -42,7 +42,7 @@ export interface RawClaudeResolution {
 
 export interface RealClaudeResolution {
   command: "claude";
-  path: string;
+  path: string | null;
 }
 
 export interface LauncherDiagnostic {
@@ -248,7 +248,11 @@ function rawClaudeReason(kind: RawClaudeKind): string {
 }
 
 export function resolveRealClaudeTarget(extraSkipDirs: string[] = []): RealClaudeResolution {
-  return { command: "claude", path: findRealClaudeExecutable(extraSkipDirs) };
+  try {
+    return { command: "claude", path: findRealClaudeExecutable(extraSkipDirs) };
+  } catch {
+    return { command: "claude", path: null };
+  }
 }
 
 export function inspectPlannedLaunchers(config: FrogConfig, options: { pathEnv?: string; launcherBinDir?: string; fs?: FileSystemProbe } = {}): LauncherDiagnostic[] {
@@ -573,7 +577,9 @@ export function buildClaudeDoctorReport(config: FrogConfig, apiModels: ApiModelR
   const expectedAliases = modelSummary.expectedEnabledAliases.map(entry => entry.alias);
   const rawClaude = resolveRawClaudeOnPath({ pathEnv: options.pathEnv, fs });
   const realClaude = resolveRealClaudeTarget([claudeLauncherBinDir()]);
-  const realClaudeKind = classifyRawClaudePath(realClaude.path, realpathMaybe(realClaude.path, fs), claudeLauncherBinDir(), fs);
+  const realClaudeKind = realClaude.path === null
+    ? "missing"
+    : classifyRawClaudePath(realClaude.path, realpathMaybe(realClaude.path, fs), claudeLauncherBinDir(), fs);
   const grants = inspectClaudeGrants(config, { realClaudeKind, fs, env: options.env, grantStatusInspector: options.grantStatusInspector });
   const diagnosticConfig = structuredClone(config);
   const launchers = inspectPlannedLaunchers(diagnosticConfig, { pathEnv: options.pathEnv, fs });

@@ -437,6 +437,28 @@ describe("frogp doctor claude CLI", () => {
     }
   }, 15000);
 
+  test("--json still reports diagnostics when no safe Claude executable is installed", () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-doctor-"));
+    const emptyBin = join(home, "empty-bin");
+    mkdirSync(emptyBin);
+    try {
+      const result = runCli(["doctor", "claude", "--json"], home, {
+        PATH: emptyBin,
+        FROGP_REAL_CLAUDE: "",
+      });
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      const parsed = JSON.parse(result.stdout) as {
+        rawClaude: { kind: string };
+        realClaude: { path: string | null };
+      };
+      expect(parsed.rawClaude.kind).toBe("missing");
+      expect(parsed.realClaude.path).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 15000);
+
   test("human output reports cmux and no-hot-reload guidance", () => {
     const home = mkdtempSync(join(tmpdir(), "frogp-doctor-"));
     const cmuxBin = join(home, "cmux-cli-shims");

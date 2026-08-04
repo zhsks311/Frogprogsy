@@ -790,6 +790,8 @@ export const ko: Record<TKey, string> = {
   "claudeProfiles.shortcutReady": "사용 가능",
   "claudeProfiles.shortcutNeedsSetup": "설정 필요",
   "claudeProfiles.shortcutNative": "원래 Claude Code",
+  "claudeProfiles.shortcutNameConflict": "이름 변경 필요",
+  "claudeProfiles.shortcutRenameHint": "계정은 저장됐지만 다른 계정이 같은 명령 이름을 사용 중입니다. 다른 계정 이름을 입력하고 다시 저장하세요.",
   "claudeProfiles.saveFailed": "계정 저장에 실패했습니다.",
   "claudeProfiles.renamed": "계정 이름을 바꿨습니다.",
   "claudeProfiles.removed": "계정을 삭제했습니다.",

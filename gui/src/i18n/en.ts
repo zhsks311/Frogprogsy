@@ -790,6 +790,8 @@ export const en = {
   "claudeProfiles.shortcutReady": "Ready",
   "claudeProfiles.shortcutNeedsSetup": "Setup needed",
   "claudeProfiles.shortcutNative": "Installed Claude Code",
+  "claudeProfiles.shortcutNameConflict": "Rename needed",
+  "claudeProfiles.shortcutRenameHint": "This account was saved, but another account already uses the same command name. Choose a different account name and save again.",
   "claudeProfiles.saveFailed": "Failed to save account.",
   "claudeProfiles.renamed": "Account renamed.",
   "claudeProfiles.removed": "Account removed.",

@@ -1,12 +1,34 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { pageToHash, parsePageHash, shouldPushPageHash } from "../gui/src/hash-routing";
-import { fetchProfileModels, sonnetModelCandidates, sonnetModelCommand } from "../gui/src/pages/ClaudeProfiles";
+import * as ClaudeProfiles from "../gui/src/pages/ClaudeProfiles";
+import { en } from "../gui/src/i18n/en";
+import { ko } from "../gui/src/i18n/ko";
+import { zh } from "../gui/src/i18n/zh";
 
 function read(path: string): string {
   return readFileSync(path, "utf8");
 }
 
+const {
+  claudeProfileAddNotice,
+  claudeProfileCanRemove,
+  claudeProfileShortcutView,
+  fetchProfileModels,
+  sonnetModelCandidates,
+  sonnetModelCommand,
+} = ClaudeProfiles;
+
+type SavedErrorHelper = (body: unknown) => {
+  profileId: string;
+  message: string;
+  success: false;
+} | undefined;
+
+type PatchNoticeHelper = (body: unknown, savedMessage: string) => {
+  message: string;
+  success: boolean;
+};
 describe("GUI interaction stability", () => {
   test("hash routing helpers cover the page union and safe fallbacks", () => {
     expect(pageToHash("home")).toBe("#/home");
@@ -87,6 +109,12 @@ describe("GUI interaction stability", () => {
     }
   });
 
+  test("Claude profile removal protects the default and sole account", () => {
+    expect(claudeProfileCanRemove({ isDefault: true }, 2)).toBe(false);
+    expect(claudeProfileCanRemove({ isDefault: false }, 1)).toBe(false);
+    expect(claudeProfileCanRemove({ isDefault: false }, 2)).toBe(true);
+  });
+
   test("Claude profile Sonnet candidates stay explicit, usable, and namespaced", () => {
     const models = [
       { provider: "zeta", id: "Claude-SONNET-4", namespaced: "zeta/Claude-SONNET-4" },
@@ -116,6 +144,122 @@ describe("GUI interaction stability", () => {
       async () => { throw new Error("network failed"); },
     ]) {
       expect(fetchProfileModels(request)).rejects.toThrow();
+    }
+  });
+
+  test("Claude profile add warnings are not reported as successful setup", () => {
+    expect(claudeProfileAddNotice({ warning: "Shortcut setup failed" }, "Account added")).toEqual({
+      message: "Shortcut setup failed",
+      success: false,
+    });
+    expect(claudeProfileAddNotice({}, "Account added")).toEqual({
+      message: "Account added",
+      success: true,
+    });
+  });
+
+  test("Claude profile saved POST conflicts reload and select the saved account while reporting failure", () => {
+    const savedError = (
+      ClaudeProfiles as typeof ClaudeProfiles & { claudeProfileSavedError?: SavedErrorHelper }
+    ).claudeProfileSavedError;
+    expect(typeof savedError).toBe("function");
+    if (!savedError) return;
+
+    expect(savedError({
+      code: "shortcut_conflict",
+      error: "Account saved, but shortcut conflicts",
+      profile: { id: "cp_saved", name: "work", claudeHome: "/redacted" },
+    })).toEqual({
+      profileId: "cp_saved",
+      message: "Account saved, but shortcut conflicts",
+      success: false,
+    });
+    expect(savedError({
+      code: "shortcut_conflict",
+      error: "Rename was rejected",
+    })).toBeUndefined();
+
+    const source = read("gui/src/pages/ClaudeProfiles.tsx");
+    const addFlow = source.slice(source.indexOf("const addProfile"), source.indexOf("const setupShortcuts"));
+    expect(addFlow).toContain("claudeProfileSavedError(body)");
+    expect(addFlow).toContain("if (!res.ok && !savedError)");
+    expect(addFlow.indexOf('setNewName(""); setNewHome("");')).toBeLessThan(addFlow.indexOf("await loadProfiles()"));
+    expect(addFlow.indexOf("await loadProfiles()")).toBeLessThan(addFlow.indexOf("setSelectedId(savedError?.profileId"));
+  });
+
+  test("Claude profile PATCH warnings keep the saved profile reload but replace the success notice", () => {
+    const patchNotice = (
+      ClaudeProfiles as typeof ClaudeProfiles & { claudeProfilePatchNotice?: PatchNoticeHelper }
+    ).claudeProfilePatchNotice;
+    expect(typeof patchNotice).toBe("function");
+    if (!patchNotice) return;
+
+    expect(patchNotice({ warning: "Rename saved, but shortcut setup failed" }, "Account renamed")).toEqual({
+      message: "Rename saved, but shortcut setup failed",
+      success: false,
+    });
+    expect(patchNotice({}, "Account renamed")).toEqual({
+      message: "Account renamed",
+      success: true,
+    });
+
+    const source = read("gui/src/pages/ClaudeProfiles.tsx");
+    const patchFlow = source.slice(source.indexOf("const patchSelected"), source.indexOf("const copyReloadCommand"));
+    expect(patchFlow).toContain("warning?: string");
+    expect(patchFlow.indexOf("await loadProfiles()")).toBeLessThan(patchFlow.indexOf("claudeProfilePatchNotice(result, successMessage)"));
+    expect(patchFlow).toContain("notify(notice.message, notice.success)");
+    expect(patchFlow).not.toContain("claudeProfileSavedError");
+  });
+
+  test("Claude profile DELETE warnings keep the reloaded state but replace the success notice", () => {
+    const removeNotice = (
+      ClaudeProfiles as typeof ClaudeProfiles & { claudeProfileRemoveNotice?: PatchNoticeHelper }
+    ).claudeProfileRemoveNotice;
+    expect(typeof removeNotice).toBe("function");
+    if (!removeNotice) return;
+
+    expect(removeNotice({ warning: "Account removed, but launcher cleanup was deferred" }, "Account removed")).toEqual({
+      message: "Account removed, but launcher cleanup was deferred",
+      success: false,
+    });
+    expect(removeNotice({}, "Account removed")).toEqual({
+      message: "Account removed",
+      success: true,
+    });
+
+    const source = read("gui/src/pages/ClaudeProfiles.tsx");
+    const removeFlow = source.slice(source.indexOf("const removeSelected"), source.indexOf("const setupGrant"));
+    expect(removeFlow).toContain("warning?: string");
+    expect(removeFlow.indexOf("await loadProfiles()")).toBeLessThan(removeFlow.indexOf("claudeProfileRemoveNotice(body"));
+    expect(removeFlow).toContain("notify(notice.message, notice.success)");
+  });
+
+  test("Claude profile shortcut conflicts require rename and never suggest shell setup", () => {
+    expect(claudeProfileShortcutView({
+      id: "cp_conflict",
+      name: "work",
+      claudeHome: "/redacted",
+      shortcutIssue: "name_conflict",
+    })).toEqual({
+      command: "—",
+      state: "name_conflict",
+      showRenameAction: true,
+      showSetupAction: false,
+    });
+    expect(claudeProfileShortcutView({
+      id: "cp_missing",
+      name: "team",
+      claudeHome: "/redacted",
+    })).toMatchObject({
+      command: "—",
+      state: "needs_setup",
+      showRenameAction: false,
+      showSetupAction: true,
+    });
+
+    for (const messages of [en, ko, zh]) {
+      expect(messages["claudeProfiles.shortcutNameConflict"].trim()).not.toBe("");
+      expect(messages["claudeProfiles.shortcutRenameHint"].trim()).not.toBe("");
     }
   });
 

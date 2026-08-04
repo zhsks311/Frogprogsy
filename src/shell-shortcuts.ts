@@ -5,15 +5,14 @@ import {
   constants,
   existsSync,
   fsyncSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
+import type { Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudeLauncherBinDir, claudeLauncherFileName } from "./claude-launchers";
@@ -45,11 +44,28 @@ function hash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+function containsPathEntry(line: string, path: string): boolean {
+  let from = 0;
+  while (from < line.length) {
+    const index = line.indexOf(path, from);
+    if (index === -1) return false;
+    const before = index === 0 ? undefined : line[index - 1];
+    const afterIndex = index + path.length;
+    const after = afterIndex === line.length ? undefined : line[afterIndex];
+    const leftBoundary = before === undefined || ":=\"' \t".includes(before);
+    const rightBoundary = after === undefined || ":\"' \t;".includes(after);
+    if (leftBoundary && rightBoundary) return true;
+    from = index + path.length;
+  }
+  return false;
+}
+
 function containsShortcutPath(content: string, binDir: string): boolean {
   return content.split(/\r?\n/).some(line => {
-    if (line.trimStart().startsWith("#")) return false;
-    const normalized = line.replaceAll("${HOME}", "$HOME");
-    return normalized.includes("$HOME/.frogprogsy/bin") || normalized.includes(binDir);
+    const assignment = line.match(/^\s*(?:export[ \t]+)?PATH=(.*)$/);
+    if (!assignment) return false;
+    const normalized = assignment[1].replaceAll("${HOME}", "$HOME");
+    return containsPathEntry(normalized, "$HOME/.frogprogsy/bin") || containsPathEntry(normalized, binDir);
   });
 }
 
@@ -97,6 +113,67 @@ function assertNoManagedPlainClaude(binDir: string): void {
   }
 }
 
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
+}
+
+function appendRcWithoutReplacing(options: {
+  rcPath: string;
+  original: string;
+  next: string;
+  mode: number;
+  expectedDev?: number;
+  expectedIno?: number;
+  beforeAppend?: () => void;
+}): boolean {
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  const existed = options.expectedDev !== undefined && options.expectedIno !== undefined;
+  const flags = existed
+    ? constants.O_RDWR | constants.O_APPEND | noFollow
+    : constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_EXCL | noFollow;
+  let fd: number | undefined;
+  try {
+    fd = openSync(options.rcPath, flags, options.mode);
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) return false;
+    if (existed && (opened.dev !== options.expectedDev || opened.ino !== options.expectedIno)) return false;
+
+    options.beforeAppend?.();
+    let currentPath: Stats;
+    try {
+      currentPath = lstatSync(options.rcPath);
+    } catch {
+      return false;
+    }
+    if (!currentPath.isFile() || currentPath.isSymbolicLink()) return false;
+    if (currentPath.dev !== opened.dev || currentPath.ino !== opened.ino) return false;
+    if (hash(readFileSync(options.rcPath, "utf8")) !== hash(options.original)) return false;
+
+    writeFileSync(fd, options.next.slice(options.original.length), { encoding: "utf8" });
+    fsyncSync(fd);
+
+    let publishedPath: Stats;
+    try {
+      publishedPath = lstatSync(options.rcPath);
+    } catch {
+      return false;
+    }
+    return publishedPath.isFile()
+      && !publishedPath.isSymbolicLink()
+      && publishedPath.dev === opened.dev
+      && publishedPath.ino === opened.ino
+      && readFileSync(options.rcPath, "utf8") === options.next;
+  } catch (error) {
+    if (["EEXIST", "ELOOP", "ENOENT"].includes(errorCode(error) ?? "")) return false;
+    throw error;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* best effort */ }
+    }
+  }
+}
+
 /**
  * Append the account-shortcut directory to zsh PATH without touching user-owned shell configuration.
  *
@@ -104,16 +181,16 @@ function assertNoManagedPlainClaude(binDir: string): void {
  * - only one exact marked block is owned;
  * - symlink rc files are refused rather than replaced;
  * - mode and line endings are preserved;
- * - content is re-read immediately before rename and compared by hash (CAS);
- * - the completed file is fsync'd in the same directory before atomic rename;
- * - managed plain `claude` must already be absent, so setup cannot move a hijack to a new PATH entry.
+ * - an existing regular file is opened without following symlinks and appended in place;
+ * - file identity and content are revalidated immediately before append and identity is checked again after it;
+ * - a missing rc file is created exclusively, without a staging or replacement rename;
  */
 export function configureZshAccountShortcuts(options: {
   env?: NodeJS.ProcessEnv;
   rcPath?: string;
   binDir?: string;
-  /** Test seam for a concurrent edit after the temp file is complete but before the final CAS check. */
-  beforePublish?: () => void;
+  /** Test seam after the append fd opens but before identity/content revalidation. */
+  beforeAppend?: () => void;
 } = {}): ShellShortcutSetupResult {
   const env = options.env ?? process.env;
   const rcPath = options.rcPath ?? zshRcPath(env);
@@ -122,6 +199,8 @@ export function configureZshAccountShortcuts(options: {
 
   let original = "";
   let mode = 0o600;
+  let expectedDev: number | undefined;
+  let expectedIno: number | undefined;
   if (existsSync(rcPath)) {
     const linkStat = lstatSync(rcPath);
     if (linkStat.isSymbolicLink()) {
@@ -131,6 +210,8 @@ export function configureZshAccountShortcuts(options: {
       return { state: "refused", rcPath, message: "zsh setup refused because .zshrc is not a regular file" };
     }
     mode = linkStat.mode & 0o777;
+    expectedDev = linkStat.dev;
+    expectedIno = linkStat.ino;
     original = readFileSync(rcPath, "utf8");
   }
 
@@ -147,42 +228,21 @@ export function configureZshAccountShortcuts(options: {
   const eol = lineEnding(original);
   const prefix = original.length === 0 || original.endsWith("\n") ? original : `${original}${eol}`;
   const next = `${prefix}${prefix.length > 0 ? eol : ""}${ownedBlock(eol, binDir, env)}${eol}`;
-  const originalHash = hash(original);
   mkdirSync(dirname(rcPath), { recursive: true, mode: 0o700 });
-
-  // Compare immediately before publication. A concurrent editor wins and this operation stops.
-  const current = existsSync(rcPath) ? readFileSync(rcPath, "utf8") : "";
-  if (hash(current) !== originalHash) {
-    return { state: "refused", rcPath, message: "zsh setup stopped because .zshrc changed while it was being prepared" };
+  const published = appendRcWithoutReplacing({
+    rcPath,
+    original,
+    next,
+    mode,
+    expectedDev,
+    expectedIno,
+    beforeAppend: options.beforeAppend,
+  });
+  if (!published) {
+    return { state: "refused", rcPath, message: "zsh setup stopped because .zshrc changed before the PATH block could be appended" };
   }
 
-  const tmp = `${rcPath}.frogp.${process.pid}.tmp`;
-  let fd: number | undefined;
-  try {
-    writeFileSync(tmp, next, { encoding: "utf8", mode });
-    fd = openSync(tmp, constants.O_RDONLY);
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = undefined;
-    options.beforePublish?.();
-    // Recheck after temp fsync, immediately before the irreversible name swap.
-    const latest = existsSync(rcPath) ? readFileSync(rcPath, "utf8") : "";
-    if (hash(latest) !== originalHash) {
-      rmSync(tmp, { force: true });
-      return { state: "refused", rcPath, message: "zsh setup stopped because .zshrc changed before it could be replaced" };
-    }
-    renameSync(tmp, rcPath);
-  } catch (error) {
-    if (fd !== undefined) {
-      try { closeSync(fd); } catch { /* best effort */ }
-    }
-    try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
-    throw error;
-  }
-
-  // The completed file is already published. Report a permission warning without claiming setup failed;
-  // otherwise callers may tell the user to add a duplicate PATH line manually.
-  const warning = (statSync(rcPath).mode & 0o777) !== mode
+  const warning = (lstatSync(rcPath).mode & 0o777) !== mode
     ? "zsh account shortcuts were configured, but .zshrc permissions changed; review that file's permissions"
     : undefined;
   return {
@@ -198,58 +258,49 @@ export function removeZshAccountShortcuts(options: { env?: NodeJS.ProcessEnv; rc
   const rcPath = options.rcPath ?? zshRcPath(env);
   const binDir = options.binDir ?? claudeLauncherBinDir();
   if (!existsSync(rcPath)) return { state: "already_configured", rcPath, message: "zsh account shortcuts were not installed" };
-  if (lstatSync(rcPath).isSymbolicLink()) {
-    return { state: "refused", rcPath, message: "zsh cleanup refused because .zshrc is a symlink" };
+  const pathStat = lstatSync(rcPath);
+  if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+    return { state: "refused", rcPath, message: "zsh cleanup refused because .zshrc is not a regular file" };
   }
 
   const original = readFileSync(rcPath, "utf8");
-  const eol = lineEnding(original);
-  const block = ownedBlock(eol, binDir, env);
+  const block = ownedBlock(lineEnding(original), binDir, env);
   if (!original.includes(BLOCK_START) && !original.includes(BLOCK_END)) {
     return { state: "already_configured", rcPath, message: "zsh account shortcuts were not installed" };
   }
   if (!original.includes(block)) {
-    return { state: "refused", rcPath, message: "zsh cleanup refused because the frogprogsy marker block was edited" };
+    return { state: "refused", rcPath, message: "zsh cleanup refused because the frogprogsy marker block was edited; remove it manually" };
   }
-
-  const mode = lstatSync(rcPath).mode & 0o777;
-  const originalHash = hash(original);
-  const blockIndex = original.indexOf(block);
-  const separatorIndex = blockIndex >= eol.length && original.slice(blockIndex - eol.length, blockIndex) === eol
-    ? blockIndex - eol.length
-    : blockIndex;
-  const blockEnd = blockIndex + block.length;
-  const suffixIndex = original.slice(blockEnd, blockEnd + eol.length) === eol
-    ? blockEnd + eol.length
-    : blockEnd;
-  const next = original.slice(0, separatorIndex) + original.slice(suffixIndex);
-  const tmp = `${rcPath}.frogp.${process.pid}.tmp`;
-  let fd: number | undefined;
-  try {
-    writeFileSync(tmp, next, { encoding: "utf8", mode });
-    fd = openSync(tmp, constants.O_RDONLY);
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = undefined;
-    const current = readFileSync(rcPath, "utf8");
-    if (hash(current) !== originalHash) {
-      rmSync(tmp, { force: true });
-      return { state: "refused", rcPath, message: "zsh cleanup stopped because .zshrc changed" };
-    }
-    renameSync(tmp, rcPath);
-  } catch (error) {
-    if (fd !== undefined) {
-      try { closeSync(fd); } catch { /* best effort */ }
-    }
-    try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
-    throw error;
-  }
-  return { state: "configured", rcPath, message: "zsh account shortcuts removed" };
+  return {
+    state: "refused",
+    rcPath,
+    message: "zsh cleanup does not rewrite shell configuration automatically; remove the exact frogprogsy marker block manually",
+  };
 }
 
 export function zshManualPathLine(options: { env?: NodeJS.ProcessEnv; binDir?: string } = {}): string {
   const env = options.env ?? process.env;
   return shortcutPathLine(options.binDir ?? claudeLauncherBinDir(), env);
+}
+
+function powerShellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function shellManualPathLine(options: { env?: NodeJS.ProcessEnv; binDir?: string } = {}): string {
+  const env = options.env ?? process.env;
+  const binDir = options.binDir ?? claudeLauncherBinDir();
+  const shell = env.SHELL?.trim().toLowerCase() ?? "";
+  if (process.platform === "win32" || /(?:^|\/)(?:pwsh|powershell(?:\.exe)?)$/.test(shell)) {
+    return `$env:Path += [IO.Path]::PathSeparator + ${powerShellSingleQuote(binDir)}`;
+  }
+  if (/(?:^|\/)fish$/.test(shell)) {
+    return `fish_add_path --append ${shellSingleQuote(binDir)}`;
+  }
+  if (/(?:^|\/)t?csh$/.test(shell)) {
+    return `setenv PATH "$PATH":${shellSingleQuote(binDir)}`;
+  }
+  return shortcutPathLine(binDir, env);
 }
 
 /**
@@ -262,11 +313,11 @@ export async function maybeConfigureAccountShortcuts(): Promise<void> {
     const marker = join(getConfigDir(), ".shell-shortcuts-prompted");
     if (existsSync(marker)) return;
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      console.log(`   To use account shortcuts in a terminal, add: ${zshManualPathLine()}`);
+      console.log(`   To use account shortcuts in a terminal, add: ${shellManualPathLine()}`);
       return;
     }
     if (!zshAccountShortcutsSupported(process.env)) {
-      console.log(`   Automatic setup currently supports zsh on POSIX. Add this line to your shell configuration: ${zshManualPathLine()}`);
+      console.log(`   Automatic setup currently supports zsh on POSIX. Add this line to your shell configuration: ${shellManualPathLine()}`);
       return;
     }
 
@@ -281,15 +332,15 @@ export async function maybeConfigureAccountShortcuts(): Promise<void> {
       rl.close();
     }
     if (!yes) {
-      console.log(`   Manual setup: ${zshManualPathLine()}`);
+      console.log(`   Manual setup: ${shellManualPathLine()}`);
       return;
     }
     const result = configureZshAccountShortcuts();
     const stream = result.state === "refused" ? console.error : console.log;
     stream(`   ${result.message}`);
-    if (result.state === "refused") console.log(`   Manual setup: ${zshManualPathLine()}`);
+    if (result.state === "refused") console.log(`   Manual setup: ${shellManualPathLine()}`);
   } catch (error) {
     console.error(`   Shell setup skipped: ${error instanceof Error ? error.message : String(error)}`);
-    console.log(`   Manual setup: ${zshManualPathLine()}`);
+    console.log(`   Manual setup: ${shellManualPathLine()}`);
   }
 }
