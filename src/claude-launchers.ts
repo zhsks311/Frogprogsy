@@ -430,21 +430,6 @@ export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaud
   const frogpCommand = options.frogpCommand ?? currentFrogpCommand();
   const { launchers, warnings } = plannedClaudeLaunchers(config);
 
-  // A shortcut can only be generated around a validated original Claude executable. When none exists
-  // this is reported instead of thrown: the caller has usually already registered an account, and
-  // failing the whole operation would strand it. Nothing on disk is touched, so previously generated
-  // shortcuts keep working until the next successful sync.
-  if (!realClaude) {
-    return {
-      binDir,
-      realClaude: "claude",
-      realClaudeResolved: false,
-      frogpCommand,
-      launchers: [],
-      removed: [],
-      warnings: [...warnings, REAL_CLAUDE_UNRESOLVED_WARNING],
-    };
-  }
   const previous = readManifest();
   const nextNames = new Set(launchers.map(entry => entry.name));
   const removed: string[] = [];
@@ -465,6 +450,27 @@ export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaud
   // files that carry the managed marker; unmarked user files are never touched.
   for (const orphan of removeOrphanManagedLaunchers(binDir, nextNames)) {
     if (!removed.includes(orphan)) removed.push(orphan);
+  }
+
+  // A shortcut can only be generated around a validated original Claude executable. When none exists
+  // this is reported instead of thrown: the caller has usually already registered an account, and
+  // failing the whole operation would strand it. Removal already ran above — it never needs the
+  // executable — so deleted and renamed accounts still lose their stale shortcuts, and the manifest is
+  // rewritten with the launchers that survived on disk.
+  if (!realClaude) {
+    const surviving = (previous?.launchers ?? []).filter(entry => !removed.includes(entry.name));
+    if (previous) {
+      atomicWriteFile(manifestPath(), JSON.stringify({ ...previous, generatedAt: new Date().toISOString(), launchers: surviving }, null, 2) + "\n");
+    }
+    return {
+      binDir,
+      realClaude: "claude",
+      realClaudeResolved: false,
+      frogpCommand,
+      launchers: surviving,
+      removed,
+      warnings: [...warnings, REAL_CLAUDE_UNRESOLVED_WARNING],
+    };
   }
 
   for (const entry of launchers) {
