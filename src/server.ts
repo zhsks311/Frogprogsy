@@ -78,7 +78,7 @@ import {
   removeClaudeProject,
   resolveClaudeProject,
 } from "./claude-projects";
-import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, syncClaudeLauncherShims } from "./claude-launchers";
+import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, findRealClaudeExecutableOrNull, syncClaudeLauncherShims, type ClaudeLauncherSyncSummary } from "./claude-launchers";
 import { cleanupClaudeProjectsForRemovedProfile } from "./claude-routing-lifecycle";
 import { configureZshAccountShortcuts, zshManualPathLine } from "./shell-shortcuts";
 import {
@@ -1693,10 +1693,15 @@ function claudeProjectsSnapshot(config: FrogConfig, root?: string | null) {
 }
 
 
-function syncClaudeLaunchersBestEffort(config: FrogConfig): { success: boolean; error?: string } {
+function syncClaudeLaunchersBestEffort(config: FrogConfig): ClaudeLauncherSyncSummary {
   try {
-    syncClaudeLauncherShims(config);
-    return { success: true };
+    const result = syncClaudeLauncherShims(config);
+    return {
+      success: true,
+      realClaudeResolved: result.realClaudeResolved,
+      warnings: result.warnings,
+      shortcutProfileIds: result.launchers.map(entry => entry.profileId),
+    };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -2148,7 +2153,7 @@ interface ManagementAPIDeps {
   /** Isolated home root for name-only profile creation tests; production defaults to the OS home. */
   homeDir?: string;
   /** Launcher sync seam so management API tests never touch the real config directory. */
-  syncClaudeLaunchers?: (config: FrogConfig) => { success: boolean; error?: string };
+  syncClaudeLaunchers?: (config: FrogConfig) => ClaudeLauncherSyncSummary;
   /** Branch-B claude-grant management fixtures (keep the API off real network/Keychain/native homes in tests). */
   claudeGrants?: ClaudeGrantManagementDeps;
 }
@@ -2864,8 +2869,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     const profiles = listClaudeProfiles(config).map(profile => {
       const gateway = profileGatewaySnapshot(config, profile);
       if (profile.isDefault) {
-        let installed = false;
-        try { findRealClaudeExecutable([claudeLauncherBinDir()]); installed = true; } catch { /* surfaced as setup needed */ }
+        const installed = findRealClaudeExecutableOrNull([claudeLauncherBinDir()]) !== null;
         return { ...profile, injected: gateway.injected, gateway, shortcut: { command: "claude", installed, native: true } };
       }
       const command = claudeProfileShortcutName(profile);
@@ -2918,6 +2922,9 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     }
     const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
     const command = claudeProfileShortcutName(profile);
+    // A successful sync does not imply this account got a shortcut: the plan skips names that collide
+    // or fail the shortcut pattern, and nothing is generated at all without an original Claude Code.
+    const installed = launcherSync.shortcutProfileIds?.includes(profile.id) ?? launcherSync.success;
     if (!launcherSync.success) {
       return jsonResponse({
         code: "shortcut_sync_failed",
@@ -2926,7 +2933,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         launcherSync,
       }, 500);
     }
-    return jsonResponse({ profile: { ...profile, shortcut: { command, installed: true } }, launcherSync }, 201);
+    return jsonResponse({ profile: { ...profile, shortcut: { command, installed } }, launcherSync }, 201);
   }
 
   if (url.pathname === "/api/claude-shortcuts/setup" && req.method === "POST") {

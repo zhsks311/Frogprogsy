@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { claudeLauncherBinDir, claudeLauncherFileName } from "./claude-launchers";
 import { ensureConfigDirForWrite, getConfigDir } from "./config";
 
@@ -44,18 +44,40 @@ function hash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-function containsShortcutPath(content: string, binDir: string): boolean {
+/**
+ * `$HOME`-relative spelling of `binDir` when it lives under the current home directory, otherwise the
+ * absolute path. The directory follows `FROGPROGSY_HOME`, so the exported line must be derived from it
+ * instead of assuming `~/.frogprogsy/bin`.
+ */
+function shortcutPathSpelling(binDir: string, home = homedir()): string {
+  if (!binDir.startsWith(`${home}${sep}`)) return binDir;
+  return `$HOME/${binDir.slice(home.length + 1).split(sep).join("/")}`;
+}
+
+function containsShortcutPath(content: string, binDir: string, home: string): boolean {
+  const spellings = new Set([shortcutPathSpelling(binDir, home), binDir]);
   return content.split(/\r?\n/).some(line => {
     if (line.trimStart().startsWith("#")) return false;
     const normalized = line.replaceAll("${HOME}", "$HOME");
-    return normalized.includes("$HOME/.frogprogsy/bin") || normalized.includes(binDir);
+    // Boundary-checked so a different directory that merely starts with this path (`...\/bin-old`)
+    // is not mistaken for the managed one.
+    return [...spellings].some(spelling => {
+      let from = 0;
+      for (;;) {
+        const at = normalized.indexOf(spelling, from);
+        if (at < 0) return false;
+        const after = normalized[at + spelling.length];
+        if (after === undefined || after === '"' || after === "'" || after === ":" || after === " ") return true;
+        from = at + 1;
+      }
+    });
   });
 }
 
-function ownedBlock(eol: string): string {
+function ownedBlock(eol: string, binDir: string, home: string): string {
   return [
     BLOCK_START,
-    'export PATH="$PATH:$HOME/.frogprogsy/bin"',
+    pathExportLine(binDir, home),
     BLOCK_END,
   ].join(eol);
 }
@@ -93,12 +115,15 @@ export function configureZshAccountShortcuts(options: {
   env?: NodeJS.ProcessEnv;
   rcPath?: string;
   binDir?: string;
+  /** Home directory used to decide whether the exported path can be written `$HOME`-relative. */
+  homeDir?: string;
   /** Test seam for a concurrent edit after the temp file is complete but before the final CAS check. */
   beforePublish?: () => void;
 } = {}): ShellShortcutSetupResult {
   const env = options.env ?? process.env;
   const rcPath = options.rcPath ?? zshRcPath(env);
   const binDir = options.binDir ?? claudeLauncherBinDir();
+  const home = options.homeDir ?? env.HOME?.trim() ?? homedir();
   assertNoManagedPlainClaude(binDir);
 
   let original = "";
@@ -116,18 +141,18 @@ export function configureZshAccountShortcuts(options: {
   }
 
   if (original.includes(BLOCK_START) || original.includes(BLOCK_END)) {
-    const exact = original.includes(ownedBlock(lineEnding(original)));
+    const exact = original.includes(ownedBlock(lineEnding(original), binDir, home));
     return exact
       ? { state: "already_configured", rcPath, message: "zsh account shortcuts are already configured" }
       : { state: "refused", rcPath, message: "zsh setup refused because the frogprogsy marker block was edited" };
   }
-  if (containsShortcutPath(original, binDir)) {
+  if (containsShortcutPath(original, binDir, home)) {
     return { state: "already_configured", rcPath, message: "the account-shortcut directory is already present in .zshrc" };
   }
 
   const eol = lineEnding(original);
   const prefix = original.length === 0 || original.endsWith("\n") ? original : `${original}${eol}`;
-  const next = `${prefix}${prefix.length > 0 ? eol : ""}${ownedBlock(eol)}${eol}`;
+  const next = `${prefix}${prefix.length > 0 ? eol : ""}${ownedBlock(eol, binDir, home)}${eol}`;
   const originalHash = hash(original);
   mkdirSync(dirname(rcPath), { recursive: true, mode: 0o700 });
 
@@ -168,17 +193,23 @@ export function configureZshAccountShortcuts(options: {
   return { state: "configured", rcPath, message: "zsh account shortcuts configured; open a new terminal to use them" };
 }
 
-export function removeZshAccountShortcuts(options: { env?: NodeJS.ProcessEnv; rcPath?: string } = {}): ShellShortcutSetupResult {
+export function removeZshAccountShortcuts(options: { env?: NodeJS.ProcessEnv; rcPath?: string; binDir?: string; homeDir?: string } = {}): ShellShortcutSetupResult {
   const env = options.env ?? process.env;
   const rcPath = options.rcPath ?? zshRcPath(env);
+  const binDir = options.binDir ?? claudeLauncherBinDir();
+  const home = options.homeDir ?? env.HOME?.trim() ?? homedir();
   if (!existsSync(rcPath)) return { state: "already_configured", rcPath, message: "zsh account shortcuts were not installed" };
-  if (lstatSync(rcPath).isSymbolicLink()) {
+  const linkStat = lstatSync(rcPath);
+  if (linkStat.isSymbolicLink()) {
     return { state: "refused", rcPath, message: "zsh cleanup refused because .zshrc is a symlink" };
+  }
+  if (!linkStat.isFile()) {
+    return { state: "refused", rcPath, message: "zsh cleanup refused because .zshrc is not a regular file" };
   }
 
   const original = readFileSync(rcPath, "utf8");
   const eol = lineEnding(original);
-  const block = ownedBlock(eol);
+  const block = ownedBlock(eol, binDir, home);
   if (!original.includes(BLOCK_START) && !original.includes(BLOCK_END)) {
     return { state: "already_configured", rcPath, message: "zsh account shortcuts were not installed" };
   }
@@ -188,9 +219,16 @@ export function removeZshAccountShortcuts(options: { env?: NodeJS.ProcessEnv; rc
 
   const mode = lstatSync(rcPath).mode & 0o777;
   const originalHash = hash(original);
-  let next = original.replace(block, "");
-  // Remove the one separator blank line added by setup, without touching surrounding user content.
-  next = next.replace(new RegExp(`${eol === "\r\n" ? "\\r\\n" : "\\n"}{3,}`), `${eol}${eol}`);
+  // Splice at the block's own offset and drop only the separator blank line setup inserted directly
+  // before it, so blank runs elsewhere in the user's rc file are left untouched.
+  const at = original.indexOf(block);
+  let head = original.slice(0, at);
+  let tail = original.slice(at + block.length);
+  // Setup wrote a separator blank line before the block and a line terminator after it; both belong to
+  // the block, so they are dropped with it.
+  if (tail.startsWith(eol)) tail = tail.slice(eol.length);
+  if (head.endsWith(`${eol}${eol}`)) head = head.slice(0, -eol.length);
+  const next = `${head}${tail}`;
   const tmp = `${rcPath}.frogp.${process.pid}.tmp`;
   let fd: number | undefined;
   try {
@@ -215,8 +253,12 @@ export function removeZshAccountShortcuts(options: { env?: NodeJS.ProcessEnv; rc
   return { state: "configured", rcPath, message: "zsh account shortcuts removed" };
 }
 
-export function zshManualPathLine(): string {
-  return 'export PATH="$PATH:$HOME/.frogprogsy/bin"';
+function pathExportLine(binDir: string, home: string): string {
+  return `export PATH="$PATH:${shortcutPathSpelling(binDir, home)}"`;
+}
+
+export function zshManualPathLine(binDir = claudeLauncherBinDir(), home = process.env.HOME?.trim() || homedir()): string {
+  return pathExportLine(binDir, home);
 }
 
 /**

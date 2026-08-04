@@ -195,7 +195,11 @@ describe("CLI subcommand help", () => {
       });
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("open a new terminal");
-      expect(readFileSync(join(userHome, ".zshrc"), "utf8")).toContain('$HOME/.frogprogsy/bin');
+      // The exported directory follows FROGPROGSY_HOME, so an isolated config dir must be exported by
+      // its own absolute path instead of the default `$HOME/.frogprogsy/bin` spelling.
+      const zshrc = readFileSync(join(userHome, ".zshrc"), "utf8");
+      expect(zshrc).toContain(`export PATH="$PATH:${join(frogHome, "bin")}"`);
+      expect(zshrc).not.toContain("$HOME/.frogprogsy/bin");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

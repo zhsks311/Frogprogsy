@@ -16,6 +16,8 @@ export interface ClaudeLauncherEntry {
 export interface ClaudeLauncherSyncResult {
   binDir: string;
   realClaude: string;
+  /** False when no safe original Claude executable exists, so no shortcut could be generated. */
+  realClaudeResolved: boolean;
   launchers: ClaudeLauncherEntry[];
   removed: string[];
   warnings: string[];
@@ -168,6 +170,19 @@ export function findRealClaudeExecutable(extraSkipDirs: string[] = []): string {
     }
   }
   throw new Error("No safe Claude executable was found outside frogprogsy-managed paths");
+}
+
+/**
+ * Best-effort variant for diagnostics and shortcut generation: null instead of a throw when no safe
+ * original Claude executable exists. Spawn paths must keep using {@link findRealClaudeExecutable} so a
+ * missing executable can never degrade into running a bare `claude` a managed shim might intercept.
+ */
+export function findRealClaudeExecutableOrNull(extraSkipDirs: string[] = []): string | null {
+  try {
+    return findRealClaudeExecutable(extraSkipDirs);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -411,9 +426,25 @@ export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaud
   mkdirSync(binDir, { recursive: true, mode: 0o700 });
   try { chmodSync(binDir, 0o700); } catch { /* best effort */ }
 
-  const realClaude = options.realClaude ?? findRealClaudeExecutable([binDir]);
+  const realClaude = options.realClaude ?? findRealClaudeExecutableOrNull([binDir]);
   const frogpCommand = options.frogpCommand ?? currentFrogpCommand();
   const { launchers, warnings } = plannedClaudeLaunchers(config);
+
+  // A shortcut can only be generated around a validated original Claude executable. When none exists
+  // this is reported instead of thrown: the caller has usually already registered an account, and
+  // failing the whole operation would strand it. Nothing on disk is touched, so previously generated
+  // shortcuts keep working until the next successful sync.
+  if (!realClaude) {
+    return {
+      binDir,
+      realClaude: "claude",
+      realClaudeResolved: false,
+      frogpCommand,
+      launchers: [],
+      removed: [],
+      warnings: [...warnings, REAL_CLAUDE_UNRESOLVED_WARNING],
+    };
+  }
   const previous = readManifest();
   const nextNames = new Set(launchers.map(entry => entry.name));
   const removed: string[] = [];
@@ -452,8 +483,23 @@ export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaud
     launchers,
   };
   atomicWriteFile(manifestPath(), JSON.stringify(manifest, null, 2) + "\n");
-  return { binDir, realClaude, frogpCommand, launchers, removed, warnings };
+  return { binDir, realClaude, realClaudeResolved: true, frogpCommand, launchers, removed, warnings };
 }
+
+/**
+ * Best-effort sync outcome reported by the management API. `shortcutProfileIds` lists the profiles that
+ * actually own a generated shortcut, so a caller never has to infer that from `success` alone.
+ */
+export interface ClaudeLauncherSyncSummary {
+  success: boolean;
+  error?: string;
+  realClaudeResolved?: boolean;
+  warnings?: string[];
+  shortcutProfileIds?: string[];
+}
+
+export const REAL_CLAUDE_UNRESOLVED_WARNING =
+  "the original Claude Code executable was not found, so no account shortcut was generated; install Claude Code and run frogp refresh";
 
 export function removeClaudeLauncherShims(): { binDir: string; removed: string[] } {
   const binDir = claudeLauncherBinDir();

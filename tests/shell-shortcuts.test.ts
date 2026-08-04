@@ -23,7 +23,7 @@ describe("zsh account-shortcut setup", () => {
       expect(first.state).toBe("configured");
       const content = readFileSync(rcPath, "utf8");
       expect(content.match(/frogprogsy account shortcuts/g)).toHaveLength(2);
-      expect(content).toContain(zshManualPathLine());
+      expect(content).toContain(zshManualPathLine(binDir));
       expect(content.replaceAll("\r\n", "")).not.toContain("\n");
       expect(lstatSync(rcPath).mode & 0o777).toBe(0o640);
 
@@ -38,10 +38,10 @@ describe("zsh account-shortcut setup", () => {
   test("does not add a block when the shortcut path already exists", () => {
     const { root, rcPath, binDir } = fixture();
     try {
-      writeFileSync(rcPath, `${zshManualPathLine()}\n`, "utf8");
+      writeFileSync(rcPath, `${zshManualPathLine(binDir)}\n`, "utf8");
       const result = configureZshAccountShortcuts({ rcPath, binDir });
       expect(result.state).toBe("already_configured");
-      expect(readFileSync(rcPath, "utf8").match(/\.frogprogsy\/bin/g)).toHaveLength(1);
+      expect(readFileSync(rcPath, "utf8").split(binDir)).toHaveLength(2);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -50,13 +50,13 @@ describe("zsh account-shortcut setup", () => {
   test("adds an active block when the shortcut path appears only in a comment", () => {
     const { root, rcPath, binDir } = fixture();
     try {
-      writeFileSync(rcPath, `#${zshManualPathLine()}\n`, "utf8");
+      writeFileSync(rcPath, `#${zshManualPathLine(binDir)}\n`, "utf8");
       const result = configureZshAccountShortcuts({ rcPath, binDir });
       const content = readFileSync(rcPath, "utf8");
 
       expect(result.state).toBe("configured");
-      expect(content).toContain(`#${zshManualPathLine()}`);
-      expect(content).toContain(`\n${zshManualPathLine()}\n`);
+      expect(content).toContain(`#${zshManualPathLine(binDir)}`);
+      expect(content).toContain(`\n${zshManualPathLine(binDir)}\n`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -101,12 +101,50 @@ describe("zsh account-shortcut setup", () => {
     try {
       writeFileSync(rcPath, "# user config\n", "utf8");
       expect(configureZshAccountShortcuts({ rcPath, binDir }).state).toBe("configured");
-      expect(removeZshAccountShortcuts({ rcPath }).state).toBe("configured");
+      expect(removeZshAccountShortcuts({ rcPath, binDir }).state).toBe("configured");
       expect(readFileSync(rcPath, "utf8")).toContain("# user config");
       expect(readFileSync(rcPath, "utf8")).not.toContain("frogprogsy account shortcuts");
 
       writeFileSync(rcPath, "# >>> frogprogsy account shortcuts >>>\n# edited\n# <<< frogprogsy account shortcuts <<<\n", "utf8");
-      expect(removeZshAccountShortcuts({ rcPath })).toMatchObject({ state: "refused" });
+      expect(removeZshAccountShortcuts({ rcPath, binDir })).toMatchObject({ state: "refused" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("exports the configured bin dir, not a hardcoded default, and matches the manual line", () => {
+    const { root, rcPath, binDir } = fixture();
+    try {
+      expect(configureZshAccountShortcuts({ rcPath, binDir }).state).toBe("configured");
+      const content = readFileSync(rcPath, "utf8");
+      expect(content).toContain(`export PATH="$PATH:${binDir}"`);
+      expect(content).not.toContain("$HOME/.frogprogsy/bin");
+      expect(zshManualPathLine(binDir)).toBe(`export PATH="$PATH:${binDir}"`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("spells a bin dir under the home directory relative to $HOME", () => {
+    const { root, rcPath } = fixture();
+    try {
+      const binDir = join(root, ".frogprogsy", "bin");
+      mkdirSync(binDir, { recursive: true });
+      expect(configureZshAccountShortcuts({ rcPath, binDir, homeDir: root }).state).toBe("configured");
+      expect(readFileSync(rcPath, "utf8")).toContain('export PATH="$PATH:$HOME/.frogprogsy/bin"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("removal keeps blank-line runs elsewhere in the rc file intact", () => {
+    const { root, rcPath, binDir } = fixture();
+    try {
+      const userContent = "# top\n\n\n\nexport EDITOR=vim\n";
+      writeFileSync(rcPath, userContent, "utf8");
+      expect(configureZshAccountShortcuts({ rcPath, binDir }).state).toBe("configured");
+      expect(removeZshAccountShortcuts({ rcPath, binDir }).state).toBe("configured");
+      expect(readFileSync(rcPath, "utf8")).toBe(userContent);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
