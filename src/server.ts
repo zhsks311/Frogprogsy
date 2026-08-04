@@ -45,7 +45,7 @@ import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
 import { resolveModelCapabilities, supportsImageInput, supportsNativeWebSearch } from "./model-capabilities";
 import { isOpenAIResponsesFallbackProvider } from "./fallback-openai-responses";
-import { buildAttemptContexts, cloneParsedForAttempt, isSameProviderRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
+import { applyParsedModelId, buildAttemptContexts, cloneParsedForAttempt, isSameProviderRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
 import { redactConfigForApi, redactProviderForApi } from "./provider-redaction";
 import { effectiveKeyCandidates } from "./provider-keys";
 import { testProviderConnection as runProviderConnectionTest } from "./provider-test";
@@ -119,6 +119,18 @@ function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
+}
+
+/** A header-timeout abort from `fetchWithHeaderTimeout`, as opposed to a transport failure. */
+function isUpstreamConnectTimeout(err: unknown): boolean {
+  return err instanceof Error && err.name === "TimeoutError";
+}
+
+/** Shared 502 message for an upstream connect failure. */
+function upstreamConnectErrorMessage(err: unknown, connectMs: number): string {
+  return isUpstreamConnectTimeout(err)
+    ? `Provider connect timeout after ${connectMs}ms`
+    : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
 }
 
 function findGuiDist(): string | null {
@@ -263,10 +275,7 @@ async function applyModelMixing(
   const res = await resolveMix(config, parsed, complete, signal);
   if (res.warning) console.error(`frogprogsy: ${res.warning}`);
   const target = `${res.target.provider}/${res.target.model}`;
-  if (parsed._rawBody && typeof parsed._rawBody === "object") {
-    (parsed._rawBody as { model?: string }).model = target;
-  }
-  parsed.modelId = target;
+  applyParsedModelId(parsed, target);
 }
 
 /** No-LLM mixing rewrite for side calls (token counting): first roster agent or default. */
@@ -274,10 +283,7 @@ function applyModelMixingCheap(config: FrogConfig, parsed: FrogParsedRequest): v
   if (!isModelMixingRequest(config, parsed.modelId)) return;
   const t = cheapMixTarget(config);
   const target = `${t.provider}/${t.model}`;
-  if (parsed._rawBody && typeof parsed._rawBody === "object") {
-    (parsed._rawBody as { model?: string }).model = target;
-  }
-  parsed.modelId = target;
+  applyParsedModelId(parsed, target);
 }
 
 /**
@@ -407,14 +413,8 @@ async function handleResponses(
   }
 
   // Apply the routed model id upstream: routing may strip a "<provider>/" namespace
-  // (e.g. "opencode-go/deepseek-v4-pro" → "deepseek-v4-pro"). Adapters read parsed.modelId,
-  // and Responses-style adapters serialize parsed._rawBody, so rewrite both.
-  if (route.modelId !== parsed.modelId) {
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      (parsed._rawBody as { model?: string }).model = route.modelId;
-    }
-    parsed.modelId = route.modelId;
-  }
+  // (e.g. "opencode-go/deepseek-v4-pro" → "deepseek-v4-pro").
+  if (route.modelId !== parsed.modelId) applyParsedModelId(parsed, route.modelId);
   setRouteLog(logCtx, route, route.routeKind, route.ambiguousCandidates);
 
   // OAuth / Claude-grant providers: resolve a fresh access token (auto-refreshed) as the Bearer key
@@ -458,10 +458,7 @@ async function handleResponses(
       }, upstream.signal, connectMs);
     } catch (err) {
       upstream.abort();
-      const msg = err instanceof Error && err.name === "TimeoutError"
-        ? `Provider connect timeout after ${connectMs}ms`
-        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
-      return formatErrorResponse(502, "upstream_error", msg);
+      return formatErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
     }
     const headers = sanitizeRelayedHeaders(upstreamResponse.headers);
     const isEventStream = headers.get("content-type")?.toLowerCase().includes("text/event-stream") ?? false;
@@ -506,10 +503,7 @@ async function handleResponses(
     }, upstream.signal, connectMs);
   } catch (err) {
     upstream.abort();
-    const msg = err instanceof Error && err.name === "TimeoutError"
-      ? `Provider connect timeout after ${connectMs}ms`
-      : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
-    return formatErrorResponse(502, "upstream_error", msg);
+    return formatErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
   }
 
   if (!upstreamResponse.ok) {
@@ -705,6 +699,36 @@ function directMessageResponse(text: string, parsed: FrogParsedRequest, response
   return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
 }
 
+/**
+ * Read and parse an Anthropic Messages request body, recording the read/parse log phases. Returns the
+ * parsed request, or the 400 response to return as-is when the body is not valid JSON/schema.
+ */
+async function readParsedMessagesRequest(
+  req: Request,
+  logCtx: RequestLogContext,
+  parseStarted: number,
+): Promise<{ parsed: FrogParsedRequest; error?: undefined } | { parsed?: undefined; error: Response }> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    recordLogPhase(logCtx, "read_request", "error", "invalid_json", parseStarted);
+    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "invalid_json" });
+    return { error: formatAnthropicErrorResponse(400, "invalid_request_error", "Invalid JSON body") };
+  }
+
+  try {
+    const parsed = parseMessagesRequest(body);
+    setParsedLog(logCtx, parsed);
+    recordLogPhase(logCtx, "parse", "ok", undefined, parseStarted);
+    return { parsed };
+  } catch (err) {
+    recordLogPhase(logCtx, "parse", "error", "parse_error", parseStarted);
+    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "parse_error" });
+    return { error: formatAnthropicErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err)) };
+  }
+}
+
 async function handleMessages(
   req: Request,
   config: FrogConfig,
@@ -712,25 +736,9 @@ async function handleMessages(
   options: { abortSignal?: AbortSignal; profileId?: string; noKeyDnsLookup?: PublicDnsLookup } = {},
 ): Promise<Response> {
   const parseStarted = Date.now();
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    recordLogPhase(logCtx, "read_request", "error", "invalid_json", parseStarted);
-    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "invalid_json" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", "Invalid JSON body");
-  }
-
-  let parsed: FrogParsedRequest;
-  try {
-    parsed = parseMessagesRequest(body);
-    setParsedLog(logCtx, parsed);
-    recordLogPhase(logCtx, "parse", "ok", undefined, parseStarted);
-  } catch (err) {
-    recordLogPhase(logCtx, "parse", "error", "parse_error", parseStarted);
-    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "parse_error" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
-  }
+  const read = await readParsedMessagesRequest(req, logCtx, parseStarted);
+  if (read.error) return read.error;
+  const parsed = read.parsed;
   // Keep Claude Code-facing response metadata on the requested model/alias; only upstream calls use
   // the resolved provider model. Otherwise resumed sessions persist unsupported ids like "gpt-5.5".
   const responseModelId = parsed.modelId;
@@ -939,7 +947,7 @@ async function handleMessages(
       recordLogPhase(logCtx, "upstream_connect", upstreamResponse.ok ? "ok" : "error", upstreamResponse.ok ? undefined : "provider_non_2xx", upstreamStarted);
     } catch (err) {
       upstream.abort();
-      const timeout = err instanceof Error && err.name === "TimeoutError";
+      const timeout = isUpstreamConnectTimeout(err);
       const code = timeout ? "connect_timeout" : "upstream_unreachable";
       recordLogPhase(logCtx, "upstream_connect", "error", code, upstreamStarted);
       recordAttemptLog(logCtx, attempt, "error", code);
@@ -951,11 +959,8 @@ async function handleMessages(
         attemptIndex = nextIndex;
         continue;
       }
-      const msg = timeout
-        ? `Provider connect timeout after ${connectMs}ms`
-        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
       finalizeRequestLog(logCtx, timeout ? "timeout" : "upstream_abort", 502, { kind: timeout ? "timeout" : "upstream", code });
-      return formatAnthropicErrorResponse(502, "upstream_error", msg);
+      return formatAnthropicErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
     }
 
     if (!upstreamResponse.ok) {
@@ -1027,25 +1032,9 @@ async function handleCountTokens(
   options: { abortSignal?: AbortSignal; profileId?: string } = {},
 ): Promise<Response> {
   const parseStarted = Date.now();
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    recordLogPhase(logCtx, "read_request", "error", "invalid_json", parseStarted);
-    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "invalid_json" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", "Invalid JSON body");
-  }
-
-  let parsed: FrogParsedRequest;
-  try {
-    parsed = parseMessagesRequest(body);
-    setParsedLog(logCtx, parsed);
-    recordLogPhase(logCtx, "parse", "ok", undefined, parseStarted);
-  } catch (err) {
-    recordLogPhase(logCtx, "parse", "error", "parse_error", parseStarted);
-    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "parse_error" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
-  }
+  const read = await readParsedMessagesRequest(req, logCtx, parseStarted);
+  if (read.error) return read.error;
+  const parsed = read.parsed;
 
   applyModelMixingCheap(config, parsed);
   const routeStarted = Date.now();
@@ -1065,12 +1054,7 @@ async function handleCountTokens(
     return formatAnthropicErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
 
-  if (route.modelId !== parsed.modelId) {
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      (parsed._rawBody as { model?: string }).model = route.modelId;
-    }
-    parsed.modelId = route.modelId;
-  }
+  if (route.modelId !== parsed.modelId) applyParsedModelId(parsed, route.modelId);
   setRouteLog(logCtx, route, route.routeKind, route.ambiguousCandidates);
 
   const oauthStarted = Date.now();
@@ -1136,13 +1120,10 @@ async function handleCountTokens(
     recordLogPhase(logCtx, "upstream_connect", upstreamResponse.ok ? "ok" : "error", upstreamResponse.ok ? undefined : "provider_non_2xx", upstreamStarted);
   } catch (err) {
     upstream.abort();
-    const timeout = err instanceof Error && err.name === "TimeoutError";
-    const msg = timeout
-      ? `Provider connect timeout after ${connectMs}ms`
-      : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+    const timeout = isUpstreamConnectTimeout(err);
     recordLogPhase(logCtx, "upstream_connect", "error", timeout ? "connect_timeout" : "upstream_unreachable", upstreamStarted);
     finalizeRequestLog(logCtx, timeout ? "timeout" : "upstream_abort", 502, { kind: timeout ? "timeout" : "upstream", code: timeout ? "connect_timeout" : "upstream_unreachable" });
-    return formatAnthropicErrorResponse(502, "upstream_error", msg);
+    return formatAnthropicErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
   }
 
   if (!upstreamResponse.ok) {

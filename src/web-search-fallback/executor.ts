@@ -1,5 +1,5 @@
 import type { FrogProviderConfig } from "../types";
-import { buildOpenAIResponsesFallbackFetch, resolveOpenAIResponsesFallbackProvider } from "../fallback-openai-responses";
+import { postOpenAIResponsesFallback } from "../fallback-openai-responses";
 import { signalWithTimeout } from "../abort";
 import { parseFallbackSSE, type WebSearchResult } from "./parse";
 
@@ -53,19 +53,16 @@ export async function runWebSearch(
     stream: true,
   };
   try {
-    const resolvedProvider = await resolveOpenAIResponsesFallbackProvider(forwardProviderName, forwardProvider);
-    const { url, headers } = buildOpenAIResponsesFallbackFetch(resolvedProvider, incomingHeaders);
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
+    const posted = await postOpenAIResponsesFallback({
+      forwardProvider,
+      forwardProviderName,
+      incomingHeaders,
+      body,
       signal: linkedSignal.signal,
+      errorLabel: "fallback",
     });
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      return { text: "", sources: [], error: `fallback HTTP ${res.status}: ${t.slice(0, 200)}` };
-    }
-    return await parseFallbackSSE(res);
+    if (posted.error !== undefined) return { text: "", sources: [], error: posted.error };
+    return await parseFallbackSSE(posted.response);
   } catch (e) {
     return { text: "", sources: [], error: e instanceof Error ? e.message : String(e) };
   } finally {

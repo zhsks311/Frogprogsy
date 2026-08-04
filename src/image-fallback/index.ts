@@ -1,6 +1,6 @@
 import type { FrogConfig, FrogContentPart, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTextContent } from "../types";
 import { resolveModelCapabilities, supportsImageInput } from "../model-capabilities";
-import { isOpenAIResponsesFallbackProvider } from "../fallback-openai-responses";
+import { findOpenAIResponsesFallbackProviderEntry, hasUsableForwardAuthorization } from "../fallback-openai-responses";
 import { describeImage, type VisionSettings } from "./describe";
 
 export { describeImage } from "./describe";
@@ -13,11 +13,6 @@ const VISION_CONCURRENCY = 3;
 const DESC_MAX_CHARS = 2000;
 /** User-text context passed to the describer, capped. */
 const CONTEXT_MAX_CHARS = 800;
-
-function hasUsableForwardAuthorization(headers: Headers): boolean {
-  const value = headers.get("authorization")?.trim();
-  return !!value && value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
-}
 
 /** Run `worker` over `items` with bounded concurrency, preserving input order in the result array. */
 async function runBounded<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
@@ -35,17 +30,6 @@ async function runBounded<T, R>(items: T[], limit: number, worker: (item: T) => 
 
 function clamp(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max)}\n…[description truncated]`;
-}
-
-/** Configured OpenAI Responses helper provider — forward-auth, OAuth, or API-key backed. */
-function findForwardProviderEntry(config: FrogConfig, preferredName?: string): { name: string; provider: FrogProviderConfig } | undefined {
-  if (preferredName && isOpenAIResponsesFallbackProvider(config.providers[preferredName])) {
-    return { name: preferredName, provider: config.providers[preferredName] };
-  }
-  for (const [name, prov] of Object.entries(config.providers)) {
-    if (isOpenAIResponsesFallbackProvider(prov)) return { name, provider: prov };
-  }
-  return undefined;
 }
 
 /** A user/developer/toolResult message can carry images (toolResult: e.g. Claude Code view_image output). */
@@ -94,7 +78,7 @@ export function decideImageFallback(
     };
   }
 
-  const forwardProviderEntry = findForwardProviderEntry(config, cfg.provider);
+  const forwardProviderEntry = findOpenAIResponsesFallbackProviderEntry(config, cfg.provider);
   if (!forwardProviderEntry) {
     return {
       action: "reject",
