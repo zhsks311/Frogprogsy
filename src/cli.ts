@@ -1161,8 +1161,10 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         if (shortcut) {
           console.log(`   next: open a new terminal and run ${shortcut} to sign in.`);
           await maybeConfigureAccountShortcuts();
-        } else {
+        } else if (!launchers.realClaudeResolved) {
           console.log("   next: install Claude Code, then run frogp refresh to create this account's shortcut.");
+        } else {
+          console.log("   next: resolve the shortcut warning above, then run frogp refresh to create this account's shortcut.");
         }
       } catch (error) {
         // The account and its home are already registered, so a shortcut failure is reported without
