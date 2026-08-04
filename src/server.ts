@@ -22,6 +22,7 @@ import { applyModelMixingPatch, modelMixingSettingsSnapshot } from "./model-mixi
 import { runWithMixing } from "./model-mixing/loop";
 import { namespacedToolName } from "./types";
 import { signalWithTimeout } from "./abort";
+import { debugSwallowed } from "./debug";
 import {
   clearLoginState, getLoginStatus, isOAuthProvider,
   listOAuthProviders, reconcileOAuthProviders, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
@@ -1900,8 +1901,9 @@ function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
       usageStatus: usageStatusForFinalLog(usage),
       ...(usage ? { usage, totalTokens: usageTotalTokens(usage) } : {}),
     });
-  } catch {
+  } catch (err) {
     /* usage accounting must never break the data plane */
+    debugSwallowed("usage-log", err);
   }
 }
 
