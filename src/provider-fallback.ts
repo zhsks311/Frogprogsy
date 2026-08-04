@@ -81,12 +81,20 @@ export function buildAttemptContexts(config: FrogConfig, parsed: FrogParsedReque
   return { primaryRoute, attempts };
 }
 
+/**
+ * Rewrite the model id a request carries upstream. Adapters read `parsed.modelId`, while
+ * Responses-style adapters serialize `parsed._rawBody`, so both must be kept in sync.
+ */
+export function applyParsedModelId(parsed: FrogParsedRequest, modelId: string): void {
+  if (parsed._rawBody && typeof parsed._rawBody === "object") {
+    (parsed._rawBody as { model?: string }).model = modelId;
+  }
+  parsed.modelId = modelId;
+}
+
 export function cloneParsedForAttempt(base: FrogParsedRequest, attempt: AttemptContext): FrogParsedRequest {
   const parsed = structuredClone(base) as FrogParsedRequest;
-  parsed.modelId = attempt.modelId;
-  if (parsed._rawBody && typeof parsed._rawBody === "object") {
-    (parsed._rawBody as { model?: string }).model = attempt.modelId;
-  }
+  applyParsedModelId(parsed, attempt.modelId);
   if (parsed._messagesRawBody) {
     parsed._messagesRawBody.model = attempt.modelId;
   }

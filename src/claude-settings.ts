@@ -215,8 +215,15 @@ function resolveModelDiscoveryReady(applied: boolean, carrier: GatewayAuthCarrie
   return applied && (carrier === "token-free" || authTokenSet);
 }
 
-export function readClaudeGatewayState(port: number, options: { claudeHome?: string; profileId?: string } = {}): ClaudeGatewayState {
-  const settingsPath = claudeSettingsFilePath(options.claudeHome);
+/**
+ * Shared gateway-state reader for the user-level and project-level settings files. Only the settings
+ * path and the profile-header comparison differ between the two surfaces.
+ */
+function readGatewayStateFrom(
+  settingsPath: string,
+  port: number,
+  matchProfileHeader: (customHeaders: unknown) => boolean,
+): ClaudeGatewayState {
   const settingsFound = existsSync(settingsPath);
   let settings: Record<string, unknown> = {};
   if (settingsFound) {
@@ -231,7 +238,7 @@ export function readClaudeGatewayState(port: number, options: { claudeHome?: str
   const actualBaseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? env.ANTHROPIC_BASE_URL : undefined;
   const baseUrlMatchesExpected = typeof actualBaseUrl === "string" && stripTrailingSlash(actualBaseUrl.trim()) === expectedBaseUrl;
   const gatewayDiscovery = env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY === "1";
-  const profileHeaderMatches = customHeadersContainProfile(env.ANTHROPIC_CUSTOM_HEADERS, options.profileId);
+  const profileHeaderMatches = matchProfileHeader(env.ANTHROPIC_CUSTOM_HEADERS);
   const authTokenSet = typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim() !== "";
   const carrier = resolveObservedGatewayCarrier(env);
   const applied = baseUrlMatchesExpected && gatewayDiscovery && profileHeaderMatches;
@@ -248,6 +255,11 @@ export function readClaudeGatewayState(port: number, options: { claudeHome?: str
     carrier,
     modelDiscoveryReady: resolveModelDiscoveryReady(applied, carrier, authTokenSet),
   };
+}
+
+export function readClaudeGatewayState(port: number, options: { claudeHome?: string; profileId?: string } = {}): ClaudeGatewayState {
+  return readGatewayStateFrom(claudeSettingsFilePath(options.claudeHome), port, (headers) =>
+    customHeadersContainProfile(headers, options.profileId));
 }
 
 export function mergeClaudeCodeSettings(
@@ -510,38 +522,8 @@ function removeClaudeProjectProfileHeaderValue(existing: string | undefined, pro
 }
 
 export function readClaudeProjectGatewayState(port: number, options: ClaudeProjectSettingsOptions): ClaudeGatewayState {
-  const settingsPath = claudeProjectSettingsFilePath(options.projectPath);
-  const settingsFound = existsSync(settingsPath);
-  let settings: Record<string, unknown> = {};
-  if (settingsFound) {
-    try {
-      settings = readJsonFile(settingsPath);
-    } catch {
-      settings = {};
-    }
-  }
-  const env = isRecord(settings.env) ? settings.env : {};
-  const expectedBaseUrl = buildClaudeCodeEnv(port).ANTHROPIC_BASE_URL ?? `http://localhost:${port}`;
-  const actualBaseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? env.ANTHROPIC_BASE_URL : undefined;
-  const baseUrlMatchesExpected = typeof actualBaseUrl === "string" && stripTrailingSlash(actualBaseUrl.trim()) === expectedBaseUrl;
-  const gatewayDiscovery = env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY === "1";
-  const profileHeaderMatches = customHeadersMatchProjectProfile(env.ANTHROPIC_CUSTOM_HEADERS, options.routingProfileId);
-  const authTokenSet = typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim() !== "";
-  const carrier = resolveObservedGatewayCarrier(env);
-  const applied = baseUrlMatchesExpected && gatewayDiscovery && profileHeaderMatches;
-  return {
-    settingsPath,
-    settingsFound,
-    applied,
-    expectedBaseUrl,
-    actualBaseUrl,
-    baseUrlMatchesExpected,
-    gatewayDiscovery,
-    profileHeaderMatches,
-    authToken: typeof env.ANTHROPIC_AUTH_TOKEN === "string" ? "set_redacted" : "not_set",
-    carrier,
-    modelDiscoveryReady: resolveModelDiscoveryReady(applied, carrier, authTokenSet),
-  };
+  return readGatewayStateFrom(claudeProjectSettingsFilePath(options.projectPath), port, (headers) =>
+    customHeadersMatchProjectProfile(headers, options.routingProfileId));
 }
 
 export function restoreClaudeCodeSettings(options: { claudeHome?: string; profileId?: string } = {}): { success: boolean; message: string } {

@@ -61,12 +61,12 @@ function cloneNestedRecord(input: Record<string, Record<string, string>>): Recor
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { ...value }]));
 }
 
-export function providerConfigSeed(entry: ProviderRegistryEntry): FrogProviderConfig {
+/**
+ * Deep-cloned model tuning fields (models, context windows, capabilities, reasoning efforts, and
+ * per-model parameter exclusions) shared by the provider config seed and the key-login map.
+ */
+function cloneModelTuningFields(entry: ProviderRegistryEntry) {
   return {
-    adapter: entry.adapter,
-    baseUrl: entry.baseUrl,
-    authMode: entry.authKind === "local" ? undefined : entry.authKind,
-    ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
     ...(entry.models ? { models: [...entry.models] } : {}),
     ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
     ...(entry.modelContextWindows ? { modelContextWindows: { ...entry.modelContextWindows } } : {}),
@@ -85,6 +85,16 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): FrogProviderCo
   };
 }
 
+export function providerConfigSeed(entry: ProviderRegistryEntry): FrogProviderConfig {
+  return {
+    adapter: entry.adapter,
+    baseUrl: entry.baseUrl,
+    authMode: entry.authKind === "local" ? undefined : entry.authKind,
+    ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
+    ...cloneModelTuningFields(entry),
+  };
+}
+
 export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
   const out: Record<string, DerivedKeyLoginProvider> = {};
   for (const entry of PROVIDER_REGISTRY) {
@@ -95,22 +105,8 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
       baseUrl: entry.baseUrl,
       adapter: entry.adapter,
       dashboardUrl: entry.dashboardUrl,
-      ...(entry.models ? { models: [...entry.models] } : {}),
       ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
-      ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
-      ...(entry.modelContextWindows ? { modelContextWindows: { ...entry.modelContextWindows } } : {}),
-      ...(entry.modelCapabilities ? { modelCapabilities: cloneModelCapabilities(entry.modelCapabilities) } : {}),
-      ...(entry.reasoningEfforts ? { reasoningEfforts: [...entry.reasoningEfforts] } : {}),
-      ...(entry.modelReasoningEfforts ? { modelReasoningEfforts: cloneRecordOfArrays(entry.modelReasoningEfforts) } : {}),
-      ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),
-      ...(entry.modelReasoningEffortMap ? { modelReasoningEffortMap: cloneNestedRecord(entry.modelReasoningEffortMap) } : {}),
-      ...(entry.noReasoningModels ? { noReasoningModels: [...entry.noReasoningModels] } : {}),
-      ...(entry.noTemperatureModels ? { noTemperatureModels: [...entry.noTemperatureModels] } : {}),
-      ...(entry.noTopPModels ? { noTopPModels: [...entry.noTopPModels] } : {}),
-      ...(entry.noPenaltyModels ? { noPenaltyModels: [...entry.noPenaltyModels] } : {}),
-      ...(entry.autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels: [...entry.autoToolChoiceOnlyModels] } : {}),
-      ...(entry.preserveReasoningContentModels ? { preserveReasoningContentModels: [...entry.preserveReasoningContentModels] } : {}),
-      ...(entry.escapeBuiltinToolNames !== undefined ? { escapeBuiltinToolNames: entry.escapeBuiltinToolNames } : {}),
+      ...cloneModelTuningFields(entry),
     };
   }
   return out;
