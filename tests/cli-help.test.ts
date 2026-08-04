@@ -287,6 +287,37 @@ describe("CLI subcommand help", () => {
     }
   });
 
+  test("claude add does not claim plain Claude Code is installed when the original executable is missing", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-missing-executable-"));
+    const frogHome = join(root, "frog");
+    const userHome = join(root, "user");
+    const defaultClaudeHome = join(userHome, ".claude");
+    mkdirSync(defaultClaudeHome, { recursive: true });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: userHome,
+      USERPROFILE: userHome,
+      PATH: join(root, "empty-bin"),
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: defaultClaudeHome,
+      CLAUDE_CONFIG_DIR: defaultClaudeHome,
+    };
+    delete env.FROGP_REAL_CLAUDE;
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "add", "work"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("install Claude Code");
+      expect(result.stdout).not.toContain("remains your installed Claude Code");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("claude home CLI add and rename keep a stable id", () => {
     const frogHome = mkdtempSync(join(tmpdir(), "frogp-claude-cli-"));
     const defaultClaudeHome = mkdtempSync(join(tmpdir(), "frogp-claude-default-"));

@@ -383,6 +383,19 @@ function launcherTargetPaths(binDir: string, name: string): string[] {
   return [nativeTarget, join(binDir, name)];
 }
 
+function managedLauncherMatchesProfile(target: string, profileId: string): boolean {
+  try {
+    const content = readFileSync(target, "utf8");
+    if (!content.includes(MANAGED_MARKER)) return false;
+    const invocation = ["claude", "run", profileId, "--"]
+      .map(process.platform === "win32" ? cmdQuote : shQuote)
+      .join(" ");
+    return content.includes(invocation);
+  } catch {
+    return false;
+  }
+}
+
 function removeManagedLauncherFile(binDir: string, target: string): boolean {
   if (!isInside(binDir, target) || !existsSync(target)) return false;
   try {
@@ -395,12 +408,13 @@ function removeManagedLauncherFile(binDir: string, target: string): boolean {
 }
 
 /**
- * Remove marked launchers that no longer appear in the plan, even when the manifest is missing or corrupt.
- * The file's managed marker — not the manifest — is the deletion authority, so an unmarked user file with
- * the same name is preserved. This also removes legacy non-plain aliases after the one-shortcut-per-profile
- * migration and the platform's old extensionless Windows form.
+ * Remove marked launchers that do not match the current plan, even when the manifest is missing or
+ * corrupt. The file's managed marker — not the manifest — is the deletion authority, so an unmarked
+ * user file with the same name is preserved. A same-name managed launcher is retained only when its
+ * embedded profile id matches the current owner. This also removes legacy non-plain aliases after the
+ * one-shortcut-per-profile migration and the platform's old extensionless Windows form.
  */
-function removeOrphanManagedLaunchers(binDir: string, nextNames: Set<string>): string[] {
+function removeOrphanManagedLaunchers(binDir: string, nextLaunchersByName: ReadonlyMap<string, ClaudeLauncherEntry>): string[] {
   let entries: string[];
   try {
     entries = readdirSync(binDir);
@@ -414,7 +428,9 @@ function removeOrphanManagedLaunchers(binDir: string, nextNames: Set<string>): s
       ? fileName.slice(0, -4)
       : fileName;
     if (!(logicalName === "claude" || /^claude-[a-z0-9][a-z0-9-]*$/.test(logicalName))) continue;
-    if (nextNames.has(logicalName)) continue;
+    const next = nextLaunchersByName.get(logicalName);
+    const nativeFileName = claudeLauncherFileName(logicalName);
+    if (next && fileName === nativeFileName && managedLauncherMatchesProfile(join(binDir, fileName), next.profileId)) continue;
     if (removeManagedLauncherFile(binDir, join(binDir, fileName))) removed.add(logicalName);
   }
   return [...removed];
@@ -431,11 +447,11 @@ export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaud
   const { launchers, warnings } = plannedClaudeLaunchers(config);
 
   const previous = readManifest();
-  const nextNames = new Set(launchers.map(entry => entry.name));
+  const nextLaunchersByName = new Map(launchers.map(entry => [entry.name, entry]));
   const removed: string[] = [];
 
   for (const old of previous?.launchers ?? []) {
-    if (nextNames.has(old.name)) {
+    if (nextLaunchersByName.get(old.name)?.profileId === old.profileId) {
       if (process.platform === "win32") removeManagedLauncherFile(binDir, join(binDir, old.name));
       continue;
     }
@@ -447,8 +463,8 @@ export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaud
   }
 
   // The manifest may be absent or corrupt. Scan the owned directory as a second source and remove only
-  // files that carry the managed marker; unmarked user files are never touched.
-  for (const orphan of removeOrphanManagedLaunchers(binDir, nextNames)) {
+  // marked files that do not belong to the current name/profile pair; unmarked user files are never touched.
+  for (const orphan of removeOrphanManagedLaunchers(binDir, nextLaunchersByName)) {
     if (!removed.includes(orphan)) removed.push(orphan);
   }
 
@@ -458,11 +474,17 @@ export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaud
   // executable — so deleted and renamed accounts still lose their stale shortcuts, and the manifest is
   // rewritten with the launchers that survived on disk.
   if (!realClaude) {
-    const surviving = (previous?.launchers ?? []).filter(entry =>
-      !removed.includes(entry.name) && existsSync(join(binDir, claudeLauncherFileName(entry.name))));
-    if (previous) {
-      atomicWriteFile(manifestPath(), JSON.stringify({ ...previous, generatedAt: new Date().toISOString(), launchers: surviving }, null, 2) + "\n");
-    }
+    const surviving = launchers.filter(entry =>
+      managedLauncherMatchesProfile(join(binDir, claudeLauncherFileName(entry.name)), entry.profileId));
+    const manifest: ClaudeLauncherManifest = {
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      binDir,
+      realClaude: previous?.realClaude ?? "claude",
+      frogpCommand: previous?.frogpCommand ?? frogpCommand,
+      launchers: surviving,
+    };
+    atomicWriteFile(manifestPath(), JSON.stringify(manifest, null, 2) + "\n");
     return {
       binDir,
       realClaude: "claude",

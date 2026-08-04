@@ -334,7 +334,9 @@ function printLauncherSync(result: ReturnType<typeof syncClaudeLauncherShims>): 
   console.log(`   account shortcuts: ${names || "(none)"} in ${result.binDir}`);
   if (result.realClaudeResolved) console.log(`   real claude: ${result.realClaude}`);
   for (const warning of result.warnings) console.log(`   warning: ${warning}`);
-  console.log(`   Append ${result.binDir} to PATH to use account shortcuts. The plain 'claude' command remains your installed Claude Code.`);
+  console.log(result.realClaudeResolved
+    ? `   Append ${result.binDir} to PATH to use account shortcuts. The plain 'claude' command remains your installed Claude Code.`
+    : `   Install Claude Code, then append ${result.binDir} to PATH to use account shortcuts. frogprogsy does not create the plain 'claude' command.`);
 }
 
 function syncLaunchers(config: ReturnType<typeof loadConfig>): void {
