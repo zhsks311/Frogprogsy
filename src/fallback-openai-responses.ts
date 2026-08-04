@@ -132,7 +132,8 @@ export function buildOpenAIResponsesFallbackFetch(
   if (provider.authMode === "forward") {
     for (const header of FORWARD_HEADERS) {
       const value = incomingHeaders.get(header);
-      if (value) headers[header] = value;
+      if (!value || (header === "authorization" && isLocalAccessSecret(value))) continue;
+      headers[header] = value;
     }
   } else {
     const apiKey = resolveEnvValue(provider.apiKey);

@@ -8,6 +8,7 @@ import {
   OpenAIResponsesFallbackAuthError,
   resolveOpenAIResponsesFallbackProvider,
 } from "../src/fallback-openai-responses";
+import { __resetLocalAccessRegistry, setRuntimeAccessToken } from "../src/local-access";
 import { resolveProviderAuth, type ProviderAuthDeps } from "../src/provider-auth";
 import { resolveEnvValue } from "../src/config";
 import type { FrogConfig, FrogProviderConfig } from "../src/types";
@@ -190,6 +191,22 @@ describe("buildOpenAIResponsesFallbackFetch incoming-header isolation", () => {
     expect(headers["x-secret-not-allowlisted"]).toBeUndefined();
     expect(headers.cookie).toBeUndefined();
   });
+  test("forward mode does not relay a relay-local Authorization credential", () => {
+    const localKey = "frogp_fallback-local-key";
+    setRuntimeAccessToken(localKey);
+    try {
+      const { headers } = buildOpenAIResponsesFallbackFetch(
+        respProvider({ authMode: "forward" }),
+        new Headers({ authorization: `Bearer ${localKey}` }),
+      );
+
+      expect(headers.authorization).toBeUndefined();
+      expect(headerValues(headers)).not.toContain(localKey);
+    } finally {
+      __resetLocalAccessRegistry();
+    }
+  });
+
 });
 
 // ── Anthropic grant token never leaks into a non-Anthropic fallback ───────────

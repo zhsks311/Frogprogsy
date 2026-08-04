@@ -206,7 +206,7 @@ function printSubcommandUsage(name: string | undefined): boolean {
       console.log("Usage: frogp providers set <name> --auth claude-grant --grant <id>\n\nBind an existing provider to an isolated Claude subscription grant. Unknown provider or grant is a hard error. This never touches OAuth or API-key logins; it only sets the provider's authMode to claude-grant and records the grant id. It does not log in and does not auto-rebind on grant removal.");
       break;
     case "local-key":
-      console.log("Usage: frogp local-key list|add|remove ...\n\nManage relay access keys (config `localAccess`). Every /api/* and /v1/* request must then present a key as x-frogp-local-key, x-api-key, or Authorization: Bearer — Claude Code sends whatever ANTHROPIC_AUTH_TOKEN holds, so setting it to the key is enough. Config stores only the SHA-256 hash; the plaintext is printed once, at creation. A non-loopback `hostname` requires at least one key: the relay refuses to start otherwise, because every client that can reach the bind could otherwise spend the configured provider credentials.\n\n  frogp local-key list\n  frogp local-key add <label> [--limit <maxRequests>/<windowSec>]\n  frogp local-key remove <id-or-label>\n\nRestart the proxy (frogp stop && frogp start) after changing keys.");
+      console.log("Usage: frogp local-key list|add|remove ...\n\nManage relay access keys (config `localAccess`). Every /api/*, /v1/*, and /usage request must present a key. Send it in the dedicated x-frogp-local-key header by default. x-api-key and Authorization: Bearer are accepted for compatible clients, but a forward provider needs those slots for the real upstream credential — never replace that credential with the relay key. Config stores only the SHA-256 hash; the plaintext is printed once by `frogp local-key add`. A non-loopback `hostname` requires at least one key.\n\n  frogp local-key list\n  frogp local-key add <label> [--limit <maxRequests>/<windowSec>]\n  frogp local-key remove <id-or-label>\n\nRestart the proxy (frogp stop && frogp start) after changing keys.");
       break;
     case "doctor":
       console.log("Usage: frogp doctor claude [--json]\n\nRead-only diagnostics for Claude Code /model visibility plus isolated Claude subscription grants (resolved real claude path/kind, grant config-dir confinement, expected scoped Keychain service, provider dangling bindings, native auth env conflicts). Never reads or writes native Claude homes or the global/unscoped Keychain. --json prints one redacted JSON object on stdout; credential values, JSON, email, and absolute home paths are never emitted.");
@@ -1685,7 +1685,7 @@ async function handleLocalKeyCommand(values: string[]): Promise<void> {
       console.log(`   ${secret}`);
       console.log("");
       console.log("This is the only time the key is shown — the config stores only its SHA-256 hash.");
-      console.log("Send it as x-frogp-local-key, x-api-key, or Authorization: Bearer. For Claude Code, set ANTHROPIC_AUTH_TOKEN to it.");
+      console.log("Send it in x-frogp-local-key. If a forward provider uses Authorization or x-api-key for its upstream credential, keep that credential there and do not replace it with the relay key.");
       console.log("Relay authentication is now enabled; start the proxy to apply: frogp start");
       return;
     }

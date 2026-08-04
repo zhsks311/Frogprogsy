@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { generateLocalAccessSecret, hashLocalAccessSecret } from "../src/local-access";
+import { hashLocalAccessSecret } from "../src/local-access";
 
 const home = process.env.FROGPROGSY_HOME || "/config";
 const configPath = join(home, "config.json");
@@ -52,28 +52,27 @@ if (typeof config.port !== "number" || !Number.isFinite(config.port)) {
   config.port = 3764;
 }
 
-// A published container port is reachable from outside the container, so the relay refuses to bind a
-// non-loopback hostname without request authentication. Mint one key on first run and print the
-// plaintext once: it exists nowhere else, and callers send it as ANTHROPIC_AUTH_TOKEN / x-api-key.
-// FROGP_LOCAL_ACCESS_KEY pins a caller-chosen key instead (compose secret, redeploy with a known key).
+// A published container port is reachable from outside the container, so a first non-loopback start
+// requires a caller-supplied key. Generating it here would put the plaintext in container stdout,
+// where Docker or a central log collector can retain it. An existing enabled key remains usable on
+// later starts without repeating the plaintext environment value.
 const existingLocalAccess = config.localAccess as { enabled?: boolean; keys?: unknown[] } | undefined;
-// A key list that is present but disabled authenticates nothing, so the relay would refuse to bind;
-// treat it as absent and mint a usable key rather than fail to start.
 const hasKey = existingLocalAccess?.enabled === true
   && Array.isArray(existingLocalAccess.keys)
   && existingLocalAccess.keys.length > 0;
 const pinnedKey = process.env.FROGP_LOCAL_ACCESS_KEY?.trim();
-if (bindHostname !== "127.0.0.1" && bindHostname !== "localhost" && bindHostname !== "::1" && (!hasKey || pinnedKey)) {
-  const secret = pinnedKey || generateLocalAccessSecret();
+const nonLoopbackBind = bindHostname !== "127.0.0.1" && bindHostname !== "localhost" && bindHostname !== "::1";
+if (nonLoopbackBind && !hasKey && !pinnedKey) {
+  throw new Error(
+    "FROGP_LOCAL_ACCESS_KEY is required for the first non-loopback Docker start; " +
+    "provide it through your container secret/environment configuration",
+  );
+}
+if (nonLoopbackBind && pinnedKey) {
   config.localAccess = {
     enabled: true,
-    keys: [{ id: `lk_${randomBytes(4).toString("hex")}`, label: "docker", secretHash: hashLocalAccessSecret(secret) }],
+    keys: [{ id: `lk_${randomBytes(4).toString("hex")}`, label: "docker", secretHash: hashLocalAccessSecret(pinnedKey) }],
   };
-  if (!pinnedKey) {
-    console.log("frogprogsy: created a relay access key for this container (shown once):");
-    console.log(`frogprogsy:   ${secret}`);
-    console.log("frogprogsy: send it as ANTHROPIC_AUTH_TOKEN, x-api-key, or x-frogp-local-key. Set FROGP_LOCAL_ACCESS_KEY to pin your own.");
-  }
 }
 
 atomicWrite(configPath, `${JSON.stringify(config, null, 2)}\n`);

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
-import { DEFAULT_PORT, atomicWriteFile, ensureConfigDirForWrite, getConfigDir, getConfigPath, loadConfig, readActivePort, readPid } from "./config";
+import { DEFAULT_PORT, atomicWriteFile, ensureConfigDirForWrite, getConfigDir, getConfigPath, loadConfig, readActivePort, readLocalAccessToken, readPid } from "./config";
 import { buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv, ensureClaudeProfiles, managedClaudeProfiles, resolveClaudeProfile } from "./claude-profiles";
 import type { ClaudeProfileRecord, FrogConfig } from "./types";
 
@@ -415,7 +415,8 @@ export async function runClaudeProfile(
     // Sync this profile's picker cache before the real Claude process starts, then launch.
     await refreshManagedProfileCatalog(config, profile, options.refreshCatalog);
     const carrier = config.gatewayAuthCarrier ?? "token-free";
-    env = buildClaudeProfileRunEnv(profile, readActivePort() ?? config.port ?? DEFAULT_PORT, carrier);
+    const runtimeAccessToken = config.localAccess?.enabled === true ? readLocalAccessToken() ?? undefined : undefined;
+    env = buildClaudeProfileRunEnv(profile, readActivePort() ?? config.port ?? DEFAULT_PORT, carrier, process.env, runtimeAccessToken);
   } else {
     env = buildClaudeProfileNativeEnv(profile);
   }

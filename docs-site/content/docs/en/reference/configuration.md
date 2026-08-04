@@ -49,12 +49,12 @@ The JSON fields map to the runtime `ProviderConfig` objects under `providers.*` 
 
 `localAccess` is request-scoped authentication for the relay. When `enabled` is `true`, every `/api/*`, `/v1/*`, and `/usage` request must present a configured key; `/healthz` and the dashboard assets stay open.
 
-- The key travels in `x-frogp-local-key`, `x-api-key`, or `Authorization: Bearer <key>`. Claude Code sends whatever `ANTHROPIC_AUTH_TOKEN` holds, so setting that variable to the key is enough.
+- Send the relay key in the dedicated `x-frogp-local-key` header by default. `x-api-key` and `Authorization: Bearer <key>` remain accepted for compatible clients, but a `forward` provider needs those slots for its real upstream credential. Keep that credential in place; do not replace it with the relay key.
 - Config stores only `sha256:<hex>` of a key. The plaintext is printed once, when `frogp local-key add` creates it, and cannot be recovered afterwards.
 - `requestLimit` is a per-key sliding window enforced in the relay process; an exhausted window answers `429` with `Retry-After`.
 - A presented key is never relayed upstream, so a `forward` lane still forwards only a real caller provider credential.
 - Same-machine tooling does not need the key: the running relay writes a per-start token to `~/.frogprogsy/local-access.token` (mode `0600`), and `frogp models` / `frogp doctor claude` send that instead. It is not stored in config and does not survive a restart.
-- A non-loopback `hostname` requires at least one key: the relay refuses to start otherwise, because every client that can reach the bind could otherwise spend the configured provider credentials. The Docker entrypoint therefore mints a key on first run and prints it once (`FROGP_LOCAL_ACCESS_KEY` pins your own).
+- A non-loopback `hostname` requires at least one key. On the first Docker start, set `FROGP_LOCAL_ACCESS_KEY` through the container environment or secret configuration; the entrypoint stores only its hash and never prints the plaintext. A persisted volume with an existing enabled key restarts without the environment value.
 - Per-key `providers`/`models` scopes are not enforced yet; a key that declares them is rejected at startup rather than silently unscoped.
 
 ```json

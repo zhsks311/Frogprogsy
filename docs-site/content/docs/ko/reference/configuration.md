@@ -49,12 +49,12 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 
 `localAccess`는 relay의 요청 단위 인증입니다. `enabled`가 `true`이면 모든 `/api/*`, `/v1/*`, `/usage` 요청이 설정된 key를 제시해야 하고, `/healthz`와 dashboard asset은 그대로 열려 있습니다.
 
-- key는 `x-frogp-local-key`, `x-api-key`, `Authorization: Bearer <key>` 중 하나로 전달됩니다. Claude Code는 `ANTHROPIC_AUTH_TOKEN` 값을 그대로 보내므로 이 변수에 key를 넣으면 충분합니다.
+- Relay key는 전용 `x-frogp-local-key` header로 보내는 방식을 기본으로 사용합니다. 호환 client를 위해 `x-api-key`와 `Authorization: Bearer <key>`도 허용하지만, `forward` provider는 이 두 자리에 실제 upstream credential을 넣습니다. 해당 credential을 relay key로 바꾸지 마세요.
 - config에는 key의 `sha256:<hex>`만 저장됩니다. 평문은 `frogp local-key add`가 생성할 때 한 번만 출력되고 이후에는 복구할 수 없습니다.
 - `requestLimit`은 relay process에서 적용되는 key별 sliding window이며, 한도를 넘으면 `Retry-After`와 함께 `429`를 반환합니다.
 - 제시된 key는 upstream으로 전달되지 않으므로, `forward` lane은 실제 호출자 provider credential만 계속 전달합니다.
 - 같은 머신의 도구는 key가 필요하지 않습니다. 실행 중인 relay가 시작마다 `~/.frogprogsy/local-access.token`(mode `0600`)에 token을 쓰고, `frogp models` / `frogp doctor claude`가 그것을 전송합니다. 이 token은 config에 저장되지 않으며 재시작 후에는 남지 않습니다.
-- loopback이 아닌 `hostname`은 최소 한 개의 key를 요구합니다. 그렇지 않으면 relay가 시작을 거부합니다. 해당 bind에 도달할 수 있는 모든 client가 설정된 provider credential을 사용할 수 있기 때문입니다. 그래서 Docker entrypoint는 첫 실행에서 key를 만들고 한 번 출력합니다(`FROGP_LOCAL_ACCESS_KEY`로 직접 지정 가능).
+- Loopback이 아닌 `hostname`은 최소 한 개의 key를 요구합니다. Docker를 처음 시작할 때 container environment 또는 secret 설정으로 `FROGP_LOCAL_ACCESS_KEY`를 전달하세요. Entrypoint는 hash만 저장하고 평문을 출력하지 않습니다. Enabled key가 저장된 volume은 이후 환경 변수 없이 다시 시작할 수 있습니다.
 - key별 `providers`/`models` scope는 아직 적용되지 않습니다. 이를 선언한 key는 조용히 무시되지 않고 시작 시 거부됩니다.
 
 ```json

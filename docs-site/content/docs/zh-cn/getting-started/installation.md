@@ -53,19 +53,25 @@ Provider 添加、默认 provider/model 选择、第一条 `claude` 请求在 [�
 
 仓库包含经过验证的 `Dockerfile` 和 `docker-compose.yml`，可以把 relay 作为容器服务运行：
 
+首次启动前，请把足够强的 relay key 导出为 `FROGP_LOCAL_ACCESS_KEY`，并保存在 password manager 或 container secret store 中。Compose 会把它传给 entrypoint；entrypoint 只保存 hash，绝不把明文写入 container log。Volume 中已有 enabled key 后，之后重启无需再次提供该环境变量。
+
 ```bash
 docker compose up --build
 ```
 
 容器会把 FrogProgsy 状态写到 `/config`，该路径由 `frogprogsy-config` volume 持久化。Entrypoint 会把 `config.json` 的 `hostname` 设置为 `"0.0.0.0"`，让 Docker 端口发布能访问 relay；Compose 文件设置 `FROGP_EXTERNAL_SUPERVISOR=1`，因此 crash recovery 由 Docker 负责，而不是由进程内 watchdog 负责。
 
-默认 host 地址是 `http://localhost:3764`。如果只想改变 host 端口、不改变容器端口：
+默认情况下，Compose 只在 host 的 `127.0.0.1` interface 上发布 `http://localhost:3764`。容器内部仍监听 `0.0.0.0`，但 LAN 无法直接访问 relay port。如果只想改变 host port、不改变容器 port：
 
 ```bash
 FROGP_HOST_PORT=3765 docker compose up --build
 ```
 
 让 Claude Code 指向宿主机暴露出来的 gateway，例如 `ANTHROPIC_BASE_URL=http://localhost:3764`.
+
+Local access key 是可重复使用的 bearer secret，明文 HTTP 无法防止 network path 上的观察者获取它。需要远程访问时，请保留仅 loopback 的 port mapping，并在 host 上使用终止 TLS 的 reverse proxy。不要通过 HTTP 把 relay port 直接发布到非 loopback interface。
+
+Client 默认应通过 `x-frogp-local-key` 发送 relay key。如果 `forward` provider 使用 `Authorization` 或 `x-api-key` 传递真实的 upstream credential，请保留该 credential，不要复用这两个 header 来发送 relay key。
 
 ## 高级安装备注
 

@@ -1,11 +1,31 @@
 import { describe, expect, test } from "bun:test";
 import { createResponsesAdapter } from "../src/adapters/openai-responses";
+import { __resetLocalAccessRegistry, setRuntimeAccessToken } from "../src/local-access";
 
 const provider = {
   adapter: "openai-responses",
   baseUrl: "https://chatgpt.example/backend-api/codex",
   authMode: "forward" as const,
 };
+
+test("does not forward a relay-local Authorization credential to OpenAI Responses", () => {
+  const localKey = "frogp_openai-forward-local-key";
+  setRuntimeAccessToken(localKey);
+  try {
+    const request = createResponsesAdapter(provider).buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: false,
+      options: {},
+      _rawBody: { model: "gpt-5.5", input: [] },
+    }, { headers: new Headers({ authorization: `Bearer ${localKey}` }) });
+
+    expect(request.headers.authorization).toBeUndefined();
+    expect(Object.values(request.headers)).not.toContain(`Bearer ${localKey}`);
+  } finally {
+    __resetLocalAccessRegistry();
+  }
+});
 
 describe("OpenAI Responses upstream body sanitization", () => {
   test("drops raw reasoning input content before native GPT Responses upstream call", () => {
