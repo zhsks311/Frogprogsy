@@ -180,7 +180,10 @@ describe("relay enforcement", () => {
       const token = readLocalAccessToken();
       expect(token).toMatch(/^frogp_/);
       expect(token).not.toBe(SECRET);
-      expect(statSync(getLocalAccessTokenPath()).mode & 0o777).toBe(0o600);
+      // Windows has no POSIX permission bits; NTFS reports 0o666 regardless of the requested mode.
+      if (process.platform !== "win32") {
+        expect(statSync(getLocalAccessTokenPath()).mode & 0o777).toBe(0o600);
+      }
 
       const withToken = await fetch(new URL("/api/settings", server.url), { headers: { [LOCAL_ACCESS_HEADER]: token! } });
       expect(withToken.status).toBe(200);
