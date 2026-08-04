@@ -538,7 +538,7 @@ export const CLAUDE_HOME_CONFLICT_EXIT_CODE = 78;
 export interface ClaudeHomeConflict {
   /** Which environment variable disagreed, or `both` when the two disagree with each other. */
   source: "CLAUDE_CONFIG_DIR" | "CLAUDE_HOME" | "both";
-  reason: "different-home" | "unreadable";
+  reason: "different-home" | "unreadable" | "registered-unreadable";
 }
 
 /**
@@ -560,11 +560,14 @@ export function detectClaudeHomeConflict(
 ): ClaudeHomeConflict | null {
   const configDir = env.CLAUDE_CONFIG_DIR?.trim();
   const claudeHome = env.CLAUDE_HOME?.trim();
-  if (!configDir && !claudeHome) return null;
 
   // The registered home is the source of truth. It is never rewritten by this comparison: the spawn
   // below uses `profile.claudeHome` verbatim, because that exact string is the credential address.
   const registered = canonicalDirIdentity(registeredHome);
+  if (registered === null) {
+    return { source: configDir ? "CLAUDE_CONFIG_DIR" : claudeHome ? "CLAUDE_HOME" : "both", reason: "registered-unreadable" };
+  }
+  if (!configDir && !claudeHome) return null;
 
   const entries: Array<{ source: "CLAUDE_CONFIG_DIR" | "CLAUDE_HOME"; raw: string }> = [];
   if (configDir) entries.push({ source: "CLAUDE_CONFIG_DIR", raw: configDir });
@@ -585,7 +588,6 @@ export function detectClaudeHomeConflict(
   if (identities.length === 2 && identities[0] !== identities[1]) {
     return { source: "both", reason: "different-home" };
   }
-  if (registered === null) return { source: entries[0]!.source, reason: "unreadable" };
   return null;
 }
 
@@ -612,6 +614,13 @@ function expandTildePath(path: string): string {
  * Privacy-safe paths belong to `frogp doctor claude`, not to this default message.
  */
 export function claudeHomeConflictMessage(conflict: ClaudeHomeConflict, shortcutName: string): string {
+  if (conflict.reason === "registered-unreadable") {
+    return [
+      `Refusing to start: the registered Claude account home for ${shortcutName} is missing or cannot be read.`,
+      "Running anyway could write credentials to an unintended location.",
+      `Fix: restore that account home or remove and add the ${shortcutName} account again.`,
+    ].join("\n");
+  }
   const varLabel = conflict.source === "both" ? "CLAUDE_CONFIG_DIR and CLAUDE_HOME" : conflict.source;
   const cause = conflict.reason === "unreadable"
     ? `${varLabel} names a directory that cannot be read.`

@@ -204,7 +204,7 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   const sonnetCandidates = useMemo(() => sonnetModelCandidates(models), [models]);
   const selectedSonnetModel = sonnetCandidates.find(model => model.namespaced === selectedSonnet);
   const sonnetCommand = selectedSonnetModel ? sonnetModelCommand(selectedSonnetModel.namespaced) : "";
-  const runCommand = selected?.shortcut?.command ?? "claude-<account>";
+  const shortcutCommand = selected?.shortcut?.command?.trim() || undefined;
   const reloadCommand = selected ? `frogp claude reload-models ${selected.id}` : "frogp claude reload-models <profile-id>";
   const discoveryAuthMode: DiscoveryAuthMode = selected?.gateway?.discoveryAuth ?? (selected?.gateway?.modelDiscoveryReady ? "settings" : selected?.injected ? "launcher" : "direct");
 
@@ -318,7 +318,7 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: newName, claudeHome: newHome.trim() || undefined }),
       });
-      const body = await res.json() as { profile?: ClaudeProfile; error?: string };
+      const body = await res.json().catch(() => ({})) as { profile?: ClaudeProfile; error?: string };
       if (!res.ok) throw new Error(body.error || t("claudeProfiles.addFailed"));
       setNewName(""); setNewHome("");
       const next = await loadProfiles();
@@ -332,9 +332,15 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
     setBusy(true);
     try {
       const res = await fetch(`${apiBase}/api/claude-shortcuts/setup`, { method: "POST" });
-      const body = await res.json() as { message?: string; error?: string; manual?: string };
-      if (!res.ok) throw new Error(body.message || body.error || body.manual || t("claudeProfiles.shortcutsSetupFailed"));
-      notify(body.message || t("claudeProfiles.shortcutsSetupDone"), true);
+      const body = await res.json().catch(() => ({})) as { state?: string; message?: string; error?: string; manual?: string; warning?: string };
+      if (!res.ok) {
+        const reason = body.message || body.error || t("claudeProfiles.shortcutsSetupFailed");
+        throw new Error(body.manual ? `${reason} — ${body.manual}` : reason);
+      }
+      const message = body.state === "manual_required" && body.manual
+        ? `${body.message || t("claudeProfiles.shortcutsSetupFailed")} — ${body.manual}`
+        : body.message || t("claudeProfiles.shortcutsSetupDone");
+      notify(body.warning ? `${message} — ${body.warning}` : message, true);
       await loadProfiles();
     } catch (error) { notify(error instanceof Error ? error.message : t("claudeProfiles.shortcutsSetupFailed"), false); }
     finally { setBusy(false); }
@@ -492,7 +498,8 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   };
 
   const copyRunCommand = async () => {
-    await navigator.clipboard?.writeText(runCommand).catch(() => undefined);
+    if (!shortcutCommand) return;
+    await navigator.clipboard?.writeText(shortcutCommand).catch(() => undefined);
     notify(t("claudeProfiles.copied"), true);
   };
 
@@ -726,7 +733,7 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
 
 
           <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-            <button className="btn btn-ghost" onClick={copyRunCommand}><IconCheck /> {t("claudeProfiles.copyRun")}</button>
+            <button className="btn btn-ghost" onClick={copyRunCommand} disabled={!shortcutCommand}><IconCheck /> {t("claudeProfiles.copyRun")}</button>
             <button className="btn btn-ghost" onClick={removeSelected} disabled={busy || profiles.length <= 1}><IconTrash /> {t("common.remove")}</button>
           </div>
         </section>

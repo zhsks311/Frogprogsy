@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { addClaudeProfile, buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv, derivedClaudeHomeForShortcut, ensureClaudeProfiles, managedClaudeProfiles, mergeClaudeProfileHeader, removeClaudeProfileHeader, renameClaudeProfile, resolveClaudeProfile, validateClaudeShortcutInput } from "../src/claude-profiles";
 import type { FrogConfig } from "../src/types";
 
@@ -15,7 +17,7 @@ function baseConfig(): FrogConfig {
 describe("Claude Code homes", () => {
   test("validates command-friendly account names and derives an isolated home", () => {
     expect(validateClaudeShortcutInput("work-2")).toBe("work-2");
-    expect(derivedClaudeHomeForShortcut("work")).toEndWith("/.claude-work");
+    expect(derivedClaudeHomeForShortcut("work")).toBe(join(homedir(), ".claude-work"));
 
     for (const invalid of ["업무", "Work", "two words", "-work", "work-", "work_2", "claude", "default", "profile"]) {
       expect(() => validateClaudeShortcutInput(invalid)).toThrow();

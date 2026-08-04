@@ -65,7 +65,7 @@ function runCli(argv: string[], frogHome: string, extraEnv: Record<string, strin
   mkdirSync(claudeHome, { recursive: true });
   return spawnSync(process.execPath, [cliPath, ...argv], {
     cwd: repoRoot,
-    env: { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: claudeHome, ...extraEnv },
+    env: { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: claudeHome, FROGP_REAL_CLAUDE: process.execPath, ...extraEnv },
     encoding: "utf8",
     timeout: 15_000,
   });

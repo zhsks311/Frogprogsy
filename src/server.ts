@@ -80,7 +80,7 @@ import {
 } from "./claude-projects";
 import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, syncClaudeLauncherShims } from "./claude-launchers";
 import { cleanupClaudeProjectsForRemovedProfile } from "./claude-routing-lifecycle";
-import { configureZshAccountShortcuts, zshManualPathLine } from "./shell-shortcuts";
+import { configureZshAccountShortcuts, zshAccountShortcutsSupported, zshManualPathLine } from "./shell-shortcuts";
 import {
   addClaudeGrant,
   assertClaudeGrantRemovalSafe,
@@ -2931,6 +2931,13 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
 
   if (url.pathname === "/api/claude-shortcuts/setup" && req.method === "POST") {
     try {
+      if (!zshAccountShortcutsSupported(process.env)) {
+        return jsonResponse({
+          state: "manual_required",
+          message: "Automatic shell setup currently supports zsh on POSIX only.",
+          manual: zshManualPathLine(),
+        });
+      }
       const result = configureZshAccountShortcuts();
       if (result.state === "refused") {
         return jsonResponse({ ...result, manual: zshManualPathLine() }, 409);
@@ -3050,7 +3057,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         if (!projectCleanup.success) return jsonResponse({ error: projectCleanup.error ?? "project profile cleanup failed", projects: projectCleanup.projects }, 409);
         const removed = removeClaudeProfile(config, profile.id);
         persistConfig(config);
-        const launcherSync = syncClaudeLaunchersBestEffort(config);
+        const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
         return jsonResponse({ removed, launcherSync });
       } catch {
         return jsonResponse({ error: "Claude Code home could not be removed" }, 409);

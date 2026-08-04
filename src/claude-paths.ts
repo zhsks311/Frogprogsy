@@ -21,7 +21,12 @@ export function resolveClaudeCodeHome(explicitHome?: string): string {
       const source = explicitHome ? "Claude Code home" : process.env.CLAUDE_CONFIG_DIR?.trim() ? "CLAUDE_CONFIG_DIR" : "CLAUDE_HOME";
       throw new Error(`${source} points to a path that is not a directory`);
     }
-    return realpathSync.native(path);
+    try {
+      return realpathSync.native(path);
+    } catch {
+      const source = explicitHome ? "Claude Code home" : process.env.CLAUDE_CONFIG_DIR?.trim() ? "CLAUDE_CONFIG_DIR" : "CLAUDE_HOME";
+      throw new Error(`${source} points to a path that could not be read`);
+    }
   }
   return defaultClaudeCodeHome();
 }
