@@ -379,6 +379,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
       await runClaudeProfile(gatewayProfile, config(), [], {
         gateway: true,
         realClaude: "/usr/bin/true",
+        validateExecutable: candidate => candidate!,
         refreshCatalog: refreshFake(order, "boom /Users/secret/.claude token=sk-leaked"),
         spawn: spawnFake(order, {}),
         exit: exitFake(exit),
@@ -403,6 +404,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
       await runClaudeProfile(gatewayProfile, config(), [], {
         gateway: true,
         realClaude: "/usr/bin/true",
+        validateExecutable: candidate => candidate!,
         refreshCatalog: (async () => {
           order.push("refresh");
           return {
@@ -509,6 +511,7 @@ describe("launcher spawn failure exit codes", () => {
       await runClaudeProfile(gatewayProfile, config(), [], {
         gateway: false,
         realClaude: "/usr/bin/true",
+        validateExecutable: candidate => candidate!,
         spawn: spawnReturning({ status: null, signal: "SIGKILL" }),
         exit: exitFake(exit),
       });
@@ -526,6 +529,7 @@ describe("launcher spawn failure exit codes", () => {
       await runClaudeProfile(gatewayProfile, config(), [], {
         gateway: false,
         realClaude: "/usr/bin/true",
+        validateExecutable: candidate => candidate!,
         spawn: spawnReturning({ status: 3, signal: null }),
         exit: exitFake(exit),
       });

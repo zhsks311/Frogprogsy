@@ -62,10 +62,16 @@ function writeExecutable(path: string, content: string): void {
 
 function runCli(argv: string[], frogHome: string, extraEnv: Record<string, string> = {}) {
   const claudeHome = join(frogHome, "claude-home");
+  const env = { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: claudeHome, FROGP_REAL_CLAUDE: process.execPath, ...extraEnv };
+  if (process.platform === "win32" && extraEnv.PATH !== undefined) {
+    for (const key of Object.keys(env)) {
+      if (key !== "PATH" && key.toLowerCase() === "path") delete env[key];
+    }
+  }
   mkdirSync(claudeHome, { recursive: true });
   return spawnSync(process.execPath, [cliPath, ...argv], {
     cwd: repoRoot,
-    env: { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: claudeHome, FROGP_REAL_CLAUDE: process.execPath, ...extraEnv },
+    env,
     encoding: "utf8",
     timeout: 15_000,
   });
@@ -103,12 +109,13 @@ describe("Claude doctor pure helpers", () => {
   });
 
   test("classifies a stale Bun claude symlink owned by frogprogsy as hijacked", () => {
-    const bunDir = "/tmp/bun/bin";
+    const root = join(tmpdir(), "frogp-doctor-fixture");
+    const bunDir = join(root, "bun", "bin");
     const staleClaude = join(bunDir, CLAUDE_EXE);
-    const staleTarget = "/tmp/node_modules/frogprogsy/src/claude.ts";
+    const staleTarget = join(root, "node_modules", "frogprogsy", "src", "claude.ts");
     const fs = fakeFs({ [staleClaude]: "#!/usr/bin/env bun\n" }, { [staleClaude]: staleTarget });
 
-    const raw = resolveRawClaudeOnPath({ pathEnv: bunDir, launcherBinDir: "/tmp/frog/bin", fs });
+    const raw = resolveRawClaudeOnPath({ pathEnv: bunDir, launcherBinDir: join(root, "frog", "bin"), fs });
     expect(raw).toMatchObject({ kind: "managed_launcher", path: staleClaude, realPath: staleTarget });
   });
 
