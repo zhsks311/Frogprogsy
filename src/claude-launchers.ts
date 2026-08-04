@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { DEFAULT_PORT, atomicWriteFile, ensureConfigDirForWrite, getConfigDir, readActivePort, readPid } from "./config";
@@ -383,28 +383,59 @@ function launcherTargetPaths(binDir: string, name: string): string[] {
   return [nativeTarget, join(binDir, name)];
 }
 
-function managedLauncherMatchesProfile(target: string, profileId: string): boolean {
+function regularManagedLauncherContent(target: string): string | null {
   try {
+    if (!lstatSync(target).isFile()) return null;
     const content = readFileSync(target, "utf8");
-    if (!content.includes(MANAGED_MARKER)) return false;
-    const invocation = ["claude", "run", profileId, "--"]
-      .map(process.platform === "win32" ? cmdQuote : shQuote)
-      .join(" ");
-    return content.includes(invocation);
+    return content.includes(MANAGED_MARKER) ? content : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
+/** True only for a regular frogprogsy-managed launcher that embeds this exact profile id. */
+export function isExactManagedClaudeLauncher(target: string, profileId: string): boolean {
+  const content = regularManagedLauncherContent(target);
+  if (content === null) return false;
+  const invocation = ["claude", "run", profileId, "--"]
+    .map(process.platform === "win32" ? cmdQuote : shQuote)
+    .join(" ");
+  return content.includes(invocation);
+}
+
 function removeManagedLauncherFile(binDir: string, target: string): boolean {
-  if (!isInside(binDir, target) || !existsSync(target)) return false;
+  if (!isInside(binDir, target) || regularManagedLauncherContent(target) === null) return false;
   try {
-    if (!readFileSync(target, "utf8").includes(MANAGED_MARKER)) return false;
     rmSync(target);
     return true;
   } catch {
     return false;
   }
+}
+
+function pathEntryExists(target: string): boolean {
+  try {
+    lstatSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasManagedLauncherFile(binDir: string): boolean {
+  let entries: string[];
+  try {
+    entries = readdirSync(binDir);
+  } catch {
+    return false;
+  }
+  return entries.some(fileName => {
+    const logicalName = process.platform === "win32" && fileName.endsWith(".cmd")
+      ? fileName.slice(0, -4)
+      : fileName;
+    if (!(logicalName === "claude" || SHORTCUT_NAME_PATTERN.test(logicalName))) return false;
+    return regularManagedLauncherContent(join(binDir, fileName)) !== null;
+  });
 }
 
 /**
@@ -430,23 +461,38 @@ function removeOrphanManagedLaunchers(binDir: string, nextLaunchersByName: Reado
     if (!(logicalName === "claude" || /^claude-[a-z0-9][a-z0-9-]*$/.test(logicalName))) continue;
     const next = nextLaunchersByName.get(logicalName);
     const nativeFileName = claudeLauncherFileName(logicalName);
-    if (next && fileName === nativeFileName && managedLauncherMatchesProfile(join(binDir, fileName), next.profileId)) continue;
+    if (next && fileName === nativeFileName && isExactManagedClaudeLauncher(join(binDir, fileName), next.profileId)) continue;
     if (removeManagedLauncherFile(binDir, join(binDir, fileName))) removed.add(logicalName);
   }
   return [...removed];
 }
 
 export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaude?: string; frogpCommand?: string[] } = {}): ClaudeLauncherSyncResult {
-  const configDir = ensureConfigDirForWrite("sync Claude launcher shims");
+  const configDir = getConfigDir();
   const binDir = join(configDir, "bin");
-  mkdirSync(binDir, { recursive: true, mode: 0o700 });
-  try { chmodSync(binDir, 0o700); } catch { /* best effort */ }
-
   const realClaude = options.realClaude ?? findRealClaudeExecutableOrNull([binDir]);
   const frogpCommand = options.frogpCommand ?? currentFrogpCommand();
   const { launchers, warnings } = plannedClaudeLaunchers(config);
-
   const previous = readManifest();
+
+  // A fresh missing-native inspection is read-only. Existing managed state may still need stale cleanup
+  // and an accurate manifest, but an unrelated user-created bin directory is not ownership evidence.
+  if (!realClaude && previous === null && !hasManagedLauncherFile(binDir)) {
+    return {
+      binDir,
+      realClaude: "claude",
+      realClaudeResolved: false,
+      frogpCommand,
+      launchers: [],
+      removed: [],
+      warnings: [...warnings, REAL_CLAUDE_UNRESOLVED_WARNING],
+    };
+  }
+
+  ensureConfigDirForWrite("sync Claude launcher shims");
+  mkdirSync(binDir, { recursive: true, mode: 0o700 });
+  try { chmodSync(binDir, 0o700); } catch { /* best effort */ }
+
   const nextLaunchersByName = new Map(launchers.map(entry => [entry.name, entry]));
   const removed: string[] = [];
 
@@ -463,19 +509,14 @@ export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaud
   }
 
   // The manifest may be absent or corrupt. Scan the owned directory as a second source and remove only
-  // marked files that do not belong to the current name/profile pair; unmarked user files are never touched.
+  // marked regular files that do not belong to the current name/profile pair.
   for (const orphan of removeOrphanManagedLaunchers(binDir, nextLaunchersByName)) {
     if (!removed.includes(orphan)) removed.push(orphan);
   }
 
-  // A shortcut can only be generated around a validated original Claude executable. When none exists
-  // this is reported instead of thrown: the caller has usually already registered an account, and
-  // failing the whole operation would strand it. Removal already ran above — it never needs the
-  // executable — so deleted and renamed accounts still lose their stale shortcuts, and the manifest is
-  // rewritten with the launchers that survived on disk.
   if (!realClaude) {
     const surviving = launchers.filter(entry =>
-      managedLauncherMatchesProfile(join(binDir, claudeLauncherFileName(entry.name)), entry.profileId));
+      isExactManagedClaudeLauncher(join(binDir, claudeLauncherFileName(entry.name)), entry.profileId));
     const manifest: ClaudeLauncherManifest = {
       schemaVersion: 1,
       generatedAt: new Date().toISOString(),
@@ -498,21 +539,27 @@ export function syncClaudeLauncherShims(config: FrogConfig, options: { realClaud
 
   for (const entry of launchers) {
     const target = join(binDir, claudeLauncherFileName(entry.name));
+    if (pathEntryExists(target) && !isExactManagedClaudeLauncher(target, entry.profileId)) {
+      warnings.push(`launcher ${entry.name} skipped because its path is not owned by frogprogsy. Move or remove it, then run frogp refresh`);
+      continue;
+    }
     atomicWriteFile(target, launcherScript(entry, realClaude, frogpCommand));
     if (process.platform !== "win32") chmodSync(target, 0o755);
     if (process.platform === "win32") removeManagedLauncherFile(binDir, join(binDir, entry.name));
   }
 
+  const installed = launchers.filter(entry =>
+    isExactManagedClaudeLauncher(join(binDir, claudeLauncherFileName(entry.name)), entry.profileId));
   const manifest: ClaudeLauncherManifest = {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     binDir,
     realClaude,
     frogpCommand,
-    launchers,
+    launchers: installed,
   };
   atomicWriteFile(manifestPath(), JSON.stringify(manifest, null, 2) + "\n");
-  return { binDir, realClaude, realClaudeResolved: true, frogpCommand, launchers, removed, warnings };
+  return { binDir, realClaude, realClaudeResolved: true, frogpCommand, launchers: installed, removed, warnings };
 }
 
 /**

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { CLAUDE_HOME_CONFLICT_EXIT_CODE, assertRealClaudeExecutable, claudeLauncherFileName, detectClaudeHomeConflict, findRealClaudeExecutable, plannedClaudeLaunchers, profileForLauncherName, removeClaudeLauncherShims, runClaudeProfile, runNativeClaude, syncClaudeLauncherShims } from "../src/claude-launchers";
@@ -59,6 +59,70 @@ describe("Claude launchers", () => {
       "claude-personal",
     ]);
     expect(plan.launchers.map(entry => entry.name)).not.toContain("claude");
+  });
+
+  test("leaves a fresh config untouched when no original Claude executable resolves", () => {
+    const home = mkdtempSync(join(tmpdir(), "frog-fresh-unresolved-launchers-"));
+    const frogHome = join(home, "frog");
+    process.env.FROGPROGSY_HOME = frogHome;
+    process.env.PATH = join(home, "empty-bin");
+    delete process.env.FROGP_REAL_CLAUDE;
+
+    try {
+      const result = syncClaudeLauncherShims(config());
+
+      expect(result.realClaudeResolved).toBe(false);
+      expect(result.launchers).toEqual([]);
+      expect(result.warnings).toContain(
+        "the original Claude Code executable was not found, so no account shortcut was generated; install Claude Code and run frogp refresh",
+      );
+      expect(existsSync(join(frogHome, "bin"))).toBe(false);
+      expect(existsSync(join(frogHome, "claude-launchers.json"))).toBe(false);
+      expect(existsSync(frogHome)).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("preserves user files and symlinks that occupy planned shortcut paths", () => {
+    const home = mkdtempSync(join(tmpdir(), "frog-user-owned-shortcuts-"));
+    const frogHome = join(home, "frog");
+    const binDir = join(frogHome, "bin");
+    const realClaude = join(home, CLAUDE_EXE);
+    const regularTarget = join(binDir, claudeLauncherFileName("claude-personal"));
+    const symlinkTarget = join(binDir, claudeLauncherFileName("claude-anthropic-work"));
+    const symlinkDestination = join(home, "user-symlink-destination");
+    const regularContent = process.platform === "win32" ? "@echo off\r\necho user regular\r\n" : "#!/bin/sh\necho user regular\n";
+    const symlinkContent = process.platform === "win32" ? "@echo off\r\necho user symlink\r\n" : "#!/bin/sh\necho user symlink\n";
+    mkdirSync(binDir, { recursive: true });
+    executable(realClaude);
+    writeFileSync(regularTarget, regularContent, "utf8");
+    chmodSync(regularTarget, 0o744);
+    writeFileSync(symlinkDestination, symlinkContent, "utf8");
+    chmodSync(symlinkDestination, 0o711);
+    symlinkSync(symlinkDestination, symlinkTarget, "file");
+    process.env.FROGPROGSY_HOME = frogHome;
+    const originalRegularMode = statSync(regularTarget).mode;
+    const originalSymlinkMode = lstatSync(symlinkTarget).mode;
+    const originalDestinationMode = statSync(symlinkDestination).mode;
+
+    try {
+      const result = syncClaudeLauncherShims(config(), { realClaude });
+
+      expect(readFileSync(regularTarget, "utf8")).toBe(regularContent);
+      expect(statSync(regularTarget).mode).toBe(originalRegularMode);
+      expect(lstatSync(symlinkTarget).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(symlinkTarget)).toBe(symlinkDestination);
+      expect(lstatSync(symlinkTarget).mode).toBe(originalSymlinkMode);
+      expect(readFileSync(symlinkDestination, "utf8")).toBe(symlinkContent);
+      expect(statSync(symlinkDestination).mode).toBe(originalDestinationMode);
+      expect(result.launchers).toEqual([]);
+      expect(result.warnings.filter(warning =>
+        warning.includes("Move or remove it, then run frogp refresh"),
+      )).toHaveLength(2);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("writes managed shims with a pinned frogp command and the real Claude binary", () => {

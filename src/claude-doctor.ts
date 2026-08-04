@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, join, resolve, sep } from "node:path";
-import { claudeExecutableCandidates, claudeLauncherBinDir, claudeLauncherFileName, findRealClaudeExecutableOrNull, isClaudeExecutableBasename, plannedClaudeLaunchers } from "./claude-launchers";
+import { claudeExecutableCandidates, claudeLauncherBinDir, claudeLauncherFileName, findRealClaudeExecutableOrNull, isClaudeExecutableBasename, isExactManagedClaudeLauncher, plannedClaudeLaunchers } from "./claude-launchers";
 import { claudeGatewayModelsCachePath } from "./claude-paths";
 import { readClaudeGatewayState, type ClaudeGatewayState } from "./claude-settings";
 import { computeModelAliases } from "./model-aliases";
@@ -269,7 +269,7 @@ export function inspectPlannedLaunchers(config: FrogConfig, options: { pathEnv?:
       profileName: entry.profileName,
       claudeHome: entry.claudeHome,
       path: launcherPath,
-      installed: fs.existsSync(launcherPath),
+      installed: isExactManagedClaudeLauncher(launcherPath, entry.profileId),
       onPath: first?.realPath === realpathMaybe(launcherPath, fs),
     };
   });

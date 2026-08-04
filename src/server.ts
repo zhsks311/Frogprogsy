@@ -78,7 +78,7 @@ import {
   removeClaudeProject,
   resolveClaudeProject,
 } from "./claude-projects";
-import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, findRealClaudeExecutableOrNull, syncClaudeLauncherShims, type ClaudeLauncherSyncSummary } from "./claude-launchers";
+import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, findRealClaudeExecutableOrNull, isExactManagedClaudeLauncher, syncClaudeLauncherShims, type ClaudeLauncherSyncSummary } from "./claude-launchers";
 import { cleanupClaudeProjectsForRemovedProfile } from "./claude-routing-lifecycle";
 import { configureZshAccountShortcuts, zshAccountShortcutsSupported, zshManualPathLine } from "./shell-shortcuts";
 import {
@@ -2874,7 +2874,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       }
       const command = claudeProfileShortcutName(profile);
       const path = join(claudeLauncherBinDir(), claudeLauncherFileName(command));
-      return { ...profile, injected: gateway.injected, gateway, shortcut: { command, installed: existsSync(path), native: false } };
+      return { ...profile, injected: gateway.injected, gateway, shortcut: { command, installed: isExactManagedClaudeLauncher(path, profile.id), native: false } };
     });
     return jsonResponse({ profiles });
   }
