@@ -27,12 +27,13 @@ import { findAvailablePort } from "./ports";
 import { startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
 import { parseEnvFlag, resolveWatchdogEnabled } from "./watchdog";
-import { configureZshAccountShortcuts, maybeConfigureAccountShortcuts, removeZshAccountShortcuts, zshManualPathLine } from "./shell-shortcuts";
+import { configureZshAccountShortcuts, maybeConfigureAccountShortcuts, removeZshAccountShortcuts, zshAccountShortcutsSupported, zshManualPathLine } from "./shell-shortcuts";
 import { injectClaudeSettingsWithRetry } from "./inject-retry";
 import { findGuiDistFromModuleDir, formatGuiBuildWarning, resolveGuiBuildIdentity } from "./build-identity";
 import {
   addClaudeProfile,
   derivedClaudeHomeForShortcut,
+  expandHomePath,
   ensureClaudeProfiles,
   managedClaudeProfiles,
   listClaudeProfiles,
@@ -1112,7 +1113,12 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       let home: string;
       let createdHome = false;
       if (explicitHome) {
-        home = explicitHome;
+        home = expandHomePath(explicitHome);
+        if (!existsSync(home) || !statSync(home).isDirectory()) {
+          console.error("❌ --home must point at an existing Claude Code home directory.");
+          console.error(`   To create a new isolated home, run: frogp claude add ${name}`);
+          process.exit(1);
+        }
       } else {
         try {
           home = derivedClaudeHomeForShortcut(name);
@@ -1220,18 +1226,26 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         console.error("Usage: frogp claude shortcuts setup");
         process.exit(1);
       }
-      if (process.env.SHELL && !process.env.SHELL.endsWith("/zsh")) {
-        console.log("Automatic shell setup currently supports zsh only.");
+      if (!zshAccountShortcutsSupported(process.env)) {
+        console.log("Automatic shell setup currently supports zsh on POSIX only.");
         console.log(`Add this line to your shell configuration: ${zshManualPathLine()}`);
         return;
       }
-      const result = configureZshAccountShortcuts();
+      let result: ReturnType<typeof configureZshAccountShortcuts>;
+      try {
+        result = configureZshAccountShortcuts();
+      } catch (error) {
+        console.error(`❌ zsh setup failed: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`   Manual setup: ${zshManualPathLine()}`);
+        process.exit(1);
+      }
       if (result.state === "refused") {
         console.error(`❌ ${result.message}`);
         console.error(`   Manual setup: ${zshManualPathLine()}`);
         process.exit(1);
       }
       console.log(`${result.state === "configured" ? "✅" : "ℹ️"} ${result.message}`);
+      if (result.warning) console.error(`⚠️  ${result.warning}`);
       console.log(`   file: ${result.rcPath}`);
       return;
     }
@@ -1310,7 +1324,12 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       const selectorValues = separator === -1 ? values.slice(1, 2) : values.slice(1, separator);
       const claudeArgs = separator === -1 ? values.slice(2) : values.slice(separator + 1);
       const profile = resolveClaudeProfile(config, selectorValues.join(" ") || undefined);
-      await runClaudeProfile(profile, config, claudeArgs, { realClaude: process.env.FROGP_REAL_CLAUDE?.trim() || undefined });
+      try {
+        await runClaudeProfile(profile, config, claudeArgs, { realClaude: process.env.FROGP_REAL_CLAUDE?.trim() || undefined });
+      } catch {
+        console.error("frogprogsy: refused to launch Claude because the executable could not be validated.");
+        process.exit(1);
+      }
     }
     case "grants":
       await handleClaudeGrantsCommand(values, config);

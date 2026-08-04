@@ -417,7 +417,7 @@ describe("Claude Code home management API", () => {
         }),
         new URL("http://localhost/api/claude-profiles/cp_work"),
         cfg,
-        { saveConfig: () => {} },
+        { saveConfig: () => {}, syncClaudeLaunchers: () => ({ success: true }) },
       );
 
       expect(res?.status).toBe(200);

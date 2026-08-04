@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { claudeLauncherBinDir, claudeLauncherFileName } from "./claude-launchers";
 import { ensureConfigDirForWrite, getConfigDir } from "./config";
 
@@ -29,6 +29,7 @@ export interface ShellShortcutSetupResult {
   state: ShellShortcutSetupState;
   rcPath: string;
   message: string;
+  warning?: string;
 }
 
 function zshRcPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -44,42 +45,38 @@ function hash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-/**
- * `$HOME`-relative spelling of `binDir` when it lives under the current home directory, otherwise the
- * absolute path. The directory follows `FROGPROGSY_HOME`, so the exported line must be derived from it
- * instead of assuming `~/.frogprogsy/bin`.
- */
-function shortcutPathSpelling(binDir: string, home = homedir()): string {
-  if (!binDir.startsWith(`${home}${sep}`)) return binDir;
-  return `$HOME/${binDir.slice(home.length + 1).split(sep).join("/")}`;
-}
-
-function containsShortcutPath(content: string, binDir: string, home: string): boolean {
-  const spellings = new Set([shortcutPathSpelling(binDir, home), binDir]);
+function containsShortcutPath(content: string, binDir: string): boolean {
   return content.split(/\r?\n/).some(line => {
     if (line.trimStart().startsWith("#")) return false;
     const normalized = line.replaceAll("${HOME}", "$HOME");
-    // Boundary-checked so a different directory that merely starts with this path (`...\/bin-old`)
-    // is not mistaken for the managed one.
-    return [...spellings].some(spelling => {
-      let from = 0;
-      for (;;) {
-        const at = normalized.indexOf(spelling, from);
-        if (at < 0) return false;
-        const after = normalized[at + spelling.length];
-        if (after === undefined || after === '"' || after === "'" || after === ":" || after === " ") return true;
-        from = at + 1;
-      }
-    });
+    return normalized.includes("$HOME/.frogprogsy/bin") || normalized.includes(binDir);
   });
 }
 
-function ownedBlock(eol: string, binDir: string, home: string): string {
+function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function defaultShortcutBinDir(env: NodeJS.ProcessEnv): string {
+  return join(env.HOME?.trim() || homedir(), ".frogprogsy", "bin");
+}
+
+function shortcutPathLine(binDir: string, env: NodeJS.ProcessEnv): string {
+  return binDir === defaultShortcutBinDir(env)
+    ? 'export PATH="$PATH:$HOME/.frogprogsy/bin"'
+    : `export PATH="$PATH":${shellSingleQuote(binDir)}`;
+}
+
+function ownedBlock(eol: string, binDir: string, env: NodeJS.ProcessEnv): string {
   return [
     BLOCK_START,
-    pathExportLine(binDir, home),
+    shortcutPathLine(binDir, env),
     BLOCK_END,
   ].join(eol);
+}
+
+export function zshAccountShortcutsSupported(env: NodeJS.ProcessEnv = process.env): boolean {
+  return process.platform !== "win32" && env.SHELL?.endsWith("/zsh") === true;
 }
 
 function assertNoManagedPlainClaude(binDir: string): void {
@@ -115,15 +112,12 @@ export function configureZshAccountShortcuts(options: {
   env?: NodeJS.ProcessEnv;
   rcPath?: string;
   binDir?: string;
-  /** Home directory used to decide whether the exported path can be written `$HOME`-relative. */
-  homeDir?: string;
   /** Test seam for a concurrent edit after the temp file is complete but before the final CAS check. */
   beforePublish?: () => void;
 } = {}): ShellShortcutSetupResult {
   const env = options.env ?? process.env;
   const rcPath = options.rcPath ?? zshRcPath(env);
   const binDir = options.binDir ?? claudeLauncherBinDir();
-  const home = options.homeDir ?? env.HOME?.trim() ?? homedir();
   assertNoManagedPlainClaude(binDir);
 
   let original = "";
@@ -141,18 +135,18 @@ export function configureZshAccountShortcuts(options: {
   }
 
   if (original.includes(BLOCK_START) || original.includes(BLOCK_END)) {
-    const exact = original.includes(ownedBlock(lineEnding(original), binDir, home));
+    const exact = original.includes(ownedBlock(lineEnding(original), binDir, env));
     return exact
       ? { state: "already_configured", rcPath, message: "zsh account shortcuts are already configured" }
       : { state: "refused", rcPath, message: "zsh setup refused because the frogprogsy marker block was edited" };
   }
-  if (containsShortcutPath(original, binDir, home)) {
+  if (containsShortcutPath(original, binDir)) {
     return { state: "already_configured", rcPath, message: "the account-shortcut directory is already present in .zshrc" };
   }
 
   const eol = lineEnding(original);
   const prefix = original.length === 0 || original.endsWith("\n") ? original : `${original}${eol}`;
-  const next = `${prefix}${prefix.length > 0 ? eol : ""}${ownedBlock(eol, binDir, home)}${eol}`;
+  const next = `${prefix}${prefix.length > 0 ? eol : ""}${ownedBlock(eol, binDir, env)}${eol}`;
   const originalHash = hash(original);
   mkdirSync(dirname(rcPath), { recursive: true, mode: 0o700 });
 
@@ -186,30 +180,31 @@ export function configureZshAccountShortcuts(options: {
     throw error;
   }
 
-  // Verify publication kept the requested mode. chmod is unnecessary because rename publishes the temp inode.
-  if ((statSync(rcPath).mode & 0o777) !== mode) {
-    throw new Error("zsh setup wrote the file but could not preserve its mode");
-  }
-  return { state: "configured", rcPath, message: "zsh account shortcuts configured; open a new terminal to use them" };
+  // The completed file is already published. Report a permission warning without claiming setup failed;
+  // otherwise callers may tell the user to add a duplicate PATH line manually.
+  const warning = (statSync(rcPath).mode & 0o777) !== mode
+    ? "zsh account shortcuts were configured, but .zshrc permissions changed; review that file's permissions"
+    : undefined;
+  return {
+    state: "configured",
+    rcPath,
+    message: "zsh account shortcuts configured; open a new terminal to use them",
+    ...(warning ? { warning } : {}),
+  };
 }
 
-export function removeZshAccountShortcuts(options: { env?: NodeJS.ProcessEnv; rcPath?: string; binDir?: string; homeDir?: string } = {}): ShellShortcutSetupResult {
+export function removeZshAccountShortcuts(options: { env?: NodeJS.ProcessEnv; rcPath?: string; binDir?: string } = {}): ShellShortcutSetupResult {
   const env = options.env ?? process.env;
   const rcPath = options.rcPath ?? zshRcPath(env);
   const binDir = options.binDir ?? claudeLauncherBinDir();
-  const home = options.homeDir ?? env.HOME?.trim() ?? homedir();
   if (!existsSync(rcPath)) return { state: "already_configured", rcPath, message: "zsh account shortcuts were not installed" };
-  const linkStat = lstatSync(rcPath);
-  if (linkStat.isSymbolicLink()) {
+  if (lstatSync(rcPath).isSymbolicLink()) {
     return { state: "refused", rcPath, message: "zsh cleanup refused because .zshrc is a symlink" };
-  }
-  if (!linkStat.isFile()) {
-    return { state: "refused", rcPath, message: "zsh cleanup refused because .zshrc is not a regular file" };
   }
 
   const original = readFileSync(rcPath, "utf8");
   const eol = lineEnding(original);
-  const block = ownedBlock(eol, binDir, home);
+  const block = ownedBlock(eol, binDir, env);
   if (!original.includes(BLOCK_START) && !original.includes(BLOCK_END)) {
     return { state: "already_configured", rcPath, message: "zsh account shortcuts were not installed" };
   }
@@ -219,16 +214,15 @@ export function removeZshAccountShortcuts(options: { env?: NodeJS.ProcessEnv; rc
 
   const mode = lstatSync(rcPath).mode & 0o777;
   const originalHash = hash(original);
-  // Splice at the block's own offset and drop only the separator blank line setup inserted directly
-  // before it, so blank runs elsewhere in the user's rc file are left untouched.
-  const at = original.indexOf(block);
-  let head = original.slice(0, at);
-  let tail = original.slice(at + block.length);
-  // Setup wrote a separator blank line before the block and a line terminator after it; both belong to
-  // the block, so they are dropped with it.
-  if (tail.startsWith(eol)) tail = tail.slice(eol.length);
-  if (head.endsWith(`${eol}${eol}`)) head = head.slice(0, -eol.length);
-  const next = `${head}${tail}`;
+  const blockIndex = original.indexOf(block);
+  const separatorIndex = blockIndex >= eol.length && original.slice(blockIndex - eol.length, blockIndex) === eol
+    ? blockIndex - eol.length
+    : blockIndex;
+  const blockEnd = blockIndex + block.length;
+  const suffixIndex = original.slice(blockEnd, blockEnd + eol.length) === eol
+    ? blockEnd + eol.length
+    : blockEnd;
+  const next = original.slice(0, separatorIndex) + original.slice(suffixIndex);
   const tmp = `${rcPath}.frogp.${process.pid}.tmp`;
   let fd: number | undefined;
   try {
@@ -253,12 +247,9 @@ export function removeZshAccountShortcuts(options: { env?: NodeJS.ProcessEnv; rc
   return { state: "configured", rcPath, message: "zsh account shortcuts removed" };
 }
 
-function pathExportLine(binDir: string, home: string): string {
-  return `export PATH="$PATH:${shortcutPathSpelling(binDir, home)}"`;
-}
-
-export function zshManualPathLine(binDir = claudeLauncherBinDir(), home = process.env.HOME?.trim() || homedir()): string {
-  return pathExportLine(binDir, home);
+export function zshManualPathLine(options: { env?: NodeJS.ProcessEnv; binDir?: string } = {}): string {
+  const env = options.env ?? process.env;
+  return shortcutPathLine(options.binDir ?? claudeLauncherBinDir(), env);
 }
 
 /**
@@ -274,8 +265,8 @@ export async function maybeConfigureAccountShortcuts(): Promise<void> {
       console.log(`   To use account shortcuts in a terminal, add: ${zshManualPathLine()}`);
       return;
     }
-    if (process.env.SHELL && !process.env.SHELL.endsWith("/zsh")) {
-      console.log(`   Automatic setup currently supports zsh. Add this line to your shell: ${zshManualPathLine()}`);
+    if (!zshAccountShortcutsSupported(process.env)) {
+      console.log(`   Automatic setup currently supports zsh on POSIX. Add this line to your shell configuration: ${zshManualPathLine()}`);
       return;
     }
 
@@ -284,7 +275,7 @@ export async function maybeConfigureAccountShortcuts(): Promise<void> {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     let yes = false;
     try {
-      const answer = (await rl.question("\n계정별 Claude 명령을 터미널에서 바로 사용하도록 설정할까요? [Y/n] ")).trim().toLowerCase();
+      const answer = (await rl.question("\nSet up account-specific Claude commands in your terminal? [Y/n] ")).trim().toLowerCase();
       yes = answer === "" || answer === "y" || answer === "yes";
     } finally {
       rl.close();

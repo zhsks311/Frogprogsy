@@ -187,7 +187,8 @@ describe("Claude launchers", () => {
 });
 const SENTINEL_TOKEN = "local-frogprogsy";
 
-const gatewayProfile: ClaudeProfileRecord = { id: "cp_work", name: "anthropic-work", claudeHome: "/tmp/.claude-work" };
+const gatewayHome = mkdtempSync(join(tmpdir(), "frog-launcher-profile-home-"));
+const gatewayProfile: ClaudeProfileRecord = { id: "cp_work", name: "anthropic-work", claudeHome: gatewayHome };
 
 function refreshFake(order: string[], failWith?: string): NonNullable<RunClaudeProfileOptions["refreshCatalog"]> {
   return (async () => {
@@ -330,6 +331,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     await runClaudeProfile(gatewayProfile, config(), ["--version"], {
       gateway: true,
       realClaude: "/usr/bin/true",
+      validateExecutable: candidate => candidate!,
       refreshCatalog: refreshFake(order),
       spawn: spawnFake(order, captured),
       exit: exitFake(exit),
@@ -346,6 +348,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     await runClaudeProfile(gatewayProfile, cfg, [], {
       gateway: true,
       realClaude: "/usr/bin/true",
+      validateExecutable: candidate => candidate!,
       refreshCatalog: refreshFake([]),
       spawn: spawnFake([], captured),
       exit: exitFake({}),
@@ -358,6 +361,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     await runClaudeProfile(gatewayProfile, config(), [], {
       gateway: true,
       realClaude: "/usr/bin/true",
+      validateExecutable: candidate => candidate!,
       refreshCatalog: refreshFake(order),
       spawn: spawnFake(order, {}),
       exit: exitFake({}),
@@ -430,6 +434,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     await runClaudeProfile(gatewayProfile, config(), [], {
       gateway: false,
       realClaude: "/usr/bin/true",
+      validateExecutable: candidate => candidate!,
       refreshCatalog: refreshFake(order),
       spawn: spawnFake(order, captured),
       exit: exitFake({}),
@@ -437,7 +442,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     expect(order).toEqual(["spawn"]);
     expect(captured.env?.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(captured.env?.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY).toBeUndefined();
-    expect(captured.env?.CLAUDE_CONFIG_DIR).toBe("/tmp/.claude-work");
+    expect(captured.env?.CLAUDE_CONFIG_DIR).toBe(gatewayHome);
   });
 });
 const LAUNCHER_FAILURE_MESSAGE = "frogprogsy: failed to launch the Claude executable.";

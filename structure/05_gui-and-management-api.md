@@ -52,7 +52,8 @@ The page answers "which account do I run, and how do I run it?" Its primary unit
 user types, not the home path. Each row shows the shortcut name, whether that shortcut is currently usable
 from a terminal, and one next action. Home paths are advanced detail, never the headline.
 
-Server responses carry the shortcut name, its installed/shadowed state, and a copyable shell-setup action.
+Server responses carry the shortcut name, whether its launcher file is installed, whether it is the native `claude`
+command, and a copyable shell-setup action. PATH shadow detection is not implemented in this contract.
 The GUI does not recompute shortcut names from home paths — the naming rule lives in one place
 (`structure/02_config-and-claude-home.md`) and the server projects the result.
 

@@ -131,11 +131,11 @@ code paths could produce the name:
 
 Each additional profile gets exactly one stable shortcut; the default profile gets none because native `claude`
 already selects it. The canonical additional-account name is `claude-<slugify(profile name)>`;
-when that slug is empty or equals `claude`, the fallback is derived from the profile id. Profile names are
-user-editable via `frogp claude rename`, whereas a home path is a credential address that must not move —
-so the command name derives from the name, not the home. When a rename or this rule removes a previously
-generated alias, the sync result, `frogp doctor`, and user documentation state both the removed name and
-its replacement.
+when that slug is empty or does not form a valid shortcut, the fallback is derived from the profile id. A slug of
+`claude` forms the valid shortcut `claude-claude`; only the exact plain name `claude` is forbidden. Profile names
+are user-editable via `frogp claude rename`, whereas a home path is a credential address that must not move —
+so the command name derives from the name, not the home. Sync reports the current shortcut list and any removed
+owned aliases, but it does not provide a removed-to-replacement mapping.
 
 The shims call the same frogprogsy CLI command
 that generated them (for a source checkout this is the pinned `bun <repo>/src/cli.ts` command), with
@@ -172,9 +172,9 @@ detailed/doctor output shows privacy-safe paths.
 
 ### Shell setup ownership
 
-Automatic shell configuration is zsh-only, requires explicit consent, and writes a single marked block that
-frogprogsy owns. It never modifies functions, aliases, or `PATH` lines it did not write. Non-TTY contexts
-print a copyable command instead of editing files. The apply step verifies at run time that no
+Automatic shell configuration is zsh-only on POSIX, requires explicit consent, and writes a single marked block that
+frogprogsy owns. Windows, non-zsh, `SHELL`-unset, and non-TTY contexts print a copyable command instead of editing
+files. It never modifies functions, aliases, or `PATH` lines it did not write. The apply step verifies at run time that no
 frogprogsy-owned plain `claude` exists in the managed directory and stops if one is found — ordering during
 development is not a sufficient guarantee for pre-existing user state.
 

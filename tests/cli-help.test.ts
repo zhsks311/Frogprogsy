@@ -171,7 +171,7 @@ describe("CLI subcommand help", () => {
     }
   });
 
-  test("claude shortcuts setup appends the account shortcut path to zshrc", () => {
+  test.skipIf(process.platform === "win32")("claude shortcuts setup appends the account shortcut path to zshrc", () => {
     const root = mkdtempSync(join(tmpdir(), "frogp-shortcuts-cli-"));
     const frogHome = join(root, "frog");
     const userHome = join(root, "user");
@@ -195,11 +195,58 @@ describe("CLI subcommand help", () => {
       });
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("open a new terminal");
-      // The exported directory follows FROGPROGSY_HOME, so an isolated config dir must be exported by
-      // its own absolute path instead of the default `$HOME/.frogprogsy/bin` spelling.
-      const zshrc = readFileSync(join(userHome, ".zshrc"), "utf8");
-      expect(zshrc).toContain(`export PATH="$PATH:${join(frogHome, "bin")}"`);
-      expect(zshrc).not.toContain("$HOME/.frogprogsy/bin");
+      expect(readFileSync(join(userHome, ".zshrc"), "utf8")).toContain(frogHome.replaceAll("\\", "/"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude shortcuts setup stays manual when SHELL is unset", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-shortcuts-manual-"));
+    const frogHome = join(root, "frog");
+    const userHome = join(root, "user");
+    const claudeHome = join(userHome, ".claude");
+    mkdirSync(claudeHome, { recursive: true });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: userHome,
+      USERPROFILE: userHome,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+    };
+    delete env.SHELL;
+    delete env.ZDOTDIR;
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "shortcuts", "setup"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("supports zsh on POSIX only");
+      expect(result.stdout).toContain("export PATH=");
+      expect(existsSync(join(userHome, ".zshrc"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude add rejects a missing explicit home before saving config", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-missing-home-"));
+    const frogHome = join(root, "frog");
+    const defaultClaudeHome = join(root, "default");
+    const missingHome = join(root, "missing");
+    mkdirSync(defaultClaudeHome);
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "add", "work", "--home", missingHome], {
+        cwd: repoRoot,
+        env: { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: defaultClaudeHome, CLAUDE_CONFIG_DIR: defaultClaudeHome },
+        encoding: "utf8",
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("--home must point at an existing Claude Code home directory");
+      expect(existsSync(join(frogHome, "config.json"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -215,6 +262,7 @@ describe("CLI subcommand help", () => {
     const env = {
       ...process.env,
       HOME: userHome,
+      USERPROFILE: userHome,
       FROGPROGSY_HOME: frogHome,
       CLAUDE_HOME: defaultClaudeHome,
       CLAUDE_CONFIG_DIR: defaultClaudeHome,
@@ -243,7 +291,8 @@ describe("CLI subcommand help", () => {
     const frogHome = mkdtempSync(join(tmpdir(), "frogp-claude-cli-"));
     const defaultClaudeHome = mkdtempSync(join(tmpdir(), "frogp-claude-default-"));
     const workClaudeHome = mkdtempSync(join(tmpdir(), "frogp-claude-work-"));
-    const env = { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: defaultClaudeHome, CLAUDE_CONFIG_DIR: defaultClaudeHome };
+    const realClaude = process.platform === "win32" ? process.execPath : "/usr/bin/true";
+    const env = { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: defaultClaudeHome, CLAUDE_CONFIG_DIR: defaultClaudeHome, FROGP_REAL_CLAUDE: realClaude };
     try {
       const added = spawnSync(process.execPath, [cliPath, "claude", "add", "컬리 업무용", "--home", workClaudeHome], {
         cwd: repoRoot,
