@@ -194,7 +194,12 @@ export function mergeClaudeProfileHeader(existing: string | undefined, profileId
 }
 
 export function removeClaudeProfileHeader(existing: string | undefined): string | undefined {
-  const entries = parseCustomHeaders(existing).filter(entry => entry.name.toLowerCase() !== CLAUDE_PROFILE_HEADER.toLowerCase());
+  return removeClaudeCustomHeaders(existing, CLAUDE_PROFILE_HEADER);
+}
+
+function removeClaudeCustomHeaders(existing: string | undefined, ...names: string[]): string | undefined {
+  const removedNames = new Set(names.map(name => name.toLowerCase()));
+  const entries = parseCustomHeaders(existing).filter(entry => !removedNames.has(entry.name.toLowerCase()));
   if (entries.length === 0) return undefined;
   return entries.map(entry => `${entry.name}: ${entry.value}`).join("\n");
 }
@@ -257,7 +262,7 @@ export function buildClaudeProfileNativeEnv(profile: ClaudeProfileRecord, baseEn
   delete env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY;
   if (env.ANTHROPIC_AUTH_TOKEN === LOCAL_CLAUDE_AUTH_TOKEN) delete env.ANTHROPIC_AUTH_TOKEN;
   if (env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS) delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
-  const headers = removeClaudeProfileHeader(baseEnv.ANTHROPIC_CUSTOM_HEADERS);
+  const headers = removeClaudeCustomHeaders(baseEnv.ANTHROPIC_CUSTOM_HEADERS, CLAUDE_PROFILE_HEADER, LOCAL_ACCESS_HEADER);
   if (headers) env.ANTHROPIC_CUSTOM_HEADERS = headers;
   else delete env.ANTHROPIC_CUSTOM_HEADERS;
   return env;

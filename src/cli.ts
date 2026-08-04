@@ -24,6 +24,7 @@ import {
   writeActivePort,
   writeShutdownIntent,
 } from "./config";
+import { createConfigMutationLock } from "./config-mutation-lock";
 import { generateLocalAccessSecret, hashLocalAccessSecret, sameMachineAccessHeaders } from "./local-access";
 import { findAvailablePort } from "./ports";
 import { startServer } from "./server";
@@ -377,25 +378,52 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
   return selected;
 }
 
-async function handleStart(options: { block?: boolean } = {}) {
-  const existingPid = readPid();
-  if (existingPid) {
-    const config = loadConfig();
-    if (await proxyHealthy(config.port)) {
-      console.error(`⚠️  Proxy already running (PID ${existingPid}). Use 'frogp stop' first.`);
-      process.exit(1);
-    }
-    removePid();
+async function acquireConfigMutationLockOrExit(): Promise<() => void> {
+  try {
+    return await createConfigMutationLock().acquire();
+  } catch (error) {
+    console.error(`❌ Could not safely coordinate config/start/local-key access: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
   }
+}
 
+async function handleStart(options: { block?: boolean } = {}) {
   const requestedPort = parsePortOption();
-  const port = await chooseListenPort(requestedPort);
-
   printGuiBuildWarning();
 
-  const server = startServer(port);
-  writePid(process.pid);
-  writeActivePort(port); // record real listen port for watchdog health-poll
+  const startup = await (async () => {
+    const releaseConfigLock = await acquireConfigMutationLockOrExit();
+    try {
+      const existingPid = readPid();
+      if (existingPid) return { runningPid: existingPid };
+
+      const port = await chooseListenPort(requestedPort);
+      const server = startServer(port);
+      let pidPublished = false;
+      let activePortPublished = false;
+      try {
+        writePid(process.pid);
+        pidPublished = true;
+        writeActivePort(port);
+        activePortPublished = true;
+        return { server, port };
+      } catch (error) {
+        server.stop(true);
+        if (activePortPublished) removeActivePort();
+        if (pidPublished) removePid();
+        throw error;
+      }
+    } finally {
+      releaseConfigLock();
+    }
+  })();
+
+  if ("runningPid" in startup) {
+    console.error(`⚠️  Proxy already running (PID ${startup.runningPid}). Use 'frogp stop' first.`);
+    process.exit(1);
+  }
+  const { server, port } = startup;
+
   clearShutdownIntent();
   // Clear any stale watchdog give-up status so 'frogp status' doesn't show
   // both 'running' and 'gave up' after a give-up → 'frogp start' cycle.
@@ -1622,37 +1650,73 @@ async function handleProvidersCommand(values: string[]): Promise<void> {
   console.log(`   Verify the grant is logged in with: frogp claude grants status ${grant.id}`);
 }
 
-/** `--limit <maxRequests>/<windowSec>` → a per-key sliding-window limit. */
-function parseLocalKeyLimit(values: string[]): { windowSec: number; maxRequests: number } | undefined {
-  const raw = optionValue(values, "--limit");
-  if (raw === undefined) return undefined;
-  const match = /^(\d+)\/(\d+)$/.exec(raw.trim());
-  const maxRequests = match ? Number(match[1]) : 0;
-  const windowSec = match ? Number(match[2]) : 0;
-  if (!maxRequests || !windowSec) {
-    console.error("❌ --limit takes <maxRequests>/<windowSec>, e.g. --limit 60/60 for 60 requests per minute.");
-    process.exit(1);
-  }
-  return { windowSec, maxRequests };
-}
-
-/**
- * A running proxy keeps the config it loaded at start and rewrites the whole file on profile writes, so a
- * key added meanwhile is dropped — and its plaintext is unrecoverable. Refuse instead of racing it.
- */
-async function requireStoppedProxyForKeyEdit(action: string): Promise<void> {
-  if (!readPid()) return;
-  if (!(await proxyHealthy(loadConfig().port))) return;
-  console.error(`❌ Stop the proxy before you ${action} a relay access key: frogp stop`);
-  console.error("   A running proxy rewrites the config from the snapshot it loaded at start, which would drop the change.");
+function invalidLocalKeyAdd(message: string): never {
+  console.error(`❌ ${message}`);
+  console.error("Usage: frogp local-key add <label> [--limit <maxRequests>/<windowSec>]");
   process.exit(1);
 }
 
+/** Parse `<label> [--limit <maxRequests>/<windowSec>]` without silently discarding malformed arguments. */
+function parseLocalKeyAddArguments(values: string[]): {
+  label: string;
+  requestLimit?: { windowSec: number; maxRequests: number };
+} {
+  const labelWords: string[] = [];
+  let rawLimit: string | undefined;
+
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (!value.startsWith("--")) {
+      if (rawLimit !== undefined) {
+        invalidLocalKeyAdd(`Unexpected positional argument after --limit: ${value}`);
+      }
+      labelWords.push(value);
+      continue;
+    }
+    if (value !== "--limit") {
+      invalidLocalKeyAdd(`Unknown option: ${value}`);
+    }
+    if (rawLimit !== undefined || values[index + 1] === "--limit") {
+      invalidLocalKeyAdd("--limit may be specified only once.");
+    }
+    if (labelWords.length === 0) {
+      invalidLocalKeyAdd("The label must appear before --limit.");
+    }
+    const limitValue = values[index + 1];
+    if (!limitValue || limitValue.startsWith("--")) {
+      invalidLocalKeyAdd("--limit requires <maxRequests>/<windowSec>.");
+    }
+    rawLimit = limitValue;
+    index += 1;
+  }
+
+  const label = labelWords.join(" ").trim();
+  if (!label) {
+    invalidLocalKeyAdd("A label is required.");
+  }
+  if (rawLimit === undefined) {
+    return { label };
+  }
+
+  const match = /^(\d+)\/(\d+)$/.exec(rawLimit);
+  const maxRequests = match ? Number(match[1]) : 0;
+  const windowSec = match ? Number(match[2]) : 0;
+  if (
+    !Number.isSafeInteger(maxRequests) ||
+    maxRequests <= 0 ||
+    !Number.isSafeInteger(windowSec) ||
+    windowSec <= 0
+  ) {
+    invalidLocalKeyAdd("--limit takes positive safe integers as <maxRequests>/<windowSec>, e.g. --limit 60/60.");
+  }
+  return { label, requestLimit: { windowSec, maxRequests } };
+}
+
 async function handleLocalKeyCommand(values: string[]): Promise<void> {
-  const config = loadConfig();
-  const keys = config.localAccess?.keys ?? [];
   switch (values[0] ?? "list") {
     case "list": {
+      const config = loadConfig();
+      const keys = config.localAccess?.keys ?? [];
       if (keys.length === 0) {
         console.log("No relay access keys. Create one with: frogp local-key add <label>");
         console.log(`Relay authentication is ${config.localAccess?.enabled === true ? "enabled" : "disabled"}; a non-loopback hostname requires at least one key.`);
@@ -1666,23 +1730,45 @@ async function handleLocalKeyCommand(values: string[]): Promise<void> {
       return;
     }
     case "add": {
-      const label = values.slice(1).filter(value => !value.startsWith("--") && value !== optionValue(values, "--limit")).join(" ").trim();
-      if (!label) {
-        console.error("Usage: frogp local-key add <label> [--limit <maxRequests>/<windowSec>]");
+      const { label, requestLimit } = parseLocalKeyAddArguments(values.slice(1));
+      const result = await (async () => {
+        const releaseConfigLock = await acquireConfigMutationLockOrExit();
+        try {
+          const existingPid = readPid();
+          if (existingPid) {
+            return {
+              error: `Stop the proxy before you add a relay access key: frogp stop`,
+              detail: "A running proxy uses the config snapshot it loaded at start.",
+            };
+          }
+          const config = loadConfig();
+          const keys = config.localAccess?.keys ?? [];
+          if (keys.some(key => key.label === label)) {
+            return {
+              error: `A relay access key label already exists: ${label}`,
+              detail: "Choose a unique label; no key was created.",
+            };
+          }
+          const secret = generateLocalAccessSecret();
+          const id = `lk_${randomBytes(4).toString("hex")}`;
+          config.localAccess = {
+            enabled: true,
+            keys: [...keys, { id, label, secretHash: hashLocalAccessSecret(secret), ...(requestLimit ? { requestLimit } : {}) }],
+          };
+          saveConfig(config);
+          return { id, label, secret };
+        } finally {
+          releaseConfigLock();
+        }
+      })();
+      if ("error" in result) {
+        console.error(`❌ ${result.error}`);
+        console.error(`   ${result.detail}`);
         process.exit(1);
       }
-      const requestLimit = parseLocalKeyLimit(values);
-      await requireStoppedProxyForKeyEdit("add");
-      const secret = generateLocalAccessSecret();
-      const id = `lk_${randomBytes(4).toString("hex")}`;
-      config.localAccess = {
-        enabled: true,
-        keys: [...keys, { id, label, secretHash: hashLocalAccessSecret(secret), ...(requestLimit ? { requestLimit } : {}) }],
-      };
-      saveConfig(config);
-      console.log(`✅ Relay access key created: ${label} (${id})`);
+      console.log(`✅ Relay access key created: ${result.label} (${result.id})`);
       console.log("");
-      console.log(`   ${secret}`);
+      console.log(`   ${result.secret}`);
       console.log("");
       console.log("This is the only time the key is shown — the config stores only its SHA-256 hash.");
       console.log("Send it in x-frogp-local-key. If a forward provider uses Authorization or x-api-key for its upstream credential, keep that credential there and do not replace it with the relay key.");
@@ -1691,19 +1777,50 @@ async function handleLocalKeyCommand(values: string[]): Promise<void> {
     }
     case "remove": {
       const selector = values.slice(1).join(" ").trim();
-      const match = keys.find(key => key.id === selector || key.label === selector);
-      if (!selector || !match) {
-        console.error(`❌ Unknown relay access key: ${selector || "(missing)"}. List them with: frogp local-key list`);
+      const result = await (async () => {
+        const releaseConfigLock = await acquireConfigMutationLockOrExit();
+        try {
+          const existingPid = readPid();
+          if (existingPid) {
+            return {
+              error: "Stop the proxy before you remove a relay access key: frogp stop",
+              detail: "A running proxy uses the config snapshot it loaded at start.",
+            };
+          }
+          const config = loadConfig();
+          const keys = config.localAccess?.keys ?? [];
+          let match = keys.find(key => key.id === selector);
+          if (!match) {
+            const labelMatches = keys.filter(key => key.label === selector);
+            if (labelMatches.length > 1) {
+              return {
+                error: `Relay access key label matches multiple relay access keys: ${selector}`,
+                detail: "Remove one by id. List ids with: frogp local-key list",
+              };
+            }
+            match = labelMatches[0];
+          }
+          if (!selector || !match) {
+            return {
+              error: `Unknown relay access key: ${selector || "(missing)"}`,
+              detail: "List keys and ids with: frogp local-key list",
+            };
+          }
+          const remaining = keys.filter(key => key !== match);
+          config.localAccess = { enabled: remaining.length > 0, keys: remaining };
+          saveConfig(config);
+          return { id: match.id, label: match.label, remaining: remaining.length };
+        } finally {
+          releaseConfigLock();
+        }
+      })();
+      if ("error" in result) {
+        console.error(`❌ ${result.error}`);
+        console.error(`   ${result.detail}`);
         process.exit(1);
       }
-      await requireStoppedProxyForKeyEdit("remove");
-      const remaining = keys.filter(key => key !== match);
-      // Dropping the last key would silently unauthenticate the relay, and a non-loopback bind then
-      // refuses to start. Disable authentication explicitly instead of leaving an empty enabled list.
-      config.localAccess = { enabled: remaining.length > 0, keys: remaining };
-      saveConfig(config);
-      console.log(`✅ Relay access key removed: ${match.label ?? match.id} (${match.id})`);
-      if (remaining.length === 0) {
+      console.log(`✅ Relay access key removed: ${result.label ?? result.id} (${result.id})`);
+      if (result.remaining === 0) {
         console.log("No keys remain, so relay authentication is now disabled. A non-loopback hostname will refuse to start.");
       }
       console.log("Start the proxy to apply: frogp start");

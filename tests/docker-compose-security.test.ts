@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hashLocalAccessSecret } from "../src/local-access";
 
 test("default Compose port publishes the relay on host loopback only", async () => {
   const composeText = await Bun.file(join(import.meta.dir, "..", "docker-compose.yml")).text();
@@ -60,6 +61,40 @@ test("existing enabled Docker key survives restart without the plaintext environ
       keys: [{ id: "lk_existing", label: "existing", secretHash: existingHash }],
     });
     expect(new TextDecoder().decode(result.stdout)).not.toContain("frogp_");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a pinned Docker key is upserted without dropping CLI-managed keys", () => {
+  const home = mkdtempSync(join(tmpdir(), "frog-docker-pinned-key-"));
+  const cliKey = {
+    id: "lk_cli",
+    label: "laptop",
+    secretHash: `sha256:${"c".repeat(64)}`,
+    requestLimit: { maxRequests: 60, windowSec: 120 },
+  };
+  writeFileSync(join(home, "config.json"), JSON.stringify({
+    hostname: "0.0.0.0",
+    localAccess: { enabled: true, keys: [cliKey] },
+  }));
+  try {
+    const first = runEnsureConfig(home, "frogp_pinned-docker-key");
+    expect(first.exitCode).toBe(0);
+    const firstBytes = readFileSync(join(home, "config.json"), "utf8");
+    const saved = JSON.parse(firstBytes);
+
+    expect(saved.localAccess.enabled).toBe(true);
+    expect(saved.localAccess.keys).toContainEqual(cliKey);
+    expect(saved.localAccess.keys).toContainEqual({
+      id: "lk_docker",
+      label: "docker",
+      secretHash: hashLocalAccessSecret("frogp_pinned-docker-key"),
+    });
+
+    const second = runEnsureConfig(home, "frogp_pinned-docker-key");
+    expect(second.exitCode).toBe(0);
+    expect(readFileSync(join(home, "config.json"), "utf8")).toBe(firstBytes);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

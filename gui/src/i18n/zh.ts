@@ -23,7 +23,7 @@ export const zh: Record<TKey, string> = {
   "app.buildSkewTitle": "仪表盘构建不匹配。",
   "app.buildSkewBody": "当前 GUI 与正在运行的代理构建信息不一致（{detail}）。请先运行 {cmd} 重新构建/重启，再信任此页面。",
   "localKey.title": "需要 relay access key",
-  "localKey.body": "该 relay 对每个请求进行认证（localAccess）。请粘贴由 `frogp local-key add` 创建的 key，它仅保留在当前浏览器标签页。",
+  "localKey.body": "该 relay 仅要求对受保护的 API 请求进行认证（localAccess）。请粘贴使用 frogp local-key add <label> 创建的 key。该 key 仅保留在当前浏览器标签页。",
   "localKey.placeholder": "frogp_…",
   "localKey.submit": "解锁仪表盘",
   "localKey.rejected": "relay 拒绝了该 key。",

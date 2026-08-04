@@ -2097,18 +2097,46 @@ export function sanitizeRelayedHeaders(upstream: Headers): Headers {
 
 let _corsOrigin = `http://localhost:${DEFAULT_PORT}`;
 function setCorsOrigin(port: number): void { _corsOrigin = `http://localhost:${port}`; }
-function corsHeaders(): Record<string, string> {
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin");
+  let allowedOrigin = _corsOrigin;
+  if (origin) {
+    try {
+      if (isLoopbackHostname(new URL(origin).hostname)) allowedOrigin = origin;
+    } catch {
+      // Keep the configured relay origin for malformed and opaque origins.
+    }
+  }
   return {
-    "Access-Control-Allow-Origin": _corsOrigin,
+    "Access-Control-Allow-Origin": allowedOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": `Content-Type, Authorization, X-API-Key, ${LOCAL_ACCESS_HEADER}`,
+    "Access-Control-Expose-Headers": "Retry-After",
   };
+}
+
+function withCors(req: Request, response: Response): Response {
+  const responseHeaders = new Headers(response.headers);
+  for (const [name, value] of Object.entries(corsHeaders(req))) responseHeaders.set(name, value);
+
+  const vary = responseHeaders.get("Vary");
+  if (!vary) {
+    responseHeaders.set("Vary", "Origin");
+  } else if (vary !== "*" && !vary.split(",").some(value => value.trim().toLowerCase() === "origin")) {
+    responseHeaders.set("Vary", `${vary}, Origin`);
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: responseHeaders,
+  });
 }
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders() },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
@@ -2174,13 +2202,18 @@ function isAllowedRequestHost(req: Request, bindHostname: string): boolean {
 }
 
 /** Deny an unauthenticated relay request without hinting whether the presented key exists. */
-function localAccessDenialResponse(decision: LocalAccessDenied): Response {
+function localAccessDenialResponse(decision: LocalAccessDenied, pathname: string): Response {
+  const formatResponse = pathname === "/v1/messages"
+    || pathname === "/v1/messages/count_tokens"
+    || pathname === "/v1/models"
+    ? formatAnthropicErrorResponse
+    : formatErrorResponse;
   if (decision.reason === "rate_limited") {
-    const response = formatErrorResponse(429, "rate_limit_error", "local access key request limit exceeded");
+    const response = formatResponse(429, "rate_limit_error", "local access key request limit exceeded");
     if (decision.retryAfterSec !== undefined) response.headers.set("Retry-After", String(decision.retryAfterSec));
     return response;
   }
-  return formatErrorResponse(
+  return formatResponse(
     401,
     "authentication_error",
     `a valid local access key is required; send it as ${LOCAL_ACCESS_HEADER}, x-api-key, or Authorization: Bearer`,
@@ -3921,19 +3954,13 @@ export function startServer(port?: number) {
   // authenticate every relay request, and an enabled key list that cannot authenticate anything must
   // not come up at all.
   const localAccessEnabled = isLocalAccessEnabled(config);
+  let runtimeToken: string | undefined;
   if (localAccessEnabled) {
     const issue = localAccessConfigIssue(config);
     if (issue) throw new Error(`Invalid localAccess (${issue}). Fix ${getConfigPath()}.`);
     registerLocalAccessKeys(config);
-    // Same-machine tooling (frogp models/doctor) authenticates with a per-start token readable only by
-    // this user, so enabling relay authentication does not require pasting a key into the CLI.
-    const runtimeToken = generateLocalAccessSecret();
-    setRuntimeAccessToken(runtimeToken);
-    try {
-      writeLocalAccessToken(runtimeToken);
-    } catch (error) {
-      throw new Error(`Could not write the same-machine relay token: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    // Generate now, but do not publish it until this process has successfully bound the relay.
+    runtimeToken = generateLocalAccessSecret();
   } else if (!isLoopbackHostname(bindHostname)) {
     throw new Error(
       `Refusing to bind ${bindHostname} without request authentication: every client that can reach this ` +
@@ -3947,11 +3974,12 @@ export function startServer(port?: number) {
     hostname: bindHostname,
     idleTimeout: 255,
     async fetch(req, srv) {
+      const response = await (async () => {
       const url = new URL(req.url);
       const clientAddress = srv.requestIP(req)?.address;
 
       if (req.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: corsHeaders() });
+        return new Response(null, { status: 204 });
       }
 
       const guardedPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/") || url.pathname === "/usage";
@@ -3961,7 +3989,7 @@ export function startServer(port?: number) {
 
       if (guardedPath && localAccessEnabled) {
         const decision = authorizeLocalAccess(config, req.headers);
-        if (!decision.ok) return localAccessDenialResponse(decision);
+        if (!decision.ok) return localAccessDenialResponse(decision, url.pathname);
       }
 
       // Responses WebSocket is a Codex/OpenAI Responses-only behavior and is retired for the
@@ -4061,6 +4089,8 @@ export function startServer(port?: number) {
       if (guiFile) return guiFile;
 
       return formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`);
+      })();
+      return withCors(req, response);
     },
     websocket: {
       message(ws: ServerWebSocket<WsData>) {
@@ -4072,6 +4102,16 @@ export function startServer(port?: number) {
       },
     },
   });
+
+  if (runtimeToken) {
+    try {
+      writeLocalAccessToken(runtimeToken);
+      setRuntimeAccessToken(runtimeToken);
+    } catch (error) {
+      server.stop(true);
+      throw new Error(`Could not write the same-machine relay token: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   console.log(`🚀 frogprogsy proxy running on http://localhost:${listenPort}`);
   console.log(`   POST /v1/messages  → provider translation`);

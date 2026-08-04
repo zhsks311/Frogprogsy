@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 import { hashLocalAccessSecret } from "../src/local-access";
 
 const home = process.env.FROGPROGSY_HOME || "/config";
@@ -29,6 +28,10 @@ function atomicWrite(path: string, content: string) {
   const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, content, { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, path);
+}
+
+function hasKeyId(key: unknown, id: string): boolean {
+  return key !== null && typeof key === "object" && !Array.isArray(key) && "id" in key && key.id === id;
 }
 
 mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -69,10 +72,10 @@ if (nonLoopbackBind && !hasKey && !pinnedKey) {
   );
 }
 if (nonLoopbackBind && pinnedKey) {
-  config.localAccess = {
-    enabled: true,
-    keys: [{ id: `lk_${randomBytes(4).toString("hex")}`, label: "docker", secretHash: hashLocalAccessSecret(pinnedKey) }],
-  };
+  const existingKeys = Array.isArray(existingLocalAccess?.keys) ? existingLocalAccess.keys : [];
+  const keys = existingKeys.filter(key => !hasKeyId(key, "lk_docker"));
+  keys.push({ id: "lk_docker", label: "docker", secretHash: hashLocalAccessSecret(pinnedKey) });
+  config.localAccess = { enabled: true, keys };
 }
 
 atomicWrite(configPath, `${JSON.stringify(config, null, 2)}\n`);

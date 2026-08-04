@@ -416,4 +416,73 @@ describe("CLI subcommand help", () => {
     expect(result.stdout).toContain("Unknown provider or grant is a hard error");
     expect(result.stdout).toContain("never touches OAuth or API-key logins");
   });
+
+  for (const { name, args } of [
+    { name: "rejects an unknown local-key add option", args: ["work", "--limti", "60/60"] },
+    { name: "rejects duplicate local-key add limits", args: ["work", "--limit", "60/60", "--limit", "30/30"] },
+    { name: "rejects a missing local-key add limit value", args: ["work", "--limit"] },
+    { name: "rejects positional local-key add arguments after the limit", args: ["work", "--limit", "60/60", "extra"] },
+    { name: "rejects a zero local-key add request count", args: ["work", "--limit", "0/60"] },
+    { name: "rejects a zero local-key add window", args: ["work", "--limit", "60/0"] },
+    { name: "rejects an unsafe local-key add request count", args: ["work", "--limit", "9007199254740992/60"] },
+    { name: "rejects an unsafe local-key add window", args: ["work", "--limit", "60/9007199254740992"] },
+  ]) {
+    test(name, () => {
+      const frogHome = mkdtempSync(join(tmpdir(), "frogp-local-key-invalid-"));
+      const configPath = join(frogHome, "config.json");
+      const before = JSON.stringify({
+        localAccess: {
+          enabled: true,
+          keys: [{
+            id: "lk_existing",
+            label: "existing",
+            secretHash: `sha256:${"a".repeat(64)}`,
+          }],
+        },
+      }, null, 2) + "\n";
+      writeFileSync(configPath, before, "utf8");
+
+      try {
+        const result = spawnSync(process.execPath, [cliPath, "local-key", "add", ...args], {
+          cwd: repoRoot,
+          env: { ...process.env, FROGPROGSY_HOME: frogHome, NODE_ENV: "test" },
+          encoding: "utf8",
+        });
+
+        expect(result.status).not.toBe(0);
+        expect(`${result.stdout}${result.stderr}`).not.toMatch(/frogp_[A-Za-z0-9_-]{43}/);
+        expect(readFileSync(configPath, "utf8")).toBe(before);
+      } finally {
+        rmSync(frogHome, { recursive: true, force: true });
+      }
+    }, 15000);
+  }
+
+  test("local-key add accepts a multi-word label with one positive safe-integer limit", () => {
+    const frogHome = mkdtempSync(join(tmpdir(), "frogp-local-key-valid-"));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [cliPath, "local-key", "add", "work", "laptop", "--limit", "60/120"],
+        {
+          cwd: repoRoot,
+          env: { ...process.env, FROGPROGSY_HOME: frogHome, NODE_ENV: "test" },
+          encoding: "utf8",
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/frogp_[A-Za-z0-9_-]{43}/);
+      const config = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8"));
+      expect(config.localAccess.enabled).toBe(true);
+      expect(config.localAccess.keys).toHaveLength(1);
+      expect(config.localAccess.keys[0]).toMatchObject({
+        label: "work laptop",
+        requestLimit: { maxRequests: 60, windowSec: 120 },
+      });
+      expect(config.localAccess.keys[0].secretHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    } finally {
+      rmSync(frogHome, { recursive: true, force: true });
+    }
+  }, 15000);
 });

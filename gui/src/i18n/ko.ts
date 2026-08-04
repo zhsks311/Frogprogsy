@@ -24,7 +24,7 @@ export const ko: Record<TKey, string> = {
   "app.buildSkewTitle": "대시보드 빌드가 맞지 않습니다.",
   "app.buildSkewBody": "현재 GUI와 실행 중인 프록시의 빌드 정보가 다릅니다({detail}). 이 화면을 신뢰하기 전에 {cmd} 를 실행해 다시 빌드/재시작하세요.",
   "localKey.title": "Relay access key가 필요합니다",
-  "localKey.body": "이 relay는 모든 요청을 인증합니다(localAccess). `frogp local-key add`로 만든 key를 붙여넣으세요. 해당 key는 이 브라우저 탭에만 보관됩니다.",
+  "localKey.body": "이 relay는 보호 대상 API 요청에만 인증을 요구합니다(localAccess). frogp local-key add <label> 명령으로 만든 key를 붙여넣으세요. 해당 key는 이 브라우저 탭에만 보관됩니다.",
   "localKey.placeholder": "frogp_…",
   "localKey.submit": "대시보드 열기",
   "localKey.rejected": "relay가 해당 key를 거부했습니다.",

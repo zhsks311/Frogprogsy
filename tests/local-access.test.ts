@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getLocalAccessTokenPath, readLocalAccessToken, saveConfig } from "../src/config";
+import { getLocalAccessTokenPath, readLocalAccessToken, saveConfig, writeLocalAccessToken } from "../src/config";
 import {
   __resetLocalAccessRegistry,
   __resetLocalAccessRequestWindows,
@@ -22,6 +22,7 @@ let previousFrogHome: string | undefined;
 let previousNoClaudeWrites: string | undefined;
 
 const SECRET = "frogp_test-key-value";
+const LOOPBACK_ORIGIN = "http://localhost:5173";
 
 function key(overrides: Partial<LocalAccessKeyConfig> = {}): LocalAccessKeyConfig {
   return { id: "lk_test", label: "test", secretHash: hashLocalAccessSecret(SECRET), ...overrides };
@@ -133,22 +134,66 @@ describe("local access config validation", () => {
 });
 
 describe("relay enforcement", () => {
+  test("loopback browser preflight can request the local access header without trusting hostile origins", async () => {
+    saveConfig(baseConfig({ localAccess: { enabled: true, keys: [key()] } }));
+    const server = startServer(0);
+    try {
+      const preflight = await fetch(new URL("/api/settings", server.url), {
+        method: "OPTIONS",
+        headers: {
+          Origin: LOOPBACK_ORIGIN,
+          "Access-Control-Request-Method": "GET",
+          "Access-Control-Request-Headers": LOCAL_ACCESS_HEADER,
+        },
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(LOOPBACK_ORIGIN);
+      expect(preflight.headers.get("Access-Control-Allow-Headers")?.toLowerCase()).toContain(LOCAL_ACCESS_HEADER);
+      expect(preflight.headers.get("Vary")).toBe("Origin");
+
+      const hostileOrigin = "https://attacker.example";
+      const hostilePreflight = await fetch(new URL("/api/settings", server.url), {
+        method: "OPTIONS",
+        headers: { Origin: hostileOrigin },
+      });
+      expect(hostilePreflight.headers.get("Access-Control-Allow-Origin")).not.toBe(hostileOrigin);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("an enabled relay authenticates /api and /v1 while /healthz stays open", async () => {
     saveConfig(baseConfig({ localAccess: { enabled: true, keys: [key()] } }));
     const server = startServer(0);
     try {
-      const anonymous = await fetch(new URL("/api/settings", server.url));
+      const anonymous = await fetch(new URL("/api/settings", server.url), { headers: { Origin: LOOPBACK_ORIGIN } });
       expect(anonymous.status).toBe(401);
-      expect((await anonymous.json() as { error?: { message?: string } }).error?.message).toContain(LOCAL_ACCESS_HEADER);
+      expect(anonymous.headers.get("Access-Control-Allow-Origin")).toBe(LOOPBACK_ORIGIN);
+      expect(anonymous.headers.get("Vary")).toBe("Origin");
+      const anonymousBody = await anonymous.json() as { type?: string; error?: { message?: string } };
+      expect(anonymousBody.type).toBeUndefined();
+      expect(anonymousBody.error?.message).toContain(LOCAL_ACCESS_HEADER);
 
       const wrongKey = await fetch(new URL("/api/settings", server.url), { headers: { [LOCAL_ACCESS_HEADER]: "frogp_wrong" } });
       expect(wrongKey.status).toBe(401);
 
-      const authenticated = await fetch(new URL("/api/settings", server.url), { headers: { [LOCAL_ACCESS_HEADER]: SECRET } });
+      const authenticated = await fetch(new URL("/api/settings", server.url), {
+        headers: { [LOCAL_ACCESS_HEADER]: SECRET, Origin: LOOPBACK_ORIGIN },
+      });
       expect(authenticated.status).toBe(200);
+      expect(authenticated.headers.get("Access-Control-Allow-Origin")).toBe(LOOPBACK_ORIGIN);
 
-      const dataPlane = await fetch(new URL("/v1/models", server.url));
-      expect(dataPlane.status).toBe(401);
+      for (const pathname of ["/v1/messages", "/v1/messages/count_tokens", "/v1/models"]) {
+        const dataPlane = await fetch(new URL(pathname, server.url));
+        expect(dataPlane.status).toBe(401);
+        expect(await dataPlane.json()).toMatchObject({
+          type: "error",
+          error: { type: "authentication_error" },
+        });
+      }
+      const responsesApi = await fetch(new URL("/v1/responses", server.url));
+      expect(responsesApi.status).toBe(401);
+      expect((await responsesApi.json() as { type?: string }).type).toBeUndefined();
 
       const health = await fetch(new URL("/healthz", server.url));
       expect(health.status).toBe(200);
@@ -190,11 +235,20 @@ describe("relay enforcement", () => {
     }));
     const server = startServer(0);
     try {
-      const first = await fetch(new URL("/api/settings", server.url), { headers: { [LOCAL_ACCESS_HEADER]: SECRET } });
+      const requestHeaders = { [LOCAL_ACCESS_HEADER]: SECRET, Origin: LOOPBACK_ORIGIN };
+      const first = await fetch(new URL("/api/settings", server.url), { headers: requestHeaders });
       expect(first.status).toBe(200);
-      const second = await fetch(new URL("/api/settings", server.url), { headers: { [LOCAL_ACCESS_HEADER]: SECRET } });
-      expect(second.status).toBe(429);
-      expect(Number(second.headers.get("Retry-After"))).toBeGreaterThan(0);
+      for (const pathname of ["/v1/messages", "/v1/messages/count_tokens", "/v1/models"]) {
+        const limited = await fetch(new URL(pathname, server.url), { headers: requestHeaders });
+        expect(limited.status).toBe(429);
+        expect(await limited.json()).toMatchObject({
+          type: "error",
+          error: { type: "rate_limit_error" },
+        });
+        expect(limited.headers.get("Access-Control-Allow-Origin")).toBe(LOOPBACK_ORIGIN);
+        expect(limited.headers.get("Access-Control-Expose-Headers")?.toLowerCase()).toContain("retry-after");
+        expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
+      }
     } finally {
       await server.stop(true);
     }
@@ -218,6 +272,18 @@ describe("relay enforcement", () => {
       expect(stale.status).toBe(401);
     } finally {
       await server.stop(true);
+    }
+  });
+
+  test("a failed bind does not replace the running relay token", () => {
+    saveConfig(baseConfig({ localAccess: { enabled: true, keys: [key()] } }));
+    writeLocalAccessToken("frogp_existing-runtime-token");
+    const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("occupied") });
+    try {
+      expect(() => startServer(blocker.port)).toThrow();
+      expect(readLocalAccessToken()).toBe("frogp_existing-runtime-token");
+    } finally {
+      blocker.stop(true);
     }
   });
 
