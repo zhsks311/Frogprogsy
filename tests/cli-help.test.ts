@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -151,11 +151,148 @@ describe("CLI subcommand help", () => {
     expect(result.stderr).toContain("frogp claude");
   });
 
+  test("claude run treats --help after -- as Claude payload instead of frogp help", () => {
+    const frogHome = mkdtempSync(join(tmpdir(), "frogp-claude-payload-help-"));
+    const claudeHome = mkdtempSync(join(tmpdir(), "frogp-claude-payload-home-"));
+    const env = { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: claudeHome, CLAUDE_CONFIG_DIR: claudeHome };
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "run", "missing-profile", "--", "--help"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Unknown Claude Code home: missing-profile");
+      expect(result.stdout).not.toContain("Usage: frogp claude");
+    } finally {
+      rmSync(frogHome, { recursive: true, force: true });
+      rmSync(claudeHome, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === "win32")("claude shortcuts setup appends the account shortcut path to zshrc", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-shortcuts-cli-"));
+    const frogHome = join(root, "frog");
+    const userHome = join(root, "user");
+    const claudeHome = join(userHome, ".claude");
+    mkdirSync(join(frogHome, "bin"), { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: userHome,
+      SHELL: "/bin/zsh",
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+    };
+    delete env.ZDOTDIR;
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "shortcuts", "setup"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("open a new terminal");
+      expect(readFileSync(join(userHome, ".zshrc"), "utf8")).toContain(frogHome.replaceAll("\\", "/"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude shortcuts setup stays manual when SHELL is unset", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-shortcuts-manual-"));
+    const frogHome = join(root, "frog");
+    const userHome = join(root, "user");
+    const claudeHome = join(userHome, ".claude");
+    mkdirSync(claudeHome, { recursive: true });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: userHome,
+      USERPROFILE: userHome,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+    };
+    delete env.SHELL;
+    delete env.ZDOTDIR;
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "shortcuts", "setup"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("supports zsh on POSIX only");
+      expect(result.stdout).toContain(process.platform === "win32" ? "$env:Path +=" : "export PATH=");
+      expect(existsSync(join(userHome, ".zshrc"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude add rejects a missing explicit home before saving config", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-missing-home-"));
+    const frogHome = join(root, "frog");
+    const defaultClaudeHome = join(root, "default");
+    const missingHome = join(root, "missing");
+    mkdirSync(defaultClaudeHome);
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "add", "work", "--home", missingHome], {
+        cwd: repoRoot,
+        env: { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: defaultClaudeHome, CLAUDE_CONFIG_DIR: defaultClaudeHome },
+        encoding: "utf8",
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("--home must point at an existing Claude Code home directory");
+      expect(existsSync(join(frogHome, "config.json"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude add with only a command name creates a 0700 home and account shortcut", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-name-only-"));
+    const frogHome = join(root, "frog");
+    const userHome = join(root, "user");
+    const defaultClaudeHome = join(userHome, ".claude");
+    const realClaude = process.platform === "win32" ? process.execPath : "/usr/bin/true";
+    mkdirSync(defaultClaudeHome, { recursive: true });
+    const env = {
+      ...process.env,
+      HOME: userHome,
+      USERPROFILE: userHome,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: defaultClaudeHome,
+      CLAUDE_CONFIG_DIR: defaultClaudeHome,
+      FROGP_REAL_CLAUDE: realClaude,
+    };
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "claude", "add", "work"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("Claude account added: work");
+      expect(result.stdout).toContain("next: open a new terminal and run claude-work");
+      const workHome = join(userHome, ".claude-work");
+      expect(existsSync(workHome)).toBe(true);
+      if (process.platform !== "win32") expect(statSync(workHome).mode & 0o777).toBe(0o700);
+      expect(existsSync(join(frogHome, "bin", process.platform === "win32" ? "claude-work.cmd" : "claude-work"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("claude home CLI add and rename keep a stable id", () => {
     const frogHome = mkdtempSync(join(tmpdir(), "frogp-claude-cli-"));
     const defaultClaudeHome = mkdtempSync(join(tmpdir(), "frogp-claude-default-"));
     const workClaudeHome = mkdtempSync(join(tmpdir(), "frogp-claude-work-"));
-    const env = { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: defaultClaudeHome, CLAUDE_CONFIG_DIR: defaultClaudeHome };
+    const realClaude = process.platform === "win32" ? process.execPath : "/usr/bin/true";
+    const env = { ...process.env, FROGPROGSY_HOME: frogHome, CLAUDE_HOME: defaultClaudeHome, CLAUDE_CONFIG_DIR: defaultClaudeHome, FROGP_REAL_CLAUDE: realClaude };
     try {
       const added = spawnSync(process.execPath, [cliPath, "claude", "add", "컬리 업무용", "--home", workClaudeHome], {
         cwd: repoRoot,
@@ -163,7 +300,7 @@ describe("CLI subcommand help", () => {
         encoding: "utf8",
       });
       expect(added.status).toBe(0);
-      expect(added.stdout).toContain("Claude Code home added");
+      expect(added.stdout).toContain("Claude account added");
 
       const configPath = join(frogHome, "config.json");
       const afterAdd = JSON.parse(readFileSync(configPath, "utf8"));
@@ -187,6 +324,321 @@ describe("CLI subcommand help", () => {
       rmSync(workClaudeHome, { recursive: true, force: true });
     }
   });
+
+  test("claude add exits nonzero after saving an account whose shortcut name conflicts", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-add-conflict-"));
+    const frogHome = join(root, "frog");
+    const defaultClaudeHome = join(root, "default");
+    const firstHome = join(root, "first");
+    const conflictingHome = join(root, "conflicting");
+    const realClaude = process.platform === "win32" ? process.execPath : "/usr/bin/true";
+    mkdirSync(defaultClaudeHome);
+    mkdirSync(firstHome);
+    mkdirSync(conflictingHome);
+    const env = {
+      ...process.env,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: defaultClaudeHome,
+      CLAUDE_CONFIG_DIR: defaultClaudeHome,
+      FROGP_REAL_CLAUDE: realClaude,
+    };
+    try {
+      const first = spawnSync(process.execPath, [cliPath, "claude", "add", "Work", "--home", firstHome], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      expect(first.status).toBe(0);
+
+      const conflicting = spawnSync(process.execPath, [cliPath, "claude", "add", "work", "--home", conflictingHome], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      const savedConfig = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8")) as {
+        claudeProfiles: { profiles: Array<{ id: string; name: string; claudeHome: string }> };
+      };
+      const saved = savedConfig.claudeProfiles.profiles.find(profile => profile.claudeHome === conflictingHome)!;
+
+      expect(conflicting.status).not.toBe(0);
+      expect(saved).toMatchObject({ name: "work", claudeHome: conflictingHome });
+      expect(conflicting.stderr).toContain(`Account was saved: work (${saved.id})`);
+      expect(conflicting.stderr).toContain("shortcut name conflicts");
+      expect(conflicting.stderr).toContain("rename");
+      expect(conflicting.stdout).not.toContain("Claude account added: work");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude rename rejects a later account collision without saving or replacing the existing shortcut owner", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-rename-conflict-"));
+    const frogHome = join(root, "frog");
+    const defaultClaudeHome = join(root, "default");
+    const workHome = join(root, "work");
+    const personalHome = join(root, "personal");
+    const realClaude = process.platform === "win32" ? process.execPath : "/usr/bin/true";
+    mkdirSync(defaultClaudeHome);
+    mkdirSync(workHome);
+    mkdirSync(personalHome);
+    const env = {
+      ...process.env,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: defaultClaudeHome,
+      CLAUDE_CONFIG_DIR: defaultClaudeHome,
+      FROGP_REAL_CLAUDE: realClaude,
+    };
+    try {
+      const work = spawnSync(process.execPath, [cliPath, "claude", "add", "Work", "--home", workHome], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      const personal = spawnSync(process.execPath, [cliPath, "claude", "add", "Personal", "--home", personalHome], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      expect(work.status).toBe(0);
+      expect(personal.status).toBe(0);
+      const beforeRename = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8")) as {
+        claudeProfiles: { profiles: Array<{ id: string; name: string; claudeHome: string }> };
+      };
+      const personalId = beforeRename.claudeProfiles.profiles.find(profile => profile.claudeHome === personalHome)!.id;
+      const workLauncher = join(frogHome, "bin", process.platform === "win32" ? "claude-work.cmd" : "claude-work");
+      const workLauncherBefore = readFileSync(workLauncher);
+
+      const renamed = spawnSync(process.execPath, [cliPath, "claude", "rename", personalId, "work"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      const afterRename = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8")) as {
+        claudeProfiles: { profiles: Array<{ id: string; name: string; claudeHome: string }> };
+      };
+      const unchanged = afterRename.claudeProfiles.profiles.find(profile => profile.id === personalId)!;
+
+      expect(renamed.status).not.toBe(0);
+      expect(unchanged).toMatchObject({ id: personalId, name: "Personal", claudeHome: personalHome });
+      expect(readFileSync(workLauncher)).toEqual(workLauncherBefore);
+      expect(renamed.stderr).toContain("shortcut name conflicts");
+      expect(renamed.stderr).not.toContain("rename was saved");
+      expect(renamed.stdout).not.toContain("Claude Code home renamed");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude rename rejects an earlier account collision without saving or replacing the existing shortcut owner", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-rename-reverse-conflict-"));
+    const frogHome = join(root, "frog");
+    const defaultClaudeHome = join(root, "default");
+    const workHome = join(root, "work");
+    const personalHome = join(root, "personal");
+    const realClaude = process.platform === "win32" ? process.execPath : "/usr/bin/true";
+    mkdirSync(defaultClaudeHome);
+    mkdirSync(workHome);
+    mkdirSync(personalHome);
+    const env = {
+      ...process.env,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: defaultClaudeHome,
+      CLAUDE_CONFIG_DIR: defaultClaudeHome,
+      FROGP_REAL_CLAUDE: realClaude,
+    };
+    try {
+      const work = spawnSync(process.execPath, [cliPath, "claude", "add", "Work", "--home", workHome], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      const personal = spawnSync(process.execPath, [cliPath, "claude", "add", "Personal", "--home", personalHome], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      expect(work.status).toBe(0);
+      expect(personal.status).toBe(0);
+      const beforeRename = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8")) as {
+        claudeProfiles: { profiles: Array<{ id: string; name: string; claudeHome: string }> };
+      };
+      const workId = beforeRename.claudeProfiles.profiles.find(profile => profile.claudeHome === workHome)!.id;
+      const personalLauncher = join(frogHome, "bin", process.platform === "win32" ? "claude-personal.cmd" : "claude-personal");
+      const personalLauncherBefore = readFileSync(personalLauncher);
+
+      const renamed = spawnSync(process.execPath, [cliPath, "claude", "rename", workId, "personal"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      const afterRename = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8")) as {
+        claudeProfiles: { profiles: Array<{ id: string; name: string; claudeHome: string }> };
+      };
+      const unchanged = afterRename.claudeProfiles.profiles.find(profile => profile.id === workId)!;
+
+      expect(renamed.status).not.toBe(0);
+      expect(unchanged).toMatchObject({ id: workId, name: "Work", claudeHome: workHome });
+      expect(afterRename.claudeProfiles.profiles.find(profile => profile.claudeHome === personalHome)).toMatchObject({ name: "Personal" });
+      expect(readFileSync(personalLauncher)).toEqual(personalLauncherBefore);
+      expect(renamed.stderr).toContain("shortcut name conflicts");
+      expect(renamed.stderr).not.toContain("rename was saved");
+      expect(renamed.stdout).not.toContain("Claude Code home renamed");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude rename succeeds for the default profile when native Claude is missing", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-default-rename-no-native-"));
+    const frogHome = join(root, "frog");
+    const defaultClaudeHome = join(root, "default");
+    const emptyPath = join(root, "empty-path");
+    mkdirSync(frogHome);
+    mkdirSync(defaultClaudeHome);
+    mkdirSync(emptyPath);
+    writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+      port: 10100,
+      defaultProvider: "test",
+      providers: {
+        test: { adapter: "openai-chat", baseUrl: "https://models.test/v1", apiKey: "sk-test", defaultModel: "alpha", models: ["alpha"], liveModels: false },
+      },
+      claudeProfiles: {
+        schemaVersion: 1,
+        defaultProfileId: "cp_default",
+        profiles: [{ id: "cp_default", name: "Default", claudeHome: defaultClaudeHome, authState: "not_seen" }],
+      },
+    }, null, 2) + "\n");
+    const { FROGP_REAL_CLAUDE: _realClaude, ...baseEnv } = process.env;
+    const env = {
+      ...baseEnv,
+      PATH: emptyPath,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: defaultClaudeHome,
+      CLAUDE_CONFIG_DIR: defaultClaudeHome,
+    };
+
+    try {
+      const renamed = spawnSync(process.execPath, [cliPath, "claude", "rename", "cp_default", "Primary"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      const saved = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8")) as {
+        claudeProfiles: { profiles: Array<{ id: string; name: string }> };
+      };
+
+      expect(renamed.status).toBe(0);
+      expect(saved.claudeProfiles.profiles.find(profile => profile.id === "cp_default")?.name).toBe("Primary");
+      expect(renamed.stdout).toContain("Claude Code home renamed: Primary (cp_default)");
+      expect(renamed.stderr).not.toContain("shortcut name conflicts");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  test("claude rename reports missing native Claude instead of a name conflict for a planned nondefault launcher", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-rename-no-native-"));
+    const frogHome = join(root, "frog");
+    const defaultClaudeHome = join(root, "default");
+    const workHome = join(root, "work");
+    const emptyPath = join(root, "empty-path");
+    mkdirSync(frogHome);
+    mkdirSync(defaultClaudeHome);
+    mkdirSync(workHome);
+    mkdirSync(emptyPath);
+    writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+      port: 10100,
+      defaultProvider: "test",
+      providers: {
+        test: { adapter: "openai-chat", baseUrl: "https://models.test/v1", apiKey: "sk-test", defaultModel: "alpha", models: ["alpha"], liveModels: false },
+      },
+      claudeProfiles: {
+        schemaVersion: 1,
+        defaultProfileId: "cp_default",
+        profiles: [
+          { id: "cp_default", name: "Default", claudeHome: defaultClaudeHome, authState: "not_seen" },
+          { id: "cp_work", name: "Work", claudeHome: workHome, authState: "not_seen" },
+        ],
+      },
+    }, null, 2) + "\n");
+    const { FROGP_REAL_CLAUDE: _realClaude, ...baseEnv } = process.env;
+    const env = {
+      ...baseEnv,
+      PATH: emptyPath,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: defaultClaudeHome,
+      CLAUDE_CONFIG_DIR: defaultClaudeHome,
+    };
+
+    try {
+      const renamed = spawnSync(process.execPath, [cliPath, "claude", "rename", "cp_work", "Personal"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      const saved = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8")) as {
+        claudeProfiles: { profiles: Array<{ id: string; name: string }> };
+      };
+
+      expect(renamed.status).not.toBe(0);
+      expect(saved.claudeProfiles.profiles.find(profile => profile.id === "cp_work")?.name).toBe("Personal");
+      expect(renamed.stderr).toContain("original Claude Code executable was not found");
+      expect(renamed.stderr).toContain("install Claude Code");
+      expect(renamed.stderr).toContain("frogp refresh");
+      expect(renamed.stderr).not.toContain("shortcut name conflicts");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  test("claude rename reports a launcher creation problem when the planned target is unowned", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-rename-unowned-launcher-"));
+    const frogHome = join(root, "frog");
+    const defaultClaudeHome = join(root, "default");
+    const workHome = join(root, "work");
+    mkdirSync(join(frogHome, "bin"), { recursive: true });
+    mkdirSync(defaultClaudeHome);
+    mkdirSync(workHome);
+    writeFileSync(join(frogHome, "bin", process.platform === "win32" ? "claude-personal.cmd" : "claude-personal"), "user-owned launcher\n");
+    writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+      port: 10100,
+      defaultProvider: "test",
+      providers: {
+        test: { adapter: "openai-chat", baseUrl: "https://models.test/v1", apiKey: "sk-test", defaultModel: "alpha", models: ["alpha"], liveModels: false },
+      },
+      claudeProfiles: {
+        schemaVersion: 1,
+        defaultProfileId: "cp_default",
+        profiles: [
+          { id: "cp_default", name: "Default", claudeHome: defaultClaudeHome, authState: "not_seen" },
+          { id: "cp_work", name: "Work", claudeHome: workHome, authState: "not_seen" },
+        ],
+      },
+    }, null, 2) + "\n");
+    const realClaude = process.platform === "win32" ? process.execPath : "/usr/bin/true";
+    const env = {
+      ...process.env,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: defaultClaudeHome,
+      CLAUDE_CONFIG_DIR: defaultClaudeHome,
+      FROGP_REAL_CLAUDE: realClaude,
+    };
+
+    try {
+      const renamed = spawnSync(process.execPath, [cliPath, "claude", "rename", "cp_work", "Personal"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+
+      expect(renamed.status).not.toBe(0);
+      expect(renamed.stderr).toContain("shortcut could not be created");
+      expect(renamed.stderr).toContain("frogp refresh");
+      expect(renamed.stderr).not.toContain("shortcut name conflicts");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15000);
 
   test("claude remove validates the only home before project cleanup", () => {
     const frogHome = mkdtempSync(join(tmpdir(), "frogp-remove-only-"));

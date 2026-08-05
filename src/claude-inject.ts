@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { atomicWriteFile, websocketsEnabled } from "./config";
 import { restoreClaudeCodeCatalog } from "./claude-catalog";
-import { assertSafeClaudeHomeWrite, CLAUDE_HOME, claudeCatalogPath, claudeConfigTomlPath, claudeLegacyProfilePath, parseTomlString, readRootTomlString, resolveClaudeCodeConfigPath, tomlString } from "./claude-paths";
-import { CLAUDE_SETTINGS_PATH, injectClaudeCodeSettings, restoreClaudeCodeSettings } from "./claude-settings";
+import { assertSafeClaudeHomeWrite, claudeCatalogPath, claudeConfigTomlPath, claudeLegacyProfilePath, parseTomlString, readRootTomlString, resolveClaudeCodeConfigPath, resolveClaudeCodeHome, tomlString } from "./claude-paths";
+import { claudeSettingsFilePath, injectClaudeCodeSettings, restoreClaudeCodeSettings } from "./claude-settings";
 import { resolveClaudeProfileClassifierFlag } from "./claude-profiles";
 import { invalidateClaudeCodeGatewayModelsCache } from "./claude-refresh";
 import type { FrogConfig } from "./types";
@@ -208,7 +208,7 @@ export function buildProfileFile(port: number, catalogPath?: string | null): str
   return lines.join("\n");
 }
 
-export function chooseCatalogPathForInjection(content: string, requested?: string | null, claudeHome = CLAUDE_HOME): string | null {
+export function chooseCatalogPathForInjection(content: string, requested?: string | null, claudeHome = resolveClaudeCodeHome()): string | null {
   if (requested !== undefined) return requested;
 
   const existing = readRootModelCatalogPath(content);
@@ -290,7 +290,7 @@ export function stripFrogProgsyConfig(content: string): string {
 
 export function restoreClaudeCodeTomlConfig(options: { claudeHome?: string } = {}): { success: boolean; message: string; changed: boolean } {
   try {
-    const claudeHome = options.claudeHome ?? CLAUDE_HOME;
+    const claudeHome = options.claudeHome ?? resolveClaudeCodeHome();
     const configTomlPath = claudeConfigTomlPath(claudeHome);
     const legacyProfilePath = claudeLegacyProfilePath(claudeHome);
     let changed = false;
@@ -358,5 +358,5 @@ export function restoreNativeClaudeCode(options: { claudeHome?: string; profileI
 }
 
 export function getClaudeCodeConfigPath(): string {
-  return CLAUDE_SETTINGS_PATH;
+  return claudeSettingsFilePath();
 }

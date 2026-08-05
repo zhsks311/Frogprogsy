@@ -2,13 +2,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { atomicWriteFile, ensureConfigDirForWrite, getConfigDir } from "./config";
-import { assertSafeClaudeHomeWrite, CLAUDE_HOME, resolveClaudeCodeHome } from "./claude-paths";
+import { assertSafeClaudeHomeWrite, resolveClaudeCodeHome } from "./claude-paths";
 import { mergeClaudeProfileHeader, removeClaudeProfileHeader } from "./claude-profiles";
 import { ensureClaudeProjectSettingsExcluded } from "./claude-projects";
 import { AUTO_MODE_CLASSIFIER_ALIAS } from "./classifier-settings";
 import type { GatewayAuthCarrier } from "./types";
-
-export const CLAUDE_SETTINGS_PATH = join(CLAUDE_HOME, "settings.json");
 
 export function claudeSettingsFilePath(claudeHome?: string): string {
   return join(resolveClaudeCodeHome(claudeHome), "settings.json");

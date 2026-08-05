@@ -7,6 +7,7 @@ import type { FrogConfig } from "../src/types";
 const previous = {
   frogHome: process.env.FROGPROGSY_HOME,
   claudeHome: process.env.CLAUDE_HOME,
+  claudeConfigDir: process.env.CLAUDE_CONFIG_DIR,
   externalSupervisor: process.env.FROGP_EXTERNAL_SUPERVISOR,
 };
 
@@ -15,6 +16,8 @@ afterEach(() => {
   else process.env.FROGPROGSY_HOME = previous.frogHome;
   if (previous.claudeHome === undefined) delete process.env.CLAUDE_HOME;
   else process.env.CLAUDE_HOME = previous.claudeHome;
+  if (previous.claudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = previous.claudeConfigDir;
   if (previous.externalSupervisor === undefined) delete process.env.FROGP_EXTERNAL_SUPERVISOR;
   else process.env.FROGP_EXTERNAL_SUPERVISOR = previous.externalSupervisor;
 });
@@ -22,6 +25,7 @@ afterEach(() => {
 async function freshServerModule(home: string, claudeHome: string) {
   process.env.FROGPROGSY_HOME = home;
   process.env.CLAUDE_HOME = claudeHome;
+  process.env.CLAUDE_CONFIG_DIR = claudeHome;
   return await import(`../src/server.ts?g006=${crypto.randomUUID()}`) as typeof import("../src/server");
 }
 

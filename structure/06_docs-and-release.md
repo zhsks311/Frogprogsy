@@ -214,7 +214,11 @@ or choose a new version. The normal release workflow does not perform ad-hoc dis
 ## Release workflow
 
 Package development and release preparation are Bun-first. `package.json` defines the `frogprogsy` package
-and the `frogp`/`claude` bins; `prepublishOnly` runs typecheck and GUI build; and `scripts/release.ts` uses
+and the `frogp` bin — and only that bin. The package must never declare a `claude` bin: installing it would
+shadow the user's own Claude Code on `PATH` (`structure/02_config-and-claude-home.md`). Install verification
+enforces this in one direction only: a successful new install requires that any Bun-global `claude` is *not*
+frogprogsy-owned. Rollback verification does not apply that rule, because a restored older version legitimately
+owns one. `prepublishOnly` runs typecheck and GUI build; and `scripts/release.ts` uses
 Bun for registry preflight, version updates, and release orchestration. The workflow then creates one
 allowlisted, hash-recorded tarball through `scripts/dev-package.ts`. Each workflow run verifies the exact
 tarball it produced: dry-run validates it with Bun, while a real run passes that same run's verified path

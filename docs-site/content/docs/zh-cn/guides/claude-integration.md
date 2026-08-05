@@ -5,7 +5,7 @@ description: "FrogProgsy 拥有的本地 hook：settings env key、gateway disco
 
 FrogProgsy 的完整运营文档以 docs-site 的 `/zh-cn/` 路径为准。本 guide 聚焦于 FrogProgsy 会写入 Claude Code 的内容、不会写入的内容，以及出现问题时如何恢复。
 
-FrogProgsy 通过 Claude Code 已经读取的 gateway path 接入。它不 patch Claude Code binary，也不会在 active integration path 中向 `config.toml` 安装 `model_provider` table。不过它会生成 launcher shim，让日常使用可以走 `claude`、`claude-work` 等命令，而不是要求用户输入 `frogp claude run`。
+FrogProgsy 通过 Claude Code 已经读取的 gateway path 接入。它不 patch Claude Code binary，也不会在 active integration path 中向 `config.toml` 安装 `model_provider` table。不过它会为附加账户生成 `claude-work` 等快捷命令，让日常使用不必输入 `frogp claude run`；默认账户直接使用普通的 `claude`，该名称始终保留给用户安装的 Claude Code。
 
 ## 只写 owned settings
 
@@ -77,7 +77,7 @@ Grant 是 opt-in 的托管选择：携带订阅认证的网络请求可能触及
 
 ## 启动 Claude Code
 
-`frogp start` 和 `frogp refresh` 会重新生成默认 Claude Code 目录的 `~/.frogprogsy/bin/claude`，以及从已配置目录派生的 alias，例如 `claude-work`、`claude-personal`。把 `~/.frogprogsy/bin` 放到 native Claude Code binary 之前的 `PATH`，或使用 package 提供且在 PATH 中优先命中的 `claude` bin。每个 launcher 都会调用底层 `frogp claude run <cp_id>` 路径，并把真实 Claude Code 可执行文件固定到 `FROGP_REAL_CLAUDE`，跳过 frogprogsy 和临时 cmux shim，避免递归。Proxy 停止时，launcher 只保留所选 Claude 目录 env 并直通 native Claude Code。
+`frogp start` 和 `frogp refresh` 会在 `~/.frogprogsy/bin` 中为每个附加 Claude 账户重新生成一个快捷命令，例如 `claude-work` 或 `claude-personal`。默认账户直接使用普通的 `claude`；frogprogsy 从不生成或打包该命令。请将快捷命令目录追加到 `PATH` 末尾，让用户安装的 Claude Code 继续拥有该名称。每个快捷命令都会调用底层 `frogp claude run <cp_id>` 路径，并把真实 Claude Code 可执行文件固定到 `FROGP_REAL_CLAUDE`，跳过 frogprogsy 和临时 cmux shim，避免递归。Proxy 停止时，快捷命令只保留所选 Claude 目录环境变量并直通原生 Claude Code。
 
 ## Catalog sync 要做什么
 

@@ -15,10 +15,10 @@
  *    launcher-bin / source-dir / managed-launcher executable.
  */
 import { randomBytes, createHash } from "node:crypto";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 import { atomicWriteFile, ensureConfigDirForWrite, getConfigDir } from "./config";
-import { claudeLauncherBinDir, findRealClaudeExecutable, hasWindowsExecutableSuffix, isFrogprogsyClaudeLauncher } from "./claude-launchers";
+import { assertRealClaudeExecutable, claudeLauncherBinDir, findRealClaudeExecutable } from "./claude-launchers";
 import type { ClaudeGrantRecord, FrogConfig } from "./types";
 
 export const CLAUDE_GRANTS_DIR = "claude-grants";
@@ -256,93 +256,10 @@ export function removeClaudeGrant(config: FrogConfig, selector: string): ClaudeG
 
 // ── guided login (real-executable enforcement) ──────────────────────────────
 
-function realpathMaybe(path: string): string {
-  try {
-    return realpathSync.native(path);
-  } catch {
-    return resolve(path);
-  }
-}
-
-function isInsideDir(parent: string, child: string): boolean {
-  const p = realpathMaybe(parent);
-  const c = realpathMaybe(child);
-  return c === p || c.startsWith(`${p}${sep}`);
-}
-
-function currentPackageSrcDir(): string {
-  return realpathMaybe(dirname(process.argv[1] ?? "."));
-}
-
-/**
- * Validate that `candidate` is a REAL Claude executable safe to invoke for guided login. Rejects:
- *  - empty / non-absolute values (e.g. bare `claude`, which a frogprogsy shim on PATH can intercept),
- *  - non-existent paths, directories, and any non-file target,
- *  - zero-byte or non-executable Claude update artifacts (verified with `accessSync(real, X_OK)`),
- *  - anything inside the frogprogsy launcher bin dir or the frogprogsy source dir,
- *  - any frogprogsy launcher — generated shim OR source entrypoint delegating to
- *    `runClaudeLauncherProcess`, in any worktree — detected from a bounded head prefix, including via symlink.
- * Symlinks are resolved to their canonical real target before every check, and that canonical path is
- * returned. Error messages carry only a fixed reason — never the candidate path, a token, or a credential.
- */
-export function assertRealClaudeExecutable(candidate: string | undefined): string {
-  const raw = (candidate ?? "").trim();
-  if (!raw) {
-    throw new Error("claude grant login requires a real Claude executable, got an empty value");
-  }
-  if (!isAbsolute(raw)) {
-    throw new Error('claude grant login refuses a non-absolute executable; bare "claude" can be intercepted by a frogprogsy shim');
-  }
-  if (!existsSync(raw)) {
-    throw new Error("claude grant login executable does not exist");
-  }
-  // Resolve symlinks up front so every check below runs on the canonical real target: a symlink that
-  // points at a managed launcher, the launcher bin dir, or the source dir is rejected by its real path.
-  const real = realpathMaybe(raw);
-  let stat;
-  try {
-    stat = statSync(real);
-  } catch {
-    throw new Error("claude grant login executable is not accessible");
-  }
-  if (!stat.isFile()) {
-    throw new Error("claude grant login executable is not a file");
-  }
-  if (stat.size === 0) {
-    // A cleared / partially-written Claude self-update artifact reads as a zero-byte file.
-    throw new Error("claude grant login executable is not executable");
-  }
-
-  const binDir = claudeLauncherBinDir();
-  if (isInsideDir(binDir, real)) {
-    throw new Error("claude grant login refuses the frogprogsy launcher directory");
-  }
-  const srcDir = currentPackageSrcDir();
-  if (isInsideDir(srcDir, real)) {
-    throw new Error("claude grant login refuses the frogprogsy source directory");
-  }
-  // Reject any frogprogsy launcher — a generated shim or a source entrypoint that delegates to
-  // `runClaudeLauncherProcess` — via the shared bounded-head detector. Only a prefix is read, so a real
-  // native Claude binary is never slurped whole, and it fails closed on unexpected read/I/O errors.
-  if (isFrogprogsyClaudeLauncher(real)) {
-    throw new Error("claude grant login refuses a managed frogprogsy launcher");
-  }
-  // Windows has no POSIX exec bit, so `accessSync(X_OK)` accepts any readable file — including an
-  // extensionless, non-runnable one. The real "is executable" contract there is the PATHEXT-like
-  // suffix, so require a recognized executable extension (.exe/.cmd/.bat/.com). POSIX is untouched and
-  // keeps exact X_OK semantics. This runs after the launcher/dir/source gates so those keep their
-  // specific rejection messages.
-  if (process.platform === "win32" && !hasWindowsExecutableSuffix(real)) {
-    throw new Error("claude grant login executable is not executable");
-  }
-  // Final gate: the canonical target must actually be executable by this process on this platform.
-  try {
-    accessSync(real, constants.X_OK);
-  } catch {
-    throw new Error("claude grant login executable is not executable");
-  }
-  return real;
-}
+// The real-executable validator lives in `claude-launchers.ts`: every check it performs depends on that
+// module (launcher bin dir, launcher detection, source dir), and grants already imports from it, so keeping
+// it here would require a cycle. Re-exported so existing grant callers and tests keep one import site.
+export { assertRealClaudeExecutable } from "./claude-launchers";
 
 /**
  * Build a guided-login command for a grant. The executable is either caller-provided (`realClaude`)

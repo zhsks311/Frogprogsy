@@ -24,6 +24,8 @@ interface ClaudeProfile {
   authState?: string;
   gateway?: ClaudeProfileGateway;
   isDefault?: boolean;
+  shortcut?: { command: string; installed: boolean; native?: boolean };
+  shortcutIssue?: "name_conflict";
 }
 
 interface ModelRow {
@@ -40,6 +42,80 @@ export async function fetchProfileModels(request: () => Promise<Response>): Prom
   const models: unknown = await response.json();
   if (!Array.isArray(models)) throw new Error("invalid models response");
   return models as ModelRow[];
+}
+
+function claudeProfileSaveNotice(body: unknown, savedMessage: string): { message: string; success: boolean } {
+  if (body && typeof body === "object" && "warning" in body && typeof body.warning === "string" && body.warning.trim()) {
+    return { message: body.warning, success: false };
+  }
+  return { message: savedMessage, success: true };
+}
+
+export function claudeProfileAddNotice(body: unknown, addedMessage: string): { message: string; success: boolean } {
+  return claudeProfileSaveNotice(body, addedMessage);
+}
+
+export function claudeProfilePatchNotice(body: unknown, savedMessage: string): { message: string; success: boolean } {
+  return claudeProfileSaveNotice(body, savedMessage);
+}
+
+export function claudeProfileRemoveNotice(body: unknown, removedMessage: string): { message: string; success: boolean } {
+  return claudeProfileSaveNotice(body, removedMessage);
+}
+
+export function claudeProfileSavedError(body: unknown): {
+  profileId: string;
+  message: string;
+  success: false;
+} | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const result = body as {
+    code?: unknown;
+    error?: unknown;
+    profile?: { id?: unknown };
+  };
+  if (
+    result.code !== "shortcut_conflict"
+    || typeof result.error !== "string"
+    || !result.error.trim()
+    || !result.profile
+    || typeof result.profile.id !== "string"
+    || !result.profile.id.trim()
+  ) return undefined;
+  return {
+    profileId: result.profile.id,
+    message: result.error,
+    success: false,
+  };
+}
+
+type ClaudeProfileShortcutState = "native" | "ready" | "name_conflict" | "needs_setup";
+
+export function claudeProfileShortcutView(
+  profile: Pick<ClaudeProfile, "shortcut" | "shortcutIssue">,
+): { command: string; state: ClaudeProfileShortcutState; showRenameAction: boolean; showSetupAction: boolean } {
+  if (profile.shortcutIssue === "name_conflict") {
+    return { command: "—", state: "name_conflict", showRenameAction: true, showSetupAction: false };
+  }
+  const command = profile.shortcut?.command?.trim() || "—";
+  const state: ClaudeProfileShortcutState = profile.shortcut?.native
+    ? "native"
+    : profile.shortcut?.installed
+      ? "ready"
+      : "needs_setup";
+  return {
+    command,
+    state,
+    showRenameAction: false,
+    showSetupAction: state === "needs_setup",
+  };
+}
+
+export function claudeProfileCanRemove(
+  profile: Pick<ClaudeProfile, "isDefault"> | undefined,
+  profileCount: number,
+): boolean {
+  return profile !== undefined && !profile.isDefault && profileCount > 1;
 }
 
 export function sonnetModelCandidates(models: readonly ModelRow[]): ModelRow[] {
@@ -138,6 +214,15 @@ function discoveryAuthKey(mode: DiscoveryAuthMode | undefined): TKey {
     default: return "claudeProfiles.discoveryAuth.direct";
   }
 }
+function shortcutStateKey(state: ClaudeProfileShortcutState): TKey {
+  switch (state) {
+    case "native": return "claudeProfiles.shortcutNative";
+    case "ready": return "claudeProfiles.shortcutReady";
+    case "name_conflict": return "claudeProfiles.shortcutNameConflict";
+    default: return "claudeProfiles.shortcutNeedsSetup";
+  }
+}
+
 function parseProfiles(value: unknown): ClaudeProfile[] {
   const profiles = value && typeof value === "object" ? (value as { profiles?: unknown }).profiles : undefined;
   if (!Array.isArray(profiles)) return [];
@@ -199,11 +284,13 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   const modelRequestId = useRef(0);
 
   const selected = useMemo(() => profiles.find(profile => profile.id === selectedId) ?? profiles[0], [profiles, selectedId]);
+  const selectedCanRemove = claudeProfileCanRemove(selected, profiles.length);
   const modelsLoadFailed = modelsLoadFailedFor === selected?.id;
   const sonnetCandidates = useMemo(() => sonnetModelCandidates(models), [models]);
   const selectedSonnetModel = sonnetCandidates.find(model => model.namespaced === selectedSonnet);
   const sonnetCommand = selectedSonnetModel ? sonnetModelCommand(selectedSonnetModel.namespaced) : "";
-  const runCommand = selected ? `frogp claude run ${JSON.stringify(selected.name)} --` : "frogp claude run <profile> --";
+  const shortcutCommand = selected?.shortcut?.command?.trim() || undefined;
+  const selectedShortcutView = selected ? claudeProfileShortcutView(selected) : undefined;
   const reloadCommand = selected ? `frogp claude reload-models ${selected.id}` : "frogp claude reload-models <profile-id>";
   const discoveryAuthMode: DiscoveryAuthMode = selected?.gateway?.discoveryAuth ?? (selected?.gateway?.modelDiscoveryReady ? "settings" : selected?.injected ? "launcher" : "direct");
 
@@ -315,15 +402,40 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
       const res = await fetch(`${apiBase}/api/claude-profiles`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName, claudeHome: newHome }),
+        body: JSON.stringify({ name: newName, claudeHome: newHome.trim() || undefined }),
       });
-      if (!res.ok) throw new Error("add failed");
-      const body = await res.json() as { profile?: ClaudeProfile };
+      const body = await res.json().catch(() => ({})) as {
+        code?: string;
+        profile?: ClaudeProfile;
+        error?: string;
+        warning?: string;
+      };
+      const savedError = claudeProfileSavedError(body);
+      if (!res.ok && !savedError) throw new Error(body.error || t("claudeProfiles.addFailed"));
       setNewName(""); setNewHome("");
       const next = await loadProfiles();
-      setSelectedId(body.profile?.id ?? next[0]?.id ?? null);
-      notify(t("claudeProfiles.added"), true);
-    } catch { notify(t("claudeProfiles.addFailed"), false); }
+      setSelectedId(savedError?.profileId ?? body.profile?.id ?? next[0]?.id ?? null);
+      const notice = savedError ?? claudeProfileAddNotice(body, t("claudeProfiles.added"));
+      notify(notice.message, notice.success);
+    } catch (error) { notify(error instanceof Error ? error.message : t("claudeProfiles.addFailed"), false); }
+    finally { setBusy(false); }
+  };
+
+  const setupShortcuts = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch(`${apiBase}/api/claude-shortcuts/setup`, { method: "POST" });
+      const body = await res.json().catch(() => ({})) as { state?: string; message?: string; error?: string; manual?: string; warning?: string };
+      if (!res.ok) {
+        const reason = body.message || body.error || t("claudeProfiles.shortcutsSetupFailed");
+        throw new Error(body.manual ? `${reason} — ${body.manual}` : reason);
+      }
+      const message = body.state === "manual_required" && body.manual
+        ? `${body.message || t("claudeProfiles.shortcutsSetupFailed")} — ${body.manual}`
+        : body.message || t("claudeProfiles.shortcutsSetupDone");
+      notify(body.warning ? `${message} — ${body.warning}` : message, true);
+      await loadProfiles();
+    } catch (error) { notify(error instanceof Error ? error.message : t("claudeProfiles.shortcutsSetupFailed"), false); }
     finally { setBusy(false); }
   };
 
@@ -368,10 +480,15 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const result = await res.json().catch(() => ({})) as { error?: string };
+      const result = await res.json().catch(() => ({})) as {
+        profile?: ClaudeProfile;
+        error?: string;
+        warning?: string;
+      };
       if (!res.ok) throw new Error(result.error || t("claudeProfiles.saveFailed"));
       await loadProfiles();
-      notify(successMessage, true);
+      const notice = claudeProfilePatchNotice(result, successMessage);
+      notify(notice.message, notice.success);
     } catch (err) { notify(err instanceof Error ? err.message : t("claudeProfiles.saveFailed"), false); }
     finally { setBusy(false); }
   };
@@ -408,15 +525,17 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   };
 
   const removeSelected = async () => {
-    if (!selected || !window.confirm(t("claudeProfiles.removeConfirm", { name: selected.name }))) return;
+    if (!selected || !selectedCanRemove || !window.confirm(t("claudeProfiles.removeConfirm", { name: selected.name }))) return;
     setBusy(true);
     try {
       const res = await fetch(`${apiBase}/api/claude-profiles/${encodeURIComponent(selected.id)}`, { method: "DELETE" });
+      const body = await res.json().catch(() => ({})) as { warning?: string };
       if (!res.ok) throw new Error("remove failed");
       const nextProfiles = await loadProfiles();
       await loadProjects(projectRoot.trim() || currentProject?.root || ".");
       setProjectRoutingProfileId(prev => nextProfiles.some(profile => profile.id === prev) ? prev : "");
-      notify(t("claudeProfiles.removed"), true);
+      const notice = claudeProfileRemoveNotice(body, t("claudeProfiles.removed"));
+      notify(notice.message, notice.success);
     } catch { notify(t("claudeProfiles.removeFailed"), false); }
     finally { setBusy(false); }
   };
@@ -479,7 +598,8 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   };
 
   const copyRunCommand = async () => {
-    await navigator.clipboard?.writeText(runCommand).catch(() => undefined);
+    if (!shortcutCommand) return;
+    await navigator.clipboard?.writeText(shortcutCommand).catch(() => undefined);
     notify(t("claudeProfiles.copied"), true);
   };
 
@@ -523,23 +643,37 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
       />
 
       <section className="panel" style={{ marginBottom: 18 }}>
-        <h3 className="panel-title">{t("claudeProfiles.addTitle")}</h3>
+        <div className="panel-head">
+          <div>
+            <h3 className="panel-title">{t("claudeProfiles.addTitle")}</h3>
+            <p className="page-sub">{t("claudeProfiles.addHint")}</p>
+          </div>
+          {selectedShortcutView?.state !== "name_conflict" && <button className="btn btn-ghost" type="button" onClick={setupShortcuts} disabled={busy}>{t("claudeProfiles.shortcutsSetup")}</button>}
+        </div>
         <div className="settings-grid">
           <label><span>{t("claudeProfiles.name")}</span><input className="input" value={newName} onChange={e => setNewName(e.target.value)} placeholder={t("claudeProfiles.namePlaceholder")} /></label>
-          <label><span>{t("claudeProfiles.home")}</span><input className="input" value={newHome} onChange={e => setNewHome(e.target.value)} placeholder="~/.claude-work" /></label>
-          <div style={{ alignSelf: "end" }}><button className="btn btn-primary" onClick={addProfile} disabled={busy || !newName.trim() || !newHome.trim()}><IconPlus /> {t("claudeProfiles.add")}</button></div>
+          <div style={{ alignSelf: "end" }}><button className="btn btn-primary" onClick={addProfile} disabled={busy || !newName.trim()}><IconPlus /> {t("claudeProfiles.add")}</button></div>
         </div>
+        <details style={{ marginTop: 12 }}>
+          <summary>{t("claudeProfiles.advancedHome")}</summary>
+          <label style={{ display: "block", marginTop: 10 }}><span>{t("claudeProfiles.home")}</span><input className="input" value={newHome} onChange={e => setNewHome(e.target.value)} placeholder="~/.claude-work" /></label>
+          <p className="muted stat-caption">{t("claudeProfiles.advancedHomeHint")}</p>
+        </details>
       </section>
 
       <div className="model-summary-grid" style={{ marginBottom: 18 }}>
-        {profiles.map(profile => (
-          <button key={profile.id} type="button" className={`stat profile-card ${selected?.id === profile.id ? "active" : ""}`} onClick={() => setSelectedId(profile.id)} style={{ textAlign: "left" }}>
-            <div className="muted">{profile.isDefault ? t("claudeProfiles.defaultBadge") : profile.id}</div>
-            <div className="stat-value" style={{ fontSize: 18 }}>{profile.name}</div>
-            <div className="muted stat-caption text-anywhere">{profile.claudeHome}</div>
-            <div className="muted stat-caption">{profile.injected ? t("claudeProfiles.injected") : t("claudeProfiles.notInjected")} · {t(authStateKey(profile.authState))}</div>
-          </button>
-        ))}
+        {profiles.map(profile => {
+          const shortcutView = claudeProfileShortcutView(profile);
+          return (
+            <button key={profile.id} type="button" className={`stat profile-card ${selected?.id === profile.id ? "active" : ""}`} onClick={() => setSelectedId(profile.id)} style={{ textAlign: "left" }}>
+              <div className="muted">{profile.isDefault ? t("claudeProfiles.defaultBadge") : profile.id}</div>
+              <div className="stat-value" style={{ fontSize: 18 }}>{profile.name}</div>
+              <div className="stat-caption"><code>{shortcutView.command}</code> · {t(shortcutStateKey(shortcutView.state))}</div>
+              <div className="muted stat-caption text-anywhere">{profile.claudeHome}</div>
+              <div className="muted stat-caption">{profile.injected ? t("claudeProfiles.injected") : t("claudeProfiles.notInjected")} · {t(authStateKey(profile.authState))}</div>
+            </button>
+          );
+        })}
       </div>
 
       {selected && (
@@ -564,6 +698,8 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
             <div className="stat"><div className="muted">{t("claudeProfiles.preview")}</div><div className="stat-value" style={{ fontSize: 16 }}>{models.filter(m => !m.disabled).length}</div><div className="muted stat-caption">{t("claudeProfiles.previewHint")}</div></div>
           </div>
           {modelsLoadFailed && <Notice tone="err">{t("models.loadFail")}</Notice>}
+
+          {selectedShortcutView?.showRenameAction && <Notice tone="err">{t("claudeProfiles.shortcutRenameHint")}</Notice>}
 
           <div className="settings-grid" style={{ marginTop: 16 }}>
             <label><span>{t("claudeProfiles.rename")}</span><input className="input" value={renameValue} onChange={e => setRenameValue(e.target.value)} /></label>
@@ -702,8 +838,8 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
 
 
           <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-            <button className="btn btn-ghost" onClick={copyRunCommand}><IconCheck /> {t("claudeProfiles.copyRun")}</button>
-            <button className="btn btn-ghost" onClick={removeSelected} disabled={busy || profiles.length <= 1}><IconTrash /> {t("common.remove")}</button>
+            <button className="btn btn-ghost" onClick={copyRunCommand} disabled={!shortcutCommand}><IconCheck /> {t("claudeProfiles.copyRun")}</button>
+            <button className="btn btn-ghost" onClick={removeSelected} disabled={busy || !selectedCanRemove}><IconTrash /> {t("common.remove")}</button>
           </div>
         </section>
       )}
