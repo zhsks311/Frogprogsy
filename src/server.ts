@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, extname, join, sep } from "node:path";
 import { homedir } from "node:os";
 import { createAnthropicAdapter } from "./adapters/anthropic";
@@ -61,6 +61,7 @@ import {
 import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, setCached } from "./model-cache";
 import {
   addClaudeProfile,
+  derivedClaudeHomeForShortcut,
   ensureClaudeProfiles,
   expandHomePath,
   listClaudeProfiles,
@@ -80,8 +81,9 @@ import {
   removeClaudeProject,
   resolveClaudeProject,
 } from "./claude-projects";
-import { claudeLauncherBinDir, findRealClaudeExecutable, syncClaudeLauncherShims } from "./claude-launchers";
+import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, findRealClaudeExecutableOrNull, isManagedClaudeProfileLauncher, plannedClaudeLaunchers, syncClaudeLauncherShims } from "./claude-launchers";
 import { cleanupClaudeProjectsForRemovedProfile } from "./claude-routing-lifecycle";
+import { configureZshAccountShortcuts, shellManualPathLine, zshAccountShortcutsSupported } from "./shell-shortcuts";
 import {
   addClaudeGrant,
   assertClaudeGrantRemovalSafe,
@@ -1676,13 +1678,34 @@ function claudeProjectsSnapshot(config: FrogConfig, root?: string | null) {
 }
 
 
-function syncClaudeLaunchersBestEffort(config: FrogConfig): { success: boolean; error?: string } {
+interface ClaudeLauncherSyncOutcome {
+  success: boolean;
+  error?: string;
+  realClaudeResolved?: boolean;
+  launchers?: Array<{ name: string; profileId: string }>;
+  warnings?: string[];
+}
+
+function syncClaudeLaunchersBestEffort(config: FrogConfig): ClaudeLauncherSyncOutcome {
   try {
-    syncClaudeLauncherShims(config);
-    return { success: true };
+    const result = syncClaudeLauncherShims(config);
+    const launchers = result.launchers
+      .filter(entry => isManagedClaudeProfileLauncher(join(result.binDir, claudeLauncherFileName(entry.name)), entry.profileId))
+      .map(({ name, profileId }) => ({ name, profileId }));
+    return {
+      success: true,
+      realClaudeResolved: result.realClaudeResolved,
+      launchers,
+      warnings: result.warnings,
+    };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function claudeLauncherSyncWarning(result: ClaudeLauncherSyncOutcome): string | undefined {
+  if (!result.warnings || result.warnings.length === 0) return undefined;
+  return result.warnings.join("; ");
 }
 
 
@@ -1787,7 +1810,13 @@ function usagePricingSnapshot(config: FrogConfig, rangeInput?: string | null) {
 
 function createRequestLog(endpoint: string, method: string, headers: Headers): RequestLogContext {
   const contentLength = headers.get("content-length");
-  const requestBytes = contentLength && /^\d+$/.test(contentLength) ? Number(contentLength) : undefined;
+  const requestBytes =
+    contentLength && /^\d+$/.test(contentLength)
+      ? (() => {
+          const n = Number(contentLength);
+          return Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+        })()
+      : undefined;
   const entry: RequestLogEntry = {
     id: crypto.randomUUID(),
     startedAt: Date.now(),
@@ -2222,6 +2251,10 @@ function localAccessDenialResponse(decision: LocalAccessDenied, pathname: string
 
 interface ManagementAPIDeps {
   saveConfig?: (config: FrogConfig) => void;
+  /** Isolated home root for name-only profile creation tests; production defaults to the OS home. */
+  homeDir?: string;
+  /** Launcher sync seam so management API tests never touch the real config directory. */
+  syncClaudeLaunchers?: (config: FrogConfig) => ClaudeLauncherSyncOutcome;
   /** Branch-B claude-grant management fixtures (keep the API off real network/Keychain/native homes in tests). */
   claudeGrants?: ClaudeGrantManagementDeps;
   /** Peer address of the request socket. Omitted for in-process calls (tests, direct invocation). */
@@ -2972,26 +3005,112 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
 
   if (url.pathname === "/api/claude-profiles" && req.method === "GET") {
     ensureClaudeProfiles(config);
+    const plannedByProfileId = new Map(
+      plannedClaudeLaunchers(config).launchers.map(launcher => [launcher.profileId, launcher] as const),
+    );
     const profiles = listClaudeProfiles(config).map(profile => {
       const gateway = profileGatewaySnapshot(config, profile);
-      return { ...profile, injected: gateway.injected, gateway };
+      if (profile.isDefault) {
+        const installed = findRealClaudeExecutableOrNull([claudeLauncherBinDir()]) !== null;
+        return { ...profile, injected: gateway.injected, gateway, shortcut: { command: "claude", installed, native: true } };
+      }
+      const launcher = plannedByProfileId.get(profile.id);
+      if (!launcher) return { ...profile, injected: gateway.injected, gateway, shortcutIssue: "name_conflict" };
+      const path = join(claudeLauncherBinDir(), claudeLauncherFileName(launcher.name));
+      return { ...profile, injected: gateway.injected, gateway, shortcut: { command: launcher.name, installed: isManagedClaudeProfileLauncher(path, profile.id), native: false } };
     });
     return jsonResponse({ profiles });
   }
 
   if (url.pathname === "/api/claude-profiles" && req.method === "POST") {
     let body: { name?: unknown; claudeHome?: unknown; home?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await req.json(); } catch { return jsonResponse({ code: "invalid_json", error: "invalid JSON body" }, 400); }
     const name = typeof body.name === "string" ? body.name.trim() : "";
-    const claudeHome = typeof body.claudeHome === "string" ? body.claudeHome : typeof body.home === "string" ? body.home : "";
-    if (!name || !claudeHome) return jsonResponse({ error: "name and claudeHome are required" }, 400);
+    if (!name) return jsonResponse({ code: "invalid_name", error: "Account shortcut name is required" }, 400);
+
+    const explicitHome = typeof body.claudeHome === "string" && body.claudeHome.trim()
+      ? body.claudeHome.trim()
+      : typeof body.home === "string" && body.home.trim()
+        ? body.home.trim()
+        : undefined;
+    let claudeHome: string;
+    if (explicitHome) {
+      claudeHome = expandHomePath(explicitHome);
+      if (!existsSync(claudeHome) || !statSync(claudeHome).isDirectory()) {
+        return jsonResponse({ code: "existing_home_required", error: "The advanced home path must be an existing directory" }, 400);
+      }
+    } else {
+      try {
+        claudeHome = derivedClaudeHomeForShortcut(name, deps.homeDir);
+      } catch (error) {
+        return jsonResponse({ code: "invalid_name", error: error instanceof Error ? error.message : String(error) }, 400);
+      }
+      if (existsSync(claudeHome)) {
+        return jsonResponse({ code: "home_exists", error: "The derived account home already exists; use the advanced existing-home field to adopt it intentionally" }, 409);
+      }
+      try {
+        mkdirSync(claudeHome, { mode: 0o700 });
+        chmodSync(claudeHome, 0o700);
+      } catch (error) {
+        return jsonResponse({ code: "home_creation_failed", error: error instanceof Error ? error.message : String(error) }, 500);
+      }
+    }
+
+    let profile: ClaudeProfileRecord;
     try {
-      const profile = addClaudeProfile(config, { name, claudeHome });
+      profile = addClaudeProfile(config, { name, claudeHome });
       persistConfig(config);
-      const launcherSync = syncClaudeLaunchersBestEffort(config);
-      return jsonResponse({ profile, launcherSync }, 201);
-    } catch {
-      return jsonResponse({ error: "Claude Code home could not be added" }, 409);
+    } catch (error) {
+      return jsonResponse({ code: "registration_failed", error: error instanceof Error ? error.message : String(error) }, 409);
+    }
+    const launcher = plannedClaudeLaunchers(config).launchers.find(entry => entry.profileId === profile.id);
+    if (!launcher) {
+      return jsonResponse({
+        code: "shortcut_conflict",
+        error: "The account was saved, but its shortcut name conflicts with another account. Rename the account to create a distinct shortcut.",
+        profile,
+      }, 409);
+    }
+    const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
+    const command = launcher.name;
+    const installed = launcherSync.success
+      && (launcherSync.launchers === undefined
+        || launcherSync.launchers.some(entry => entry.profileId === profile.id && entry.name === command));
+    if (!installed) {
+      return jsonResponse({
+        profile: { ...profile, shortcut: { command, installed: false } },
+        warning: launcherSync.realClaudeResolved === false
+          ? "The account was saved, but Claude Code is not installed. Install Claude Code and run frogp refresh to create its shortcut."
+          : launcherSync.success
+            ? "The account was saved, but its shortcut could not be created. Rename the account if the shortcut name conflicts, or fix the reported launcher issue."
+            : "The account was saved, but its shortcut could not be created. Fix the issue and run frogp refresh.",
+        launcherSync,
+      }, 201);
+    }
+    const warning = claudeLauncherSyncWarning(launcherSync);
+    return jsonResponse({
+      profile: { ...profile, shortcut: { command, installed: true } },
+      ...(warning ? { warning } : {}),
+      launcherSync,
+    }, 201);
+  }
+
+  if (url.pathname === "/api/claude-shortcuts/setup" && req.method === "POST") {
+    try {
+      if (!zshAccountShortcutsSupported(process.env)) {
+        return jsonResponse({
+          state: "manual_required",
+          message: "Automatic shell setup currently supports zsh on POSIX only.",
+          manual: shellManualPathLine(),
+        });
+      }
+      const result = configureZshAccountShortcuts();
+      if (result.state === "refused") {
+        return jsonResponse({ ...result, manual: shellManualPathLine() }, 409);
+      }
+      return jsonResponse({ ...result, manual: shellManualPathLine() });
+    } catch (error) {
+      return jsonResponse({ state: "refused", error: error instanceof Error ? error.message : String(error), manual: shellManualPathLine() }, 409);
     }
   }
 
@@ -3015,6 +3134,25 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       const body = parsedBody as { name?: unknown; routeAutoModeClassifier?: unknown };
       if ("routeAutoModeClassifier" in body && typeof body.routeAutoModeClassifier !== "boolean") {
         return jsonResponse({ error: "routeAutoModeClassifier must be a boolean" }, 400);
+      }
+      const renamed = typeof body.name === "string";
+      if (renamed && config.claudeProfiles?.defaultProfileId !== profile.id) {
+        const prospectiveShortcutName = claudeProfileShortcutName({
+          ...profile,
+          name: (body.name as string).trim(),
+        });
+        const defaultProfileId = config.claudeProfiles?.defaultProfileId;
+        const shortcutConflict = ensureClaudeProfiles(config).profiles.some(candidate =>
+          candidate.id !== profile.id
+          && candidate.id !== defaultProfileId
+          && claudeProfileShortcutName(candidate) === prospectiveShortcutName
+        );
+        if (shortcutConflict) {
+          return jsonResponse({
+            code: "shortcut_conflict",
+            error: "The account was not renamed because its shortcut name belongs to another account. Choose a distinct account name.",
+          }, 409);
+        }
       }
       if (typeof body.routeAutoModeClassifier === "boolean") {
         const previousFlag = profile.routeAutoModeClassifier === true;
@@ -3079,17 +3217,38 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
           }
         }
       }
-      if (typeof body.name === "string") profile = renameClaudeProfile(config, profile.id, body.name);
+      if (renamed) profile = renameClaudeProfile(config, profile.id, body.name as string);
       persistConfig(config);
-      const launcherSync = syncClaudeLaunchersBestEffort(config);
+      const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
+      let launcherWarning: string | undefined;
+      if (renamed && config.claudeProfiles?.defaultProfileId !== profile.id) {
+        const plannedLauncher = plannedClaudeLaunchers(config).launchers.find(entry => entry.profileId === profile.id);
+        const installed = plannedLauncher !== undefined
+          && launcherSync.success
+          && (launcherSync.launchers === undefined
+            || launcherSync.launchers.some(entry => entry.profileId === profile.id && entry.name === plannedLauncher.name));
+        if (!installed) {
+          launcherWarning = launcherSync.realClaudeResolved === false
+            ? "The account rename was saved, but Claude Code is not installed. Install Claude Code and run frogp refresh to create its shortcut."
+            : "The account rename was saved, but its shortcut could not be created. Fix the reported launcher issue and run frogp refresh.";
+        }
+      }
       await refreshClaudeCodeCatalogBestEffort({ claudeHome: profile.claudeHome, profileId: profile.id });
-      return jsonResponse({ profile, launcherSync });
+      const warning = launcherWarning ?? claudeLauncherSyncWarning(launcherSync);
+      return jsonResponse({
+        profile,
+        ...(warning ? { warning } : {}),
+        launcherSync,
+      });
     }
 
     if (!action && req.method === "DELETE") {
       try {
         if (ensureClaudeProfiles(config).profiles.length <= 1) {
           return jsonResponse({ error: "Cannot remove the only Claude Code home" }, 409);
+        }
+        if (config.claudeProfiles?.defaultProfileId === profile.id) {
+          return jsonResponse({ error: "Cannot remove the default Claude Code home" }, 409);
         }
         if (profile.injected === true || profileGatewayApplied(config, profile)) {
           if (claudeWritesBlocked("Claude Code home remove restore")) {
@@ -3104,8 +3263,9 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         if (!projectCleanup.success) return jsonResponse({ error: projectCleanup.error ?? "project profile cleanup failed", projects: projectCleanup.projects }, 409);
         const removed = removeClaudeProfile(config, profile.id);
         persistConfig(config);
-        const launcherSync = syncClaudeLaunchersBestEffort(config);
-        return jsonResponse({ removed, launcherSync });
+        const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
+        const warning = claudeLauncherSyncWarning(launcherSync);
+        return jsonResponse({ removed, ...(warning ? { warning } : {}), launcherSync });
       } catch {
         return jsonResponse({ error: "Claude Code home could not be removed" }, 409);
       }

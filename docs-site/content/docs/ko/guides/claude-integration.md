@@ -7,8 +7,8 @@ FrogProgsy의 전체 운영 문서는 docs-site의 `/ko/` 경로가 기준입니
 무엇을 쓰고, 무엇을 쓰지 않으며, 문제가 생겼을 때 어떻게 되돌리는지에 집중합니다.
 
 FrogProgsy는 Claude Code가 이미 읽는 경로로 연결됩니다. Claude Code 실행 파일을 고치지 않고,
-현재 연결 방식에서 `config.toml`에 `model_provider` table을 설치하지도 않습니다. 다만 매일 쓰는
-명령이 `frogp claude run`이 되지 않도록 `claude`, `claude-work` 같은 launcher shim은 생성합니다.
+현재 연결 방식에서 `config.toml`에 `model_provider` table을 설치하지도 않습니다.
+추가 계정에는 `claude-work` 같은 계정별 바로가기를 만들어 `frogp claude run`을 매번 입력하지 않게 합니다. 기본 계정은 원래 `claude` 명령을 그대로 쓰며, 이 이름은 항상 사용자가 설치한 Claude Code로 남습니다.
 
 ## FrogProgsy가 만든 설정만 쓴다
 
@@ -93,7 +93,7 @@ grant를 지우면(`frogp claude grants remove <id>` 또는 대시보드) frogpr
 
 ## Claude Code 실행
 
-`frogp start`와 `frogp refresh`는 기본 Claude Code 홈용 `~/.frogprogsy/bin/claude`와 configured home에서 파생한 `claude-work`, `claude-personal` 같은 alias를 다시 만듭니다. `~/.frogprogsy/bin`을 native Claude Code binary보다 PATH 앞에 두거나, package가 제공하는 `claude` bin이 PATH에서 먼저 잡히게 쓰면 됩니다. 각 launcher는 실제 Claude Code 실행 파일을 `FROGP_REAL_CLAUDE`로 고정한 뒤 저수준 `frogp claude run <cp_id>` 경로를 호출하므로 frogprogsy shim이나 임시 cmux shim으로 재귀하지 않습니다. Proxy가 꺼져 있으면 선택한 Claude 홈 env만 유지하고 native Claude Code로 통과합니다.
+`frogp start`와 `frogp refresh`는 `~/.frogprogsy/bin`에 추가 Claude 계정별 바로가기를 하나씩 다시 만듭니다. 예: `claude-work`, `claude-personal`. 기본 계정은 원래 `claude` 명령을 사용하며 frogprogsy는 이 명령을 생성하거나 패키지에 포함하지 않습니다. 바로가기 디렉터리는 `PATH` 뒤에 추가해 사용자가 설치한 Claude Code가 `claude` 이름을 계속 사용하게 합니다. 각 바로가기는 실제 Claude Code 실행 파일을 `FROGP_REAL_CLAUDE`로 고정한 뒤 저수준 `frogp claude run <cp_id>` 경로를 호출하므로 frogprogsy 바로가기나 임시 cmux shim으로 재귀하지 않습니다. Proxy가 꺼져 있으면 선택한 Claude 홈 환경변수만 유지하고 원래 Claude Code로 통과합니다.
 
 ## 모델 목록 동기화가 하는 일
 

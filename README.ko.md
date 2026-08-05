@@ -97,7 +97,7 @@ frogp claude reload-models <profile-id>
 
 이미 열려 있는 `/model` 화면은 hot reload되지 않습니다. 새 `claude` 세션을 시작하거나 resume해야 Claude Code가 `/v1/models`를 다시 가져옵니다.
 
-`frogp start`/`frogp refresh`는 `~/.frogprogsy/bin`에 launcher shim을 생성합니다. 기본 홈은 `claude`, 각 홈은 `claude-work`나 `claude-personal` 같은 alias를 받습니다. 이 디렉터리를 native Claude Code binary보다 PATH 앞에 두거나, package가 제공하는 `claude` bin이 PATH에서 먼저 잡히게 쓰면 됩니다. Proxy가 꺼져 있으면 이 launcher들은 선택한 홈의 native Claude Code로 그대로 통과합니다.
+`frogp start`/`frogp refresh`는 `~/.frogprogsy/bin`에 추가 Claude 계정별 바로가기를 하나씩 만듭니다. 예: `claude-work`, `claude-personal`. 기본 계정은 평범한 `claude` 명령을 쓰며, 그 이름은 항상 사용자가 설치한 Claude Code로 남습니다. 바로가기 디렉터리는 `PATH` 뒤에 추가합니다. Proxy가 꺼져 있으면 계정별 바로가기는 선택한 홈의 원래 Claude Code로 그대로 통과합니다.
 
 ### 4. 첫 Claude Code 요청 보내기
 

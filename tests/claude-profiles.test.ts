@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { addClaudeProfile, buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv, ensureClaudeProfiles, managedClaudeProfiles, mergeClaudeProfileHeader, removeClaudeProfileHeader, renameClaudeProfile, resolveClaudeProfile } from "../src/claude-profiles";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { addClaudeProfile, buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv, derivedClaudeHomeForShortcut, ensureClaudeProfiles, managedClaudeProfiles, mergeClaudeProfileHeader, removeClaudeProfile, removeClaudeProfileHeader, renameClaudeProfile, resolveClaudeProfile, validateClaudeShortcutInput } from "../src/claude-profiles";
 import type { FrogConfig } from "../src/types";
 
 function baseConfig(): FrogConfig {
@@ -13,6 +15,15 @@ function baseConfig(): FrogConfig {
 }
 
 describe("Claude Code homes", () => {
+  test("validates command-friendly account names and derives an isolated home", () => {
+    expect(validateClaudeShortcutInput("work-2")).toBe("work-2");
+    expect(derivedClaudeHomeForShortcut("work")).toBe(join(homedir(), ".claude-work"));
+
+    for (const invalid of ["업무", "Work", "two words", "-work", "work-", "work_2", "claude", "default", "profile"]) {
+      expect(() => validateClaudeShortcutInput(invalid)).toThrow();
+    }
+  });
+
   test("adds user-named homes with stable ids and rename preserves id", () => {
     const config = baseConfig();
     const profile = addClaudeProfile(config, { id: "cp_work", name: "업무용", claudeHome: "/tmp/.claude-work" });
@@ -35,6 +46,17 @@ describe("Claude Code homes", () => {
     addClaudeProfile(config, { id: "cp_work", name: "업무", claudeHome: "/tmp/.claude-work" });
 
     expect(managedClaudeProfiles(config).map(p => p.id).sort()).toEqual(["cp_default", "cp_work"]);
+  });
+
+  test("does not promote an isolated account to the native claude default", () => {
+    const config = baseConfig();
+    const profiles = ensureClaudeProfiles(config);
+    const defaultId = profiles.defaultProfileId;
+    addClaudeProfile(config, { id: "cp_work", name: "work", claudeHome: "/tmp/.claude-work" });
+
+    expect(() => removeClaudeProfile(config, defaultId)).toThrow(/default Claude Code home/);
+    expect(config.claudeProfiles?.defaultProfileId).toBe(defaultId);
+    expect(config.claudeProfiles?.profiles.map(profile => profile.id)).toContain(defaultId);
   });
 
   test("profile header merge replaces only frogp profile header and preserves user headers", () => {
