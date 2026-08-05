@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { CLAUDE_HOME_CONFLICT_EXIT_CODE, assertRealClaudeExecutable, claudeLauncherFileName, detectClaudeHomeConflict, findRealClaudeExecutable, isManagedClaudeProfileLauncher, plannedClaudeLaunchers, profileForLauncherName, removeClaudeLauncherShims, runClaudeProfile, runNativeClaude, syncClaudeLauncherShims } from "../src/claude-launchers";
+import { CLAUDE_HOME_CONFLICT_EXIT_CODE, assertRealClaudeExecutable, claudeLauncherFileName, detectClaudeHomeConflict, findRealClaudeExecutable, isExactManagedClaudeLauncher, isManagedClaudeProfileLauncher, plannedClaudeLaunchers, profileForLauncherName, removeClaudeLauncherShims, runClaudeProfile, runNativeClaude, syncClaudeLauncherShims } from "../src/claude-launchers";
 import type { RunClaudeProfileOptions } from "../src/claude-launchers";
 import type { ClaudeProfileRecord, FrogConfig } from "../src/types";
 
@@ -66,6 +66,70 @@ describe("Claude launchers", () => {
       "claude-personal",
     ]);
     expect(plan.launchers.map(entry => entry.name)).not.toContain("claude");
+  });
+
+  test("leaves a fresh config untouched when no original Claude executable resolves", () => {
+    const home = mkdtempSync(join(tmpdir(), "frog-fresh-unresolved-launchers-"));
+    const frogHome = join(home, "frog");
+    process.env.FROGPROGSY_HOME = frogHome;
+    process.env.PATH = join(home, "empty-bin");
+    delete process.env.FROGP_REAL_CLAUDE;
+
+    try {
+      const result = syncClaudeLauncherShims(config());
+
+      expect(result.realClaudeResolved).toBe(false);
+      expect(result.launchers).toEqual([]);
+      expect(result.warnings).toContain(
+        "the original Claude Code executable was not found, so no account shortcut was generated; install Claude Code and run frogp refresh",
+      );
+      expect(existsSync(join(frogHome, "bin"))).toBe(false);
+      expect(existsSync(join(frogHome, "claude-launchers.json"))).toBe(false);
+      expect(existsSync(frogHome)).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("preserves user files and symlinks that occupy planned shortcut paths", () => {
+    const home = mkdtempSync(join(tmpdir(), "frog-user-owned-shortcuts-"));
+    const frogHome = join(home, "frog");
+    const binDir = join(frogHome, "bin");
+    const realClaude = join(home, CLAUDE_EXE);
+    const regularTarget = join(binDir, claudeLauncherFileName("claude-personal"));
+    const symlinkTarget = join(binDir, claudeLauncherFileName("claude-anthropic-work"));
+    const symlinkDestination = join(home, "user-symlink-destination");
+    const regularContent = process.platform === "win32" ? "@echo off\r\necho user regular\r\n" : "#!/bin/sh\necho user regular\n";
+    const symlinkContent = process.platform === "win32" ? "@echo off\r\necho user symlink\r\n" : "#!/bin/sh\necho user symlink\n";
+    mkdirSync(binDir, { recursive: true });
+    executable(realClaude);
+    writeFileSync(regularTarget, regularContent, "utf8");
+    chmodSync(regularTarget, 0o744);
+    writeFileSync(symlinkDestination, symlinkContent, "utf8");
+    chmodSync(symlinkDestination, 0o711);
+    symlinkSync(symlinkDestination, symlinkTarget, "file");
+    process.env.FROGPROGSY_HOME = frogHome;
+    const originalRegularMode = statSync(regularTarget).mode;
+    const originalSymlinkMode = lstatSync(symlinkTarget).mode;
+    const originalDestinationMode = statSync(symlinkDestination).mode;
+
+    try {
+      const result = syncClaudeLauncherShims(config(), { realClaude });
+
+      expect(readFileSync(regularTarget, "utf8")).toBe(regularContent);
+      expect(statSync(regularTarget).mode).toBe(originalRegularMode);
+      expect(lstatSync(symlinkTarget).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(symlinkTarget)).toBe(symlinkDestination);
+      expect(lstatSync(symlinkTarget).mode).toBe(originalSymlinkMode);
+      expect(readFileSync(symlinkDestination, "utf8")).toBe(symlinkContent);
+      expect(statSync(symlinkDestination).mode).toBe(originalDestinationMode);
+      expect(result.launchers).toEqual([]);
+      expect(result.warnings.filter(warning =>
+        warning.includes("Move or remove it, then run frogp refresh"),
+      )).toHaveLength(2);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("writes managed shims with a pinned frogp command and the real Claude binary", () => {
@@ -135,6 +199,8 @@ describe("Claude launchers", () => {
 
     expect(isManagedClaudeProfileLauncher(personal, "cp_personal")).toBe(true);
     expect(isManagedClaudeProfileLauncher(personal, "cp_work")).toBe(false);
+    expect(isExactManagedClaudeLauncher(personal, "cp_personal")).toBe(true);
+    expect(isExactManagedClaudeLauncher(personal, "cp_work")).toBe(false);
 
     const removed = removeClaudeLauncherShims();
     expect(removed.removed).toContain("claude-personal");
@@ -157,6 +223,9 @@ describe("Claude launchers", () => {
       expect(isManagedClaudeProfileLauncher(symlink, "cp_personal")).toBe(false);
       expect(isManagedClaudeProfileLauncher(hardlinkTarget, "cp_personal")).toBe(false);
       expect(isManagedClaudeProfileLauncher(hardlink, "cp_personal")).toBe(false);
+      expect(isExactManagedClaudeLauncher(symlink, "cp_personal")).toBe(false);
+      expect(isExactManagedClaudeLauncher(hardlinkTarget, "cp_personal")).toBe(false);
+      expect(isExactManagedClaudeLauncher(hardlink, "cp_personal")).toBe(false);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -192,7 +261,7 @@ describe("Claude launchers", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  test("cleans legacy plain launchers when native Claude is missing and reports only exact-owned survivors", () => {
+  test("cleans stale managed launchers when native Claude is missing and reports only exact-owned survivors", () => {
     const home = mkdtempSync(join(tmpdir(), "frog-unresolved-launcher-cleanup-"));
     const frogHome = join(home, "frog");
     const binDir = join(frogHome, "bin");
@@ -203,6 +272,7 @@ describe("Claude launchers", () => {
     const workTarget = join(binDir, claudeLauncherFileName(workEntry.name));
     const personalTarget = join(binDir, claudeLauncherFileName(personalEntry.name));
     const plainTarget = join(binDir, claudeLauncherFileName("claude"));
+    const staleAliasTarget = join(binDir, claudeLauncherFileName("claude-anthropic-work-old"));
     const userBytes = "#!/bin/sh\n# user-owned\n";
     mkdirSync(binDir, { recursive: true });
     process.env.FROGPROGSY_HOME = frogHome;
@@ -217,6 +287,7 @@ describe("Claude launchers", () => {
     );
     writeFileSync(personalTarget, userBytes, "utf8");
     writeFileSync(plainTarget, "# Generated by frogprogsy\n", "utf8");
+    writeFileSync(staleAliasTarget, "# Generated by frogprogsy\n", "utf8");
     writeFileSync(join(frogHome, "claude-launchers.json"), JSON.stringify({
       schemaVersion: 1,
       generatedAt: new Date(0).toISOString(),
@@ -235,12 +306,40 @@ describe("Claude launchers", () => {
 
       expect(result.realClaudeResolved).toBe(false);
       expect(result.removed).toContain("claude");
+      expect(result.removed).toContain("claude-anthropic-work-old");
       expect(result.launchers).toEqual([workEntry]);
       expect(result.warnings).toContainEqual(expect.stringContaining("install Claude Code"));
       expect(manifest.launchers).toEqual([workEntry]);
       expect(existsSync(plainTarget)).toBe(false);
+      expect(existsSync(staleAliasTarget)).toBe(false);
       expect(readFileSync(workTarget, "utf8")).toContain(workEntry.profileId);
       expect(readFileSync(personalTarget, "utf8")).toBe(userBytes);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("rebuilds a missing manifest from an exact-owned launcher when native Claude is missing", () => {
+    const home = mkdtempSync(join(tmpdir(), "frog-rebuild-launcher-manifest-"));
+    const frogHome = join(home, "frog");
+    const binDir = join(frogHome, "bin");
+    const target = join(binDir, claudeLauncherFileName("claude-personal"));
+    mkdirSync(binDir, { recursive: true });
+    process.env.FROGPROGSY_HOME = frogHome;
+    process.env.PATH = "";
+    delete process.env.FROGP_REAL_CLAUDE;
+    writeFileSync(target, managedLauncherBytes("cp_personal"), "utf8");
+
+    try {
+      const result = syncClaudeLauncherShims(config());
+      const manifest = JSON.parse(readFileSync(join(frogHome, "claude-launchers.json"), "utf8")) as {
+        launchers: Array<{ profileId: string }>;
+      };
+
+      expect(result.realClaudeResolved).toBe(false);
+      expect(result.launchers).toContainEqual(expect.objectContaining({ profileId: "cp_personal" }));
+      expect(manifest.launchers).toContainEqual(expect.objectContaining({ profileId: "cp_personal" }));
+      expect(readFileSync(target, "utf8")).toBe(managedLauncherBytes("cp_personal"));
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

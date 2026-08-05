@@ -1061,8 +1061,7 @@ function recoverLauncherRemovals(
 }
 
 export function isManagedClaudeProfileLauncher(path: string, profileId: string): boolean {
-  const ownership = classifyLauncherTarget(path);
-  return ownership.kind === "managed" && managedContentMatchesProfile(ownership.content, profileId);
+  return isExactManagedClaudeLauncher(path, profileId);
 }
 
 function readManifest(): ClaudeLauncherManifest | null {
@@ -1076,6 +1075,12 @@ function launcherTargetPaths(binDir: string, name: string): string[] {
   const nativeTarget = join(binDir, claudeLauncherFileName(name));
   if (process.platform !== "win32") return [nativeTarget];
   return [nativeTarget, join(binDir, name)];
+}
+
+/** True only for a safely classified frogprogsy-managed launcher that embeds this exact profile id. */
+export function isExactManagedClaudeLauncher(target: string, profileId: string): boolean {
+  const ownership = classifyLauncherTarget(target);
+  return ownership.kind === "managed" && managedContentMatchesProfile(ownership.content, profileId);
 }
 
 function removeManagedLauncherFile(
@@ -1148,11 +1153,30 @@ function removeManagedLauncherFile(
   return outcome.removed;
 }
 
+function hasManagedLauncherFile(binDir: string): boolean {
+  let entries: string[];
+  try {
+    entries = readdirSync(binDir);
+  } catch {
+    return false;
+  }
+  return entries.some(fileName => {
+    const logicalName = process.platform === "win32" && fileName.endsWith(".cmd")
+      ? fileName.slice(0, -4)
+      : fileName;
+    if (!(logicalName === "claude" || SHORTCUT_NAME_PATTERN.test(logicalName))) return false;
+    const ownership = classifyLauncherTarget(join(binDir, fileName));
+    return ownership.kind === "managed"
+      || ownership.kind === "unsafe-managed"
+      || ownership.kind === "unsafe-managed-size";
+  });
+}
+
 /**
- * Remove marked launchers that no longer appear in the plan, even when the manifest is missing or corrupt.
- * The file's managed marker — not the manifest — is the deletion authority, so an unmarked user file with
- * the same name is preserved. This also removes legacy non-plain aliases after the one-shortcut-per-profile
- * migration and the platform's old extensionless Windows form.
+ * Remove marked launchers whose logical names no longer appear in the current plan, even when the
+ * manifest is missing or corrupt. The classifier — not the manifest — is the deletion authority, so
+ * unmarked user files and unsafe managed inodes are preserved. Same-name launchers are validated
+ * against the exact profile separately before they are reported or rewritten.
  */
 function removeOrphanManagedLaunchers(
   binDir: string,
@@ -1268,10 +1292,32 @@ export function syncClaudeLauncherShims(
   config: FrogConfig,
   options: ClaudeLauncherSyncOptions = {},
 ): ClaudeLauncherSyncResult {
-  const configDir = ensureConfigDirForWrite("sync Claude launcher shims");
-  const { binDir, identity: binIdentity } = prepareLauncherDirectory(configDir);
+  const configDir = getConfigDir();
+  const binDir = join(configDir, "bin");
   const frogpCommand = options.frogpCommand ?? currentFrogpCommand();
   const plan = plannedClaudeLaunchers(config);
+  const previous = readManifest();
+  const realClaude = options.realClaude ?? findRealClaudeExecutableOrNull([binDir]);
+
+  // Missing Claude on a fresh installation is an inspection result, not a reason to create config,
+  // launcher, or manifest files. Existing managed state still proceeds through durable cleanup.
+  if (!realClaude
+    && previous === null
+    && !hasManagedLauncherFile(binDir)
+    && ownedRecoveryRoot(binDir, false) === null) {
+    return {
+      binDir,
+      realClaude: "claude",
+      realClaudeResolved: false,
+      frogpCommand,
+      launchers: [],
+      removed: [],
+      warnings: [...plan.warnings, REAL_CLAUDE_UNRESOLVED_WARNING],
+    };
+  }
+
+  ensureConfigDirForWrite("sync Claude launcher shims");
+  const { identity: binIdentity } = prepareLauncherDirectory(configDir);
   const warnings = [
     ...plan.warnings,
     ...recoverLauncherRemovals(
@@ -1298,11 +1344,9 @@ export function syncClaudeLauncherShims(
       ? "managed target has multiple hard links"
       : ownership.kind === "unsafe-managed-size"
         ? "managed target exceeds the safe update size"
-        : "target is not owned by frogprogsy";
+        : "target is not owned by frogprogsy. Move or remove it, then run frogp refresh";
     warnings.push(`launcher ${entry.name} skipped for ${entry.profileName}; ${reason}`);
   }
-
-  const previous = readManifest();
   const nextNames = new Set(plan.launchers.map(entry => entry.name));
   const removed: string[] = [];
 
@@ -1326,7 +1370,6 @@ export function syncClaudeLauncherShims(
     if (!removed.includes(orphan)) removed.push(orphan);
   }
 
-  const realClaude = options.realClaude ?? findRealClaudeExecutableOrNull([binDir]);
   if (!realClaude) {
     // A same-name launcher for another profile is not a valid survivor. Without a native executable
     // it cannot be rewritten, so remove it through the same journaled generated-only cleanup path.
@@ -1351,8 +1394,8 @@ export function syncClaudeLauncherShims(
       schemaVersion: 1,
       generatedAt: new Date().toISOString(),
       binDir,
-      realClaude: "claude",
-      frogpCommand,
+      realClaude: previous?.realClaude ?? "claude",
+      frogpCommand: previous?.frogpCommand ?? frogpCommand,
       launchers: surviving,
     };
     atomicWriteFile(manifestPath(), JSON.stringify(manifest, null, 2) + "\n");
@@ -1406,6 +1449,19 @@ export function syncClaudeLauncherShims(
   atomicWriteFile(manifestPath(), JSON.stringify(manifest, null, 2) + "\n");
   return { binDir, realClaude, realClaudeResolved: true, frogpCommand, launchers: installed, removed, warnings };
 }
+
+/**
+ * Best-effort sync outcome reported by the management API. `shortcutProfileIds` lists the profiles that
+ * actually own a generated shortcut, so a caller never has to infer that from `success` alone.
+ */
+export interface ClaudeLauncherSyncSummary {
+  success: boolean;
+  error?: string;
+  realClaudeResolved?: boolean;
+  warnings?: string[];
+  shortcutProfileIds?: string[];
+}
+
 
 export function removeClaudeLauncherShims(): { binDir: string; removed: string[] } {
   const binDir = claudeLauncherBinDir();

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, join, resolve, sep } from "node:path";
-import { claudeExecutableCandidates, claudeLauncherBinDir, claudeLauncherFileName, findRealClaudeExecutable, isClaudeExecutableBasename, plannedClaudeLaunchers } from "./claude-launchers";
+import { claudeExecutableCandidates, claudeLauncherBinDir, claudeLauncherFileName, findRealClaudeExecutableOrNull, isClaudeExecutableBasename, isExactManagedClaudeLauncher, plannedClaudeLaunchers } from "./claude-launchers";
 import { claudeGatewayModelsCachePath } from "./claude-paths";
 import { readClaudeGatewayState, type ClaudeGatewayState } from "./claude-settings";
 import { computeModelAliases } from "./model-aliases";
@@ -247,12 +247,12 @@ function rawClaudeReason(kind: RawClaudeKind): string {
   }
 }
 
+/**
+ * Diagnostics resolution of the original Claude executable. `path` is null when no safe candidate
+ * exists: doctor's whole purpose is to report that state, so it must not throw the way spawn paths do.
+ */
 export function resolveRealClaudeTarget(extraSkipDirs: string[] = []): RealClaudeResolution {
-  try {
-    return { command: "claude", path: findRealClaudeExecutable(extraSkipDirs) };
-  } catch {
-    return { command: "claude", path: null };
-  }
+  return { command: "claude", path: findRealClaudeExecutableOrNull(extraSkipDirs) };
 }
 
 export function inspectPlannedLaunchers(config: FrogConfig, options: { pathEnv?: string; launcherBinDir?: string; fs?: FileSystemProbe } = {}): LauncherDiagnostic[] {
@@ -269,7 +269,7 @@ export function inspectPlannedLaunchers(config: FrogConfig, options: { pathEnv?:
       profileName: entry.profileName,
       claudeHome: entry.claudeHome,
       path: launcherPath,
-      installed: fs.existsSync(launcherPath),
+      installed: isExactManagedClaudeLauncher(launcherPath, entry.profileId),
       onPath: first?.realPath === realpathMaybe(launcherPath, fs),
     };
   });
@@ -577,7 +577,7 @@ export function buildClaudeDoctorReport(config: FrogConfig, apiModels: ApiModelR
   const expectedAliases = modelSummary.expectedEnabledAliases.map(entry => entry.alias);
   const rawClaude = resolveRawClaudeOnPath({ pathEnv: options.pathEnv, fs });
   const realClaude = resolveRealClaudeTarget([claudeLauncherBinDir()]);
-  const realClaudeKind = realClaude.path === null
+  const realClaudeKind: RawClaudeKind = realClaude.path === null
     ? "missing"
     : classifyRawClaudePath(realClaude.path, realpathMaybe(realClaude.path, fs), claudeLauncherBinDir(), fs);
   const grants = inspectClaudeGrants(config, { realClaudeKind, fs, env: options.env, grantStatusInspector: options.grantStatusInspector });
