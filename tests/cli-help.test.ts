@@ -225,7 +225,7 @@ describe("CLI subcommand help", () => {
       });
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("supports zsh on POSIX only");
-      expect(result.stdout).toContain("export PATH=");
+      expect(result.stdout).toContain(process.platform === "win32" ? "$env:Path +=" : "export PATH=");
       expect(existsSync(join(userHome, ".zshrc"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });

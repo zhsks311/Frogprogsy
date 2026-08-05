@@ -11,6 +11,7 @@ const originalEnv = { ...process.env };
 
 /** Portable Claude executable fixture name: bare `claude` on POSIX, PATHEXT-suffixed on Windows. */
 const CLAUDE_EXE = process.platform === "win32" ? "claude.exe" : "claude";
+const testPathReplacementRace = process.platform === "win32" ? test.skip : test;
 
 beforeEach(() => {
   // Managed-launch tests must not inherit the Claude Code home of the test runner itself. Conflict
@@ -681,7 +682,7 @@ describe("Claude launchers", () => {
     }
   });
 
-  test("preserves an unmarked regular file atomically replacing a managed target before publish", () => {
+  testPathReplacementRace("preserves an unmarked regular file atomically replacing a managed target before publish", () => {
     const home = mkdtempSync(join(tmpdir(), "frog-publish-regular-race-"));
     const frogHome = join(home, "frog");
     const binDir = join(frogHome, "bin");
@@ -721,7 +722,7 @@ describe("Claude launchers", () => {
     }
   });
 
-  test("preserves a symlink atomically replacing a managed target before publish", () => {
+  testPathReplacementRace("preserves a symlink atomically replacing a managed target before publish", () => {
     const home = mkdtempSync(join(tmpdir(), "frog-publish-symlink-race-"));
     const frogHome = join(home, "frog");
     const binDir = join(frogHome, "bin");
@@ -945,7 +946,7 @@ describe("Claude launchers", () => {
     }
   });
 
-  test("does not publish into a launcher directory atomically replaced after classification", () => {
+  testPathReplacementRace("does not publish into a launcher directory atomically replaced after classification", () => {
     const home = mkdtempSync(join(tmpdir(), "frog-publish-bin-race-"));
     const frogHome = join(home, "frog");
     const binDir = join(frogHome, "bin");
@@ -1047,7 +1048,7 @@ describe("Claude launchers", () => {
       expect(readFileSync(target, "utf8")).toBe(originalBytes + userTail);
       expect(result.removed).not.toContain("claude-stale");
       expect(result.warnings).toContain(
-        "launcher claude-stale cleanup deferred; the changed target was restored; manual recovery/cleanup is required before removing the preserved capture",
+        `launcher ${claudeLauncherFileName("claude-stale")} cleanup deferred; the changed target was restored; manual recovery/cleanup is required before removing the preserved capture`,
       );
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -1297,7 +1298,7 @@ describe("Claude launchers", () => {
       expect(statSync(target).ino).not.toBe(statSync(capture).ino);
       expect(result.removed).not.toContain("claude-stale");
       expect(result.warnings).toContain(
-        "launcher claude-stale cleanup deferred; the changed target was restored; manual recovery/cleanup is required before removing the preserved capture",
+        `launcher ${claudeLauncherFileName("claude-stale")} cleanup deferred; the changed target was restored; manual recovery/cleanup is required before removing the preserved capture`,
       );
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -1348,9 +1349,9 @@ describe("Claude launchers", () => {
       expect(readFileSync(target, "utf8")).toBe(capturedUserBytes);
       expect(readFileSync(capture, "utf8")).toBe(capturedUserBytes);
       expect(result.removed).not.toContain("claude-stale");
-      expect(result.warnings).toContain("launcher claude-stale cleanup deferred; preserved recovery requires attention");
+      expect(result.warnings).toContain(`launcher ${claudeLauncherFileName("claude-stale")} cleanup deferred; preserved recovery requires attention`);
       expect(result.warnings).not.toContain(
-        "launcher claude-stale cleanup deferred; the changed target was restored; manual recovery/cleanup is required before removing the preserved capture",
+        `launcher ${claudeLauncherFileName("claude-stale")} cleanup deferred; the changed target was restored; manual recovery/cleanup is required before removing the preserved capture`,
       );
     } finally {
       rmSync(home, { recursive: true, force: true });

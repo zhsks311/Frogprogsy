@@ -846,11 +846,9 @@ function readRemovalManifest(
     if (manifest.schemaVersion === 2) {
       const expected = manifest.expected;
       if (!expected
-        || !Number.isSafeInteger(expected.dev)
-        || !Number.isSafeInteger(expected.ino)
+        || !Number.isInteger(expected.dev)
+        || !Number.isInteger(expected.ino)
         || !Number.isSafeInteger(expected.size)
-        || expected.dev < 0
-        || expected.ino < 0
         || expected.size < 0
         || typeof expected.sha256 !== "string"
         || !/^[0-9a-f]{64}$/.test(expected.sha256)) return null;
