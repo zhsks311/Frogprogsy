@@ -52,19 +52,25 @@ AI 서비스 추가, 기본 AI 서비스/모델 선택, 첫 `claude` 요청은 [
 
 저장소에는 컨테이너 서비스로 실행하기 위한 검증된 `Dockerfile`과 `docker-compose.yml`이 포함되어 있습니다.
 
+처음 시작하기 전에 충분히 긴 relay key를 `FROGP_LOCAL_ACCESS_KEY`로 내보내고 password manager나 container secret store에 보관하세요. Compose가 이 값을 entrypoint에 전달하면 hash만 저장하고 평문은 container log에 남기지 않습니다. Volume에 enabled key가 저장된 뒤에는 환경 변수 없이 다시 시작할 수 있습니다.
+
 ```bash
 docker compose up --build
 ```
 
 컨테이너는 FrogProgsy 상태를 `/config`에 쓰고, 이 경로는 `frogprogsy-config` 볼륨으로 보존됩니다. Entrypoint는 Docker 포트 공개가 프록시에 닿도록 `config.json`의 `hostname`을 `"0.0.0.0"`으로 준비하고, Compose 파일은 `FROGP_EXTERNAL_SUPERVISOR=1`을 설정해 crash 복구를 프로세스 내부 watchdog이 아니라 Docker가 맡게 합니다.
 
-기본 host 주소는 `http://localhost:3764`입니다. 컨테이너 포트는 그대로 두고 host 포트만 바꾸려면 다음처럼 실행하세요.
+기본 설정에서는 host의 `127.0.0.1`에만 `http://localhost:3764`를 공개합니다. 컨테이너 내부에서는 계속 `0.0.0.0`으로 수신하지만 LAN에서는 relay 포트에 직접 접근할 수 없습니다. 컨테이너 포트는 그대로 두고 host 포트만 바꾸려면 다음처럼 실행하세요.
 
 ```bash
 FROGP_HOST_PORT=3765 docker compose up --build
 ```
 
 Claude Code는 호스트에 열린 gateway를 보게 설정하세요. 예: `ANTHROPIC_BASE_URL=http://localhost:3764`.
+
+Local access key는 한 번 노출되면 다시 사용할 수 있는 bearer secret이므로 평문 HTTP로 원격 전송하면 안 됩니다. 다른 머신에서 접속해야 한다면 loopback 전용 port mapping을 유지하고 host의 TLS reverse proxy를 앞에 두세요. Relay 포트를 loopback이 아닌 interface에 HTTP로 직접 공개하지 마세요.
+
+Client는 relay key를 `x-frogp-local-key`로 보내는 방식을 기본으로 사용하세요. `forward` provider가 실제 upstream credential을 `Authorization`이나 `x-api-key`로 보낸다면 해당 값을 그대로 유지하고, 그 header를 relay key 용도로 겸용하지 마세요.
 
 ## 처음 설치할 때는 넘겨도 되는 것
 

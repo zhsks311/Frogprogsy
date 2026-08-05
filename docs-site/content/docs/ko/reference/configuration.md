@@ -30,6 +30,7 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 | --- | --- | --- | --- |
 | `port` | `number` | `10100` | Local relay listen port |
 | `hostname` | `string` | `"127.0.0.1"` | Bind hostname. `0.0.0.0`은 모든 interface에 노출하므로 명시적으로만 사용합니다. |
+| `localAccess` | object | — | Relay access key 설정. `{ enabled, keys }`이며 각 key는 `id`, `secretHash`(`sha256:<hex>`), 선택 `label`과 `requestLimit`을 가집니다. [Relay access keys](#relay-access-keys) 참고. |
 | `providers` | object | fallback provider | Named provider lanes. key가 route prefix가 됩니다. |
 | `defaultProvider` | `string` | `"anthropic"` | 모델 id에 provider prefix가 없을 때 쓰는 routing fallback lane |
 | `subagentModels` | `string[]` | default GPT native list | Claude Code subagent picker 앞쪽에 먼저 보여줄 최대 5개 routed/native model id |
@@ -43,6 +44,35 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 | `modelMixing` | object | — | `frogp/mix` 별칭 뒤의 모델 섞어 쓰기(route/fusion/pipeline). `enabled: true` 전에는 비활성. [Model mixing fields](#model-mixing-fields) 참고. |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field; Claude Messages data plane은 HTTP/SSE 사용 |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op; Claude Code history는 건드리지 않음 |
+
+## Relay access keys
+
+`localAccess`는 relay의 요청 단위 인증입니다. `enabled`가 `true`이면 모든 `/api/*`, `/v1/*`, `/usage` 요청이 설정된 key를 제시해야 하고, `/healthz`와 dashboard asset은 그대로 열려 있습니다.
+
+- Relay key는 전용 `x-frogp-local-key` header로 보내는 방식을 기본으로 사용합니다. 호환 client를 위해 `x-api-key`와 `Authorization: Bearer <key>`도 허용하지만, `forward` provider는 이 두 자리에 실제 upstream credential을 넣습니다. 해당 credential을 relay key로 바꾸지 마세요.
+- config에는 key의 `sha256:<hex>`만 저장됩니다. 평문은 `frogp local-key add`가 생성할 때 한 번만 출력되고 이후에는 복구할 수 없습니다.
+- `requestLimit`은 relay process에서 적용되는 key별 sliding window이며, 한도를 넘으면 `Retry-After`와 함께 `429`를 반환합니다.
+- 제시된 key는 upstream으로 전달되지 않으므로, `forward` lane은 실제 호출자 provider credential만 계속 전달합니다.
+- 같은 머신의 도구는 key가 필요하지 않습니다. 실행 중인 relay가 시작마다 `~/.frogprogsy/local-access.token`(mode `0600`)에 token을 쓰고, `frogp models` / `frogp doctor claude`가 그것을 전송합니다. 이 token은 config에 저장되지 않으며 재시작 후에는 남지 않습니다.
+- Loopback이 아닌 `hostname`은 최소 한 개의 key를 요구합니다. Docker를 처음 시작할 때 container environment 또는 secret 설정으로 `FROGP_LOCAL_ACCESS_KEY`를 전달하세요. Entrypoint는 hash만 저장하고 평문을 출력하지 않습니다. Enabled key가 저장된 volume은 이후 환경 변수 없이 다시 시작할 수 있습니다.
+- key별 `providers`/`models` scope는 아직 적용되지 않습니다. 이를 선언한 key는 조용히 무시되지 않고 시작 시 거부됩니다.
+
+```json
+{
+  "hostname": "0.0.0.0",
+  "localAccess": {
+    "enabled": true,
+    "keys": [
+      {
+        "id": "lk_9f2c41ab",
+        "label": "laptop",
+        "secretHash": "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+        "requestLimit": { "windowSec": 60, "maxRequests": 120 }
+      }
+    ]
+  }
+}
+```
 
 ## Provider lane fields
 

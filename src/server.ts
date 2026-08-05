@@ -11,7 +11,7 @@ import { bridgeToMessagesSSE, buildMessageJSON, formatAnthropicErrorResponse } f
 import { classifyError, parseUpstreamErrorDetails, type UpstreamErrorDetails } from "./errors";
 import { safeResponseHeaders, type WsData } from "./ws-bridge";
 import type { ServerWebSocket } from "bun";
-import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, loadConfig, readActivePort, readPid, saveConfig, websocketsEnabled } from "./config";
+import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, loadConfig, readActivePort, readPid, saveConfig, websocketsEnabled, writeLocalAccessToken } from "./config";
 import { parseRequest } from "./responses/parser";
 import { estimateMessagesInputTokens, parseMessagesRequest, buildResponsesBody } from "./messages/parser";
 import { materializeModelAliases, type ModelAliasEntry } from "./model-aliases";
@@ -28,6 +28,7 @@ import {
   listOAuthProviders, reconcileOAuthProviders, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
 } from "./oauth/index";
 import { isAllowedClaudeGrantBaseUrl, resolveProviderAuth } from "./provider-auth";
+import { authorizeLocalAccess, generateLocalAccessSecret, isLocalAccessEnabled, isLocalAccessSecret, LOCAL_ACCESS_HEADER, localAccessConfigIssue, registerLocalAccessKeys, setRuntimeAccessToken, type LocalAccessDenied } from "./local-access";
 import { applyProviderConfigHints, type CatalogModel } from "./claude-catalog";
 import { getJawcodeModelMetadata } from "./generated/jawcode-model-metadata";
 import type { ClaudeCodeCatalogRefreshResult, ClaudeCodeGatewayModelsCacheSyncResult } from "./claude-refresh";
@@ -1249,7 +1250,8 @@ function hasForwardedAuthHeader(headers: Record<string, string>): boolean {
   const lower = new Map(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
   return ["authorization", "x-api-key", "api-key", "chatgpt-account-id"].some(key => {
     const value = lower.get(key)?.trim();
-    return !!value && value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
+    if (!value || isLocalAccessSecret(value)) return false;
+    return value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
   });
 }
 
@@ -2124,18 +2126,46 @@ export function sanitizeRelayedHeaders(upstream: Headers): Headers {
 
 let _corsOrigin = `http://localhost:${DEFAULT_PORT}`;
 function setCorsOrigin(port: number): void { _corsOrigin = `http://localhost:${port}`; }
-function corsHeaders(): Record<string, string> {
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin");
+  let allowedOrigin = _corsOrigin;
+  if (origin) {
+    try {
+      if (isLoopbackHostname(new URL(origin).hostname)) allowedOrigin = origin;
+    } catch {
+      // Keep the configured relay origin for malformed and opaque origins.
+    }
+  }
   return {
-    "Access-Control-Allow-Origin": _corsOrigin,
+    "Access-Control-Allow-Origin": allowedOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": `Content-Type, Authorization, X-API-Key, ${LOCAL_ACCESS_HEADER}`,
+    "Access-Control-Expose-Headers": "Retry-After",
   };
+}
+
+function withCors(req: Request, response: Response): Response {
+  const responseHeaders = new Headers(response.headers);
+  for (const [name, value] of Object.entries(corsHeaders(req))) responseHeaders.set(name, value);
+
+  const vary = responseHeaders.get("Vary");
+  if (!vary) {
+    responseHeaders.set("Vary", "Origin");
+  } else if (vary !== "*" && !vary.split(",").some(value => value.trim().toLowerCase() === "origin")) {
+    responseHeaders.set("Vary", `${vary}, Origin`);
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: responseHeaders,
+  });
 }
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders() },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
@@ -2144,14 +2174,79 @@ function isLoopbackHostname(hostname: string): boolean {
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
 }
 
-function isLocalOrigin(req: Request): boolean {
+/** True for the loopback interface, including IPv4-mapped IPv6 peers. `undefined` means an in-process
+ *  call (no socket), which is loopback by construction. */
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (address === undefined) return true;
+  const normalized = address.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/^::ffff:/, "");
+  if (normalized === "::1" || normalized === "localhost") return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized);
+}
+
+/**
+ * Local-only guard for management/state-changing requests.
+ *
+ * A browser Origin must be loopback. A missing Origin (non-browser client) requires BOTH a loopback
+ * peer socket and a loopback request Host: the host in `req.url` comes from the client-supplied Host
+ * header, so on its own it proves nothing about where the request came from.
+ */
+function isLocalRequest(req: Request, clientAddress?: string): boolean {
   const origin = req.headers.get("Origin");
   try {
-    const url = new URL(origin || req.url);
-    return isLoopbackHostname(url.hostname);
+    if (!origin) return isLoopbackAddress(clientAddress) && isLoopbackHostname(new URL(req.url).hostname);
+    return isLoopbackHostname(new URL(origin).hostname);
   } catch {
     return false;
   }
+}
+
+/**
+ * Browser-CSRF-only guard for the data plane: a real Origin must be loopback, and a request without
+ * an Origin is admitted. A deliberately exposed bind (Docker port publishing) relays for non-browser
+ * clients that never send one, so the peer address is intentionally not required here.
+ */
+function isLocalOrigin(req: Request): boolean {
+  const origin = req.headers.get("Origin");
+  if (!origin) return true;
+  try {
+    return isLoopbackHostname(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reject a request whose Host is not the loopback interface the relay is bound to, so a page on a
+ * hostname that resolves to 127.0.0.1 (DNS rebinding) cannot read the management API same-origin.
+ * A deliberate non-loopback bind is reachable under many legitimate Hosts, so the check applies only
+ * to loopback binds.
+ */
+function isAllowedRequestHost(req: Request, bindHostname: string): boolean {
+  if (!isLoopbackHostname(bindHostname)) return true;
+  try {
+    return isLoopbackHostname(new URL(req.url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Deny an unauthenticated relay request without hinting whether the presented key exists. */
+function localAccessDenialResponse(decision: LocalAccessDenied, pathname: string): Response {
+  const formatResponse = pathname === "/v1/messages"
+    || pathname === "/v1/messages/count_tokens"
+    || pathname === "/v1/models"
+    ? formatAnthropicErrorResponse
+    : formatErrorResponse;
+  if (decision.reason === "rate_limited") {
+    const response = formatResponse(429, "rate_limit_error", "local access key request limit exceeded");
+    if (decision.retryAfterSec !== undefined) response.headers.set("Retry-After", String(decision.retryAfterSec));
+    return response;
+  }
+  return formatResponse(
+    401,
+    "authentication_error",
+    `a valid local access key is required; send it as ${LOCAL_ACCESS_HEADER}, x-api-key, or Authorization: Bearer`,
+  );
 }
 
 interface ManagementAPIDeps {
@@ -2162,6 +2257,8 @@ interface ManagementAPIDeps {
   syncClaudeLaunchers?: (config: FrogConfig) => ClaudeLauncherSyncOutcome;
   /** Branch-B claude-grant management fixtures (keep the API off real network/Keychain/native homes in tests). */
   claudeGrants?: ClaudeGrantManagementDeps;
+  /** Peer address of the request socket. Omitted for in-process calls (tests, direct invocation). */
+  clientAddress?: string;
 }
 
 // ── Branch-B claude-grant management API: metadata / lifecycle / provider binding (fail-closed) ──
@@ -2481,6 +2578,9 @@ const ANTHROPIC_PROFILE_MODELS_CACHE_PREFIX = "anthropic-profile";
 function isRealForwardAuthValue(value: string | undefined | null): boolean {
   const trimmed = value?.trim();
   if (!trimmed) return false;
+  // A relay-local access key authenticates the caller against THIS relay; relaying it upstream as the
+  // caller's provider credential would leak it and fail there anyway.
+  if (isLocalAccessSecret(trimmed)) return false;
   return trimmed !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(trimmed);
 }
 
@@ -2666,7 +2766,7 @@ function noteClaudeProfileRequest(config: FrogConfig, profileId: string | undefi
 
 
 async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, deps: ManagementAPIDeps = {}): Promise<Response | null> {
-  if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && !isLocalOrigin(req)) {
+  if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && !isLocalRequest(req, deps.clientAddress)) {
     return jsonResponse({ error: "cross-origin request blocked" }, 403);
   }
   const persistConfig = deps.saveConfig ?? saveConfig;
@@ -2835,7 +2935,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     }
   }
 
-  if (url.pathname.startsWith("/api/claude-projects") && !isLocalOrigin(req)) {
+  if (url.pathname.startsWith("/api/claude-projects") && !isLocalRequest(req, deps.clientAddress)) {
     return jsonResponse({ error: "cross-origin request blocked" }, 403);
   }
 
@@ -3235,7 +3335,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
   }
 
   // ── Branch-B claude-grant management API (local-origin only; fail-closed; no credential/path leaks) ──
-  if (url.pathname.startsWith("/api/claude-grants") && !isLocalOrigin(req)) {
+  if (url.pathname.startsWith("/api/claude-grants") && !isLocalRequest(req, deps.clientAddress)) {
     return jsonResponse({ error: "cross-origin request blocked" }, 403);
   }
 
@@ -4009,23 +4109,54 @@ export function startServer(port?: number) {
   }
   const listenPort = port ?? config.port ?? DEFAULT_PORT;
   setCorsOrigin(listenPort);
+  const bindHostname = config.hostname ?? "127.0.0.1";
+  // Trust is per request, not per network position: a bind reachable from outside this machine must
+  // authenticate every relay request, and an enabled key list that cannot authenticate anything must
+  // not come up at all.
+  const localAccessEnabled = isLocalAccessEnabled(config);
+  let runtimeToken: string | undefined;
+  if (localAccessEnabled) {
+    const issue = localAccessConfigIssue(config);
+    if (issue) throw new Error(`Invalid localAccess (${issue}). Fix ${getConfigPath()}.`);
+    registerLocalAccessKeys(config);
+    // Generate now, but do not publish it until this process has successfully bound the relay.
+    runtimeToken = generateLocalAccessSecret();
+  } else if (!isLoopbackHostname(bindHostname)) {
+    throw new Error(
+      `Refusing to bind ${bindHostname} without request authentication: every client that can reach this ` +
+      `address could use the configured provider credentials. Run "frogp local-key add <label>" to enable ` +
+      `localAccess, or set hostname to 127.0.0.1 in ${getConfigPath()}.`,
+    );
+  }
 
   const server = Bun.serve<WsData>({
     port: listenPort,
-    hostname: config.hostname ?? "127.0.0.1",
+    hostname: bindHostname,
     idleTimeout: 255,
-    async fetch(req) {
+    async fetch(req, srv) {
+      const response = await (async () => {
       const url = new URL(req.url);
+      const clientAddress = srv.requestIP(req)?.address;
 
       if (req.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: corsHeaders() });
+        return new Response(null, { status: 204 });
+      }
+
+      const guardedPath = url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/") || url.pathname === "/usage";
+      if (guardedPath && !isAllowedRequestHost(req, bindHostname)) {
+        return formatErrorResponse(403, "origin_rejected", "request Host is not the loopback interface this relay is bound to");
+      }
+
+      if (guardedPath && localAccessEnabled) {
+        const decision = authorizeLocalAccess(config, req.headers);
+        if (!decision.ok) return localAccessDenialResponse(decision, url.pathname);
       }
 
       // Responses WebSocket is a Codex/OpenAI Responses-only behavior and is retired for the
       // Claude Messages data plane. Keep the old path explicit instead of silently inventing a
       // Claude Code WebSocket equivalent.
       if (url.pathname === "/v1/responses" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-        if (!isLocalOrigin(req)) {
+        if (!isLocalRequest(req, clientAddress)) {
           return formatErrorResponse(403, "origin_rejected", "WebSocket upgrade blocked: non-local Origin");
         }
         return formatErrorResponse(410, "unsupported_endpoint", "Responses WebSocket is retired; use POST /v1/messages streaming SSE.");
@@ -4036,7 +4167,7 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname.startsWith("/api/")) {
-        const mgmtResponse = await handleManagementAPI(req, url, config);
+        const mgmtResponse = await handleManagementAPI(req, url, config, { clientAddress });
         return mgmtResponse ?? jsonResponse({ error: `Unknown API endpoint: ${req.method} ${url.pathname}` }, 404);
       }
 
@@ -4118,6 +4249,8 @@ export function startServer(port?: number) {
       if (guiFile) return guiFile;
 
       return formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`);
+      })();
+      return withCors(req, response);
     },
     websocket: {
       message(ws: ServerWebSocket<WsData>) {
@@ -4129,6 +4262,16 @@ export function startServer(port?: number) {
       },
     },
   });
+
+  if (runtimeToken) {
+    try {
+      writeLocalAccessToken(runtimeToken);
+      setRuntimeAccessToken(runtimeToken);
+    } catch (error) {
+      server.stop(true);
+      throw new Error(`Could not write the same-machine relay token: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   console.log(`🚀 frogprogsy proxy running on http://localhost:${listenPort}`);
   console.log(`   POST /v1/messages  → provider translation`);

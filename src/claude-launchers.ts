@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { accessSync, closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, readSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, ftruncateSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, readSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { DEFAULT_PORT, atomicWriteFile, ensureConfigDirForWrite, getConfigDir, readActivePort, readPid } from "./config";
-import { buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv, managedClaudeProfiles, resolveClaudeProfile } from "./claude-profiles";
+import { DEFAULT_PORT, atomicWriteFile, ensureConfigDirForWrite, getConfigDir, getConfigPath, loadConfig, readActivePort, readLocalAccessToken, readPid } from "./config";
+import { buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv, ensureClaudeProfiles, managedClaudeProfiles, resolveClaudeProfile } from "./claude-profiles";
 import type { ClaudeProfileRecord, FrogConfig } from "./types";
 
 export interface ClaudeLauncherEntry {
@@ -1684,7 +1684,8 @@ export async function runClaudeProfile(
     // Sync this profile's picker cache before the real Claude process starts, then launch.
     await refreshManagedProfileCatalog(config, profile, options.refreshCatalog);
     const carrier = config.gatewayAuthCarrier ?? "token-free";
-    env = buildClaudeProfileRunEnv(profile, readActivePort() ?? config.port ?? DEFAULT_PORT, carrier);
+    const runtimeAccessToken = config.localAccess?.enabled === true ? readLocalAccessToken() ?? undefined : undefined;
+    env = buildClaudeProfileRunEnv(profile, readActivePort() ?? config.port ?? DEFAULT_PORT, carrier, process.env, runtimeAccessToken);
   } else {
     env = buildClaudeProfileNativeEnv(profile);
   }

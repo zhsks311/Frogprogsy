@@ -4,6 +4,7 @@ import { loadConfig, readPid, saveConfig } from "../config";
 import { OAUTH_PROVIDERS, runLogin } from "./index";
 import { KEY_LOGIN_PROVIDERS, isKeyLoginProvider, validateApiKey, type KeyLoginProvider } from "./key-providers";
 import { suggestClosest } from "../cli-suggest";
+import { sameMachineAccessHeaders } from "../local-access";
 import type { FrogModelCapabilities, FrogProviderConfig } from "../types";
 
 /** Push the new provider into a running proxy's live config so it routes without a restart. */
@@ -11,11 +12,14 @@ async function notifyRunningProxy(name: string, provider: unknown): Promise<void
   if (!readPid()) return;
   const cfg = loadConfig();
   try {
-    await fetch(`http://localhost:${cfg.port}/api/providers`, {
+    const res = await fetch(`http://localhost:${cfg.port}/api/providers`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...sameMachineAccessHeaders() },
       body: JSON.stringify({ name, provider }),
     });
+    if (!res.ok) {
+      console.error(`⚠️  The running proxy rejected the live update (HTTP ${res.status}). Restart it to route ${name}: frogp refresh`);
+    }
   } catch {
     /* proxy unreachable; disk config loads on next start */
   }

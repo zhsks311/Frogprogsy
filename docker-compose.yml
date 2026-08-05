@@ -8,8 +8,9 @@ services:
       FROGPROGSY_HOME: /config
       FROGP_EXTERNAL_SUPERVISOR: "1"
       FROGP_DOCKER_BIND_HOSTNAME: 0.0.0.0
+      FROGP_LOCAL_ACCESS_KEY: "${FROGP_LOCAL_ACCESS_KEY:-}"
     ports:
-      - "${FROGP_HOST_PORT:-3764}:3764"
+      - "127.0.0.1:${FROGP_HOST_PORT:-3764}:3764"
     volumes:
       - frogprogsy-config:/config
     restart: unless-stopped

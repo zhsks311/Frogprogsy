@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { CLAUDE_HOME_CONFLICT_EXIT_CODE, assertRealClaudeExecutable, claudeLauncherFileName, detectClaudeHomeConflict, findRealClaudeExecutable, isExactManagedClaudeLauncher, isManagedClaudeProfileLauncher, plannedClaudeLaunchers, profileForLauncherName, removeClaudeLauncherShims, runClaudeProfile, runNativeClaude, syncClaudeLauncherShims } from "../src/claude-launchers";
 import type { RunClaudeProfileOptions } from "../src/claude-launchers";
+import { writeLocalAccessToken } from "../src/config";
 import type { ClaudeProfileRecord, FrogConfig } from "../src/types";
 
 const originalEnv = { ...process.env };
@@ -1746,6 +1747,42 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     expect(captured.env?.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY).toBe("1");
     expect(captured.env?.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(exit.code).toBe(0);
+  });
+
+  test("authenticated gateway launch adds the per-start key header without replacing user or profile headers", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frog-launch-local-access-"));
+    const previousCustomHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS;
+    process.env.FROGPROGSY_HOME = root;
+    process.env.ANTHROPIC_CUSTOM_HEADERS = "X-User: keep";
+    writeLocalAccessToken("frogp_runtime-launch-key");
+    const cfg: FrogConfig = {
+      ...config(),
+      localAccess: {
+        enabled: true,
+        keys: [{ id: "lk_configured", label: "configured", secretHash: `sha256:${"a".repeat(64)}` }],
+      },
+    };
+    const captured: { env?: NodeJS.ProcessEnv } = {};
+    try {
+      await runClaudeProfile(gatewayProfile, cfg, [], {
+        gateway: true,
+        realClaude: "/usr/bin/true",
+        refreshCatalog: refreshFake([]),
+        spawn: spawnFake([], captured),
+        exit: exitFake({}),
+      });
+
+      expect(captured.env?.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      expect(captured.env?.ANTHROPIC_CUSTOM_HEADERS?.split("\n")).toEqual([
+        "X-User: keep",
+        "X-Frogp-Claude-Profile: cp_work",
+        "x-frogp-local-key: frogp_runtime-launch-key",
+      ]);
+    } finally {
+      if (previousCustomHeaders === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+      else process.env.ANTHROPIC_CUSTOM_HEADERS = previousCustomHeaders;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("gateway launch injects the sentinel token only on explicit rollback", async () => {

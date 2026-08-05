@@ -51,19 +51,25 @@ frogp start
 
 The repository includes a tested `Dockerfile` and `docker-compose.yml` for running the relay as a containerized service:
 
+Before the first start, export a strong relay key as `FROGP_LOCAL_ACCESS_KEY` and retain it in your password manager or container secret store. Compose passes it to the entrypoint, which stores only its hash and never writes the plaintext to container logs. Once the volume contains an enabled key, later restarts do not require the environment value.
+
 ```bash
 docker compose up --build
 ```
 
 The container writes FrogProgsy state under `/config`, exposed as the `frogprogsy-config` volume. Its entrypoint seeds `config.json` with `hostname: "0.0.0.0"` so Docker port publishing can reach the relay, and the Compose file sets `FROGP_EXTERNAL_SUPERVISOR=1` so Docker owns crash recovery instead of the in-process watchdog.
 
-By default the host receives `http://localhost:3764`. To use a different host port without changing the container port:
+By default Compose publishes `http://localhost:3764` on the host's `127.0.0.1` interface only. The container still listens on `0.0.0.0` internally, but the relay is not exposed directly to the LAN. To use a different host port without changing the container port:
 
 ```bash
 FROGP_HOST_PORT=3765 docker compose up --build
 ```
 
 Point Claude Code at the host-exposed gateway, for example `ANTHROPIC_BASE_URL=http://localhost:3764`.
+
+Local access keys are bearer secrets, and plain HTTP does not protect them from observers on the network path. For remote access, keep this loopback-only port mapping and put a TLS-terminating reverse proxy on the host in front of it. Do not publish the relay port directly on a non-loopback interface over HTTP.
+
+Clients should send this relay key in `x-frogp-local-key`. If a `forward` provider uses `Authorization` or `x-api-key` for its real upstream credential, keep that credential in place; do not reuse either header for the relay key.
 
 ## Advanced installation notes
 
