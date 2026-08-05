@@ -332,9 +332,11 @@ async function proxyHealthy(port?: number): Promise<boolean> {
 function printLauncherSync(result: ReturnType<typeof syncClaudeLauncherShims>): void {
   const names = result.launchers.map(entry => entry.name).join(", ");
   console.log(`   account shortcuts: ${names || "(none)"} in ${result.binDir}`);
-  console.log(`   real claude: ${result.realClaude}`);
+  if (result.realClaudeResolved) console.log(`   real claude: ${result.realClaude}`);
   for (const warning of result.warnings) console.log(`   warning: ${warning}`);
-  console.log(`   Append ${result.binDir} to PATH to use account shortcuts. The plain 'claude' command remains your installed Claude Code.`);
+  console.log(result.realClaudeResolved
+    ? `   Append ${result.binDir} to PATH to use account shortcuts. The plain 'claude' command remains your installed Claude Code.`
+    : `   Install Claude Code, then append ${result.binDir} to PATH to use account shortcuts. frogprogsy does not create the plain 'claude' command.`);
 }
 
 function syncLaunchers(config: ReturnType<typeof loadConfig>): void {
@@ -1162,19 +1164,21 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         const launchers = syncClaudeLauncherShims(config);
         printLauncherSync(launchers);
         const shortcut = launchers.launchers.find(entry => entry.profileId === profile.id)?.name;
-        if (!shortcut) {
-          console.error(`❌ Account was saved: ${profile.name} (${profile.id})`);
-          console.error("   Its shortcut name conflicts or could not be created. Run frogp claude rename with a distinct name.");
-          process.exit(1);
-        }
         console.log(`✅ Claude account added: ${profile.name} (${profile.id})`);
         console.log(`   home: ${profile.claudeHome}`);
-        console.log(`   next: open a new terminal and run ${shortcut} to sign in.`);
-        await maybeConfigureAccountShortcuts();
+        if (shortcut) {
+          console.log(`   next: open a new terminal and run ${shortcut} to sign in.`);
+          await maybeConfigureAccountShortcuts();
+        } else if (!launchers.realClaudeResolved) {
+          console.log("   next: install Claude Code, then run frogp refresh to create this account's shortcut.");
+        } else {
+          console.log("   next: resolve the shortcut warning above, then run frogp refresh to create this account's shortcut.");
+        }
       } catch (error) {
-        console.error(`❌ Account was saved, but its shortcut could not be created: ${error instanceof Error ? error.message : String(error)}`);
+        // The account and its home are already registered, so a shortcut failure is reported without
+        // failing the command: exiting non-zero here would make a completed registration look rejected.
+        console.error(`⚠️  Account was saved, but its shortcut could not be created: ${error instanceof Error ? error.message : String(error)}`);
         console.error("   Fix the reported issue, then run frogp refresh. The account home and registration were kept.");
-        process.exit(1);
       }
       return;
     }

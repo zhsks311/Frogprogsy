@@ -80,7 +80,7 @@ import {
   removeClaudeProject,
   resolveClaudeProject,
 } from "./claude-projects";
-import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, isManagedClaudeProfileLauncher, plannedClaudeLaunchers, syncClaudeLauncherShims } from "./claude-launchers";
+import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, findRealClaudeExecutableOrNull, isManagedClaudeProfileLauncher, plannedClaudeLaunchers, syncClaudeLauncherShims } from "./claude-launchers";
 import { cleanupClaudeProjectsForRemovedProfile } from "./claude-routing-lifecycle";
 import { configureZshAccountShortcuts, shellManualPathLine, zshAccountShortcutsSupported } from "./shell-shortcuts";
 import {
@@ -1679,6 +1679,7 @@ function claudeProjectsSnapshot(config: FrogConfig, root?: string | null) {
 interface ClaudeLauncherSyncOutcome {
   success: boolean;
   error?: string;
+  realClaudeResolved?: boolean;
   launchers?: Array<{ name: string; profileId: string }>;
   warnings?: string[];
 }
@@ -1690,10 +1691,10 @@ function syncClaudeLaunchersBestEffort(config: FrogConfig): ClaudeLauncherSyncOu
       .filter(entry => isManagedClaudeProfileLauncher(join(result.binDir, claudeLauncherFileName(entry.name)), entry.profileId))
       .map(({ name, profileId }) => ({ name, profileId }));
     return {
-      success: result.realClaudeResolved !== false,
+      success: true,
+      realClaudeResolved: result.realClaudeResolved,
       launchers,
       warnings: result.warnings,
-      ...(result.realClaudeResolved === false ? { error: result.warnings.join("; ") } : {}),
     };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -2910,8 +2911,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     const profiles = listClaudeProfiles(config).map(profile => {
       const gateway = profileGatewaySnapshot(config, profile);
       if (profile.isDefault) {
-        let installed = false;
-        try { findRealClaudeExecutable([claudeLauncherBinDir()]); installed = true; } catch { /* surfaced as setup needed */ }
+        const installed = findRealClaudeExecutableOrNull([claudeLauncherBinDir()]) !== null;
         return { ...profile, injected: gateway.injected, gateway, shortcut: { command: "claude", installed, native: true } };
       }
       const launcher = plannedByProfileId.get(profile.id);
@@ -2979,9 +2979,11 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     if (!installed) {
       return jsonResponse({
         profile: { ...profile, shortcut: { command, installed: false } },
-        warning: launcherSync.success
-          ? "The account was saved, but its shortcut could not be created. Rename the account if the shortcut name conflicts, or fix the reported launcher issue."
-          : "The account was saved, but its shortcut could not be created. Fix the issue and run frogp refresh.",
+        warning: launcherSync.realClaudeResolved === false
+          ? "The account was saved, but Claude Code is not installed. Install Claude Code and run frogp refresh to create its shortcut."
+          : launcherSync.success
+            ? "The account was saved, but its shortcut could not be created. Rename the account if the shortcut name conflicts, or fix the reported launcher issue."
+            : "The account was saved, but its shortcut could not be created. Fix the issue and run frogp refresh.",
         launcherSync,
       }, 201);
     }
@@ -3126,7 +3128,9 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
           && (launcherSync.launchers === undefined
             || launcherSync.launchers.some(entry => entry.profileId === profile.id && entry.name === plannedLauncher.name));
         if (!installed) {
-          launcherWarning = "The account rename was saved, but its shortcut could not be created. Fix the reported launcher issue and run frogp refresh.";
+          launcherWarning = launcherSync.realClaudeResolved === false
+            ? "The account rename was saved, but Claude Code is not installed. Install Claude Code and run frogp refresh to create its shortcut."
+            : "The account rename was saved, but its shortcut could not be created. Fix the reported launcher issue and run frogp refresh.";
         }
       }
       await refreshClaudeCodeCatalogBestEffort({ claudeHome: profile.claudeHome, profileId: profile.id });
