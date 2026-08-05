@@ -790,6 +790,8 @@ export const zh: Record<TKey, string> = {
   "claudeProfiles.shortcutReady": "可用",
   "claudeProfiles.shortcutNeedsSetup": "需要设置",
   "claudeProfiles.shortcutNative": "原生 Claude Code",
+  "claudeProfiles.shortcutNameConflict": "需要重命名",
+  "claudeProfiles.shortcutRenameHint": "账户已保存，但另一个账户正在使用相同的命令名称。请输入其他账户名称并重新保存。",
   "claudeProfiles.saveFailed": "保存账户失败。",
   "claudeProfiles.renamed": "账户已重命名。",
   "claudeProfiles.removed": "账户已移除。",

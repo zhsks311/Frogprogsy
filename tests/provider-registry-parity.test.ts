@@ -67,6 +67,9 @@ describe("provider registry parity", () => {
   test("OAuth provider configs use canonical registry values", () => {
     const codex = OAUTH_PROVIDERS.codex.providerConfig;
     const supportedCodexFallbacks = [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
       "gpt-5.5",
       "gpt-5.4",
       "gpt-5.4-mini",
@@ -80,6 +83,7 @@ describe("provider registry parity", () => {
     expect(codex.noTopPModels).toEqual(supportedCodexFallbacks);
     expect(codex.modelContextWindows?.["gpt-5.3-codex"]).toBeUndefined();
     expect(codex.modelContextWindows?.["gpt-5.3-codex-spark"]).toBe(128_000);
+    expect(codex.modelContextWindows?.["gpt-5.6-luna"]).toBe(272_000);
     expect(OAUTH_PROVIDERS.kimi.providerConfig.baseUrl).toBe("https://api.kimi.com/coding/v1");
     expect(OAUTH_PROVIDERS.anthropic).toBeUndefined();
     expect(OAUTH_PROVIDERS.xai.providerConfig.defaultModel).toBe("grok-4.3");

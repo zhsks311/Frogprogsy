@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { addClaudeProfile, buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv, derivedClaudeHomeForShortcut, ensureClaudeProfiles, managedClaudeProfiles, mergeClaudeProfileHeader, removeClaudeProfileHeader, renameClaudeProfile, resolveClaudeProfile, validateClaudeShortcutInput } from "../src/claude-profiles";
+import { addClaudeProfile, buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv, derivedClaudeHomeForShortcut, ensureClaudeProfiles, managedClaudeProfiles, mergeClaudeProfileHeader, removeClaudeProfile, removeClaudeProfileHeader, renameClaudeProfile, resolveClaudeProfile, validateClaudeShortcutInput } from "../src/claude-profiles";
 import type { FrogConfig } from "../src/types";
 
 function baseConfig(): FrogConfig {
@@ -46,6 +46,17 @@ describe("Claude Code homes", () => {
     addClaudeProfile(config, { id: "cp_work", name: "업무", claudeHome: "/tmp/.claude-work" });
 
     expect(managedClaudeProfiles(config).map(p => p.id).sort()).toEqual(["cp_default", "cp_work"]);
+  });
+
+  test("does not promote an isolated account to the native claude default", () => {
+    const config = baseConfig();
+    const profiles = ensureClaudeProfiles(config);
+    const defaultId = profiles.defaultProfileId;
+    addClaudeProfile(config, { id: "cp_work", name: "work", claudeHome: "/tmp/.claude-work" });
+
+    expect(() => removeClaudeProfile(config, defaultId)).toThrow(/default Claude Code home/);
+    expect(config.claudeProfiles?.defaultProfileId).toBe(defaultId);
+    expect(config.claudeProfiles?.profiles.map(profile => profile.id)).toContain(defaultId);
   });
 
   test("profile header merge replaces only frogp profile header and preserves user headers", () => {

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configureZshAccountShortcuts, removeZshAccountShortcuts, zshAccountShortcutsSupported, zshManualPathLine } from "../src/shell-shortcuts";
+import { configureZshAccountShortcuts, removeZshAccountShortcuts, shellManualPathLine, zshAccountShortcutsSupported, zshManualPathLine } from "../src/shell-shortcuts";
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "frog-shell-shortcuts-"));
@@ -20,15 +20,29 @@ describe("zsh account-shortcut setup", () => {
     expect(zshAccountShortcutsSupported({ SHELL: "/bin/zsh" })).toBe(process.platform !== "win32");
   });
 
+  test("manual PATH guidance matches non-zsh shell syntax", () => {
+    const binDir = "/tmp/frog account/bin";
+    if (process.platform !== "win32") {
+      expect(shellManualPathLine({ env: { SHELL: "/usr/bin/fish" }, binDir }))
+        .toBe("fish_add_path --append '/tmp/frog account/bin'");
+    }
+    expect(shellManualPathLine({ env: { SHELL: "/usr/bin/pwsh" }, binDir }))
+      .toBe("$env:Path += [IO.Path]::PathSeparator + '/tmp/frog account/bin'");
+  });
+
   test.skipIf(process.platform === "win32")("appends one owned block, preserves mode and line endings, and is idempotent", () => {
     const { root, rcPath, binDir } = fixture();
+    const original = "# user config\r\nexport EDITOR=vim\r\n";
     try {
-      writeFileSync(rcPath, "# user config\r\nexport EDITOR=vim\r\n", { encoding: "utf8", mode: 0o640 });
+      writeFileSync(rcPath, original, { encoding: "utf8", mode: 0o640 });
       chmodSync(rcPath, 0o640);
+      const originalInode = lstatSync(rcPath).ino;
 
       const first = configureZshAccountShortcuts({ rcPath, binDir });
       expect(first.state).toBe("configured");
       const content = readFileSync(rcPath, "utf8");
+      expect(content.startsWith(original)).toBe(true);
+      expect(lstatSync(rcPath).ino).toBe(originalInode);
       expect(content.match(/frogprogsy account shortcuts/g)).toHaveLength(2);
       expect(content).toContain(zshManualPathLine({ binDir }));
       expect(content.replaceAll("\r\n", "")).not.toContain("\n");
@@ -49,6 +63,36 @@ describe("zsh account-shortcut setup", () => {
       const result = configureZshAccountShortcuts({ rcPath, binDir });
       expect(result.state).toBe("already_configured");
       expect(readFileSync(rcPath, "utf8")).toBe(`${zshManualPathLine({ binDir })}\n`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("adds a block when the shortcut path appears only as a command argument", () => {
+    const { root, rcPath, binDir } = fixture();
+    const original = `echo "${binDir}"\n`;
+    try {
+      writeFileSync(rcPath, original, "utf8");
+      const result = configureZshAccountShortcuts({ rcPath, binDir });
+      const content = readFileSync(rcPath, "utf8");
+
+      expect(result.state).toBe("configured");
+      expect(content.startsWith(original)).toBe(true);
+      expect(content).toContain(zshManualPathLine({ binDir }));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("does not mistake a longer neighboring path for the shortcut directory", () => {
+    const { root, rcPath, binDir } = fixture();
+    const neighboringPath = `${binDir}-old`;
+    try {
+      writeFileSync(rcPath, `export PATH="$PATH":'${neighboringPath}'\n`, "utf8");
+      const result = configureZshAccountShortcuts({ rcPath, binDir });
+
+      expect(result.state).toBe("configured");
+      expect(readFileSync(rcPath, "utf8")).toContain(zshManualPathLine({ binDir }));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -86,14 +130,15 @@ describe("zsh account-shortcut setup", () => {
     }
   });
 
-  test.skipIf(process.platform === "win32")("removes only the adjacent separator and preserves unrelated blank lines", () => {
+  test.skipIf(process.platform === "win32")("cleanup refuses without changing exact configured bytes", () => {
     const { root, rcPath, binDir } = fixture();
     const original = "# first\n\n\n\n# second\n";
     try {
       writeFileSync(rcPath, original, "utf8");
       expect(configureZshAccountShortcuts({ rcPath, binDir }).state).toBe("configured");
-      expect(removeZshAccountShortcuts({ rcPath, binDir }).state).toBe("configured");
-      expect(readFileSync(rcPath, "utf8")).toBe(original);
+      const configured = readFileSync(rcPath, "utf8");
+      expect(removeZshAccountShortcuts({ rcPath, binDir }).state).toBe("refused");
+      expect(readFileSync(rcPath, "utf8")).toBe(configured);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -123,7 +168,7 @@ describe("zsh account-shortcut setup", () => {
       const result = configureZshAccountShortcuts({
         rcPath,
         binDir,
-        beforePublish: () => writeFileSync(rcPath, "# concurrent user edit\n", "utf8"),
+        beforeAppend: () => writeFileSync(rcPath, "# concurrent user edit\n", "utf8"),
       });
       expect(result.state).toBe("refused");
       expect(readFileSync(rcPath, "utf8")).toBe("# concurrent user edit\n");
@@ -133,17 +178,87 @@ describe("zsh account-shortcut setup", () => {
     }
   });
 
-  test.skipIf(process.platform === "win32")("removes only an exact owned block and refuses an edited one", () => {
+  test.skipIf(process.platform === "win32")("does not inspect or remove a foreign legacy temp symlink", () => {
+    const { root, rcPath, binDir } = fixture();
+    const target = join(root, "user-owned");
+    const tmp = `${rcPath}.frogp.${process.pid}.tmp`;
+    try {
+      writeFileSync(rcPath, "# original\n", "utf8");
+      writeFileSync(target, "keep me\n", "utf8");
+      symlinkSync(target, tmp);
+
+      expect(configureZshAccountShortcuts({ rcPath, binDir }).state).toBe("configured");
+      expect(readFileSync(target, "utf8")).toBe("keep me\n");
+      expect(readFileSync(rcPath, "utf8")).toContain("# original\n");
+      expect(lstatSync(tmp).isSymbolicLink()).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  test.skipIf(process.platform === "win32")("setup preserves a same-byte atomic replacement and refuses", () => {
+    const { root, rcPath, binDir } = fixture();
+    const original = "# original\n";
+    let replacementInode = 0;
+    try {
+      writeFileSync(rcPath, original, "utf8");
+      const result = configureZshAccountShortcuts({
+        rcPath,
+        binDir,
+        beforeAppend: () => {
+          const replacement = join(root, "replacement");
+          writeFileSync(replacement, original, "utf8");
+          renameSync(replacement, rcPath);
+          replacementInode = lstatSync(rcPath).ino;
+        },
+      });
+
+      expect(result.state).toBe("refused");
+      expect(readFileSync(rcPath, "utf8")).toBe(original);
+      expect(lstatSync(rcPath).ino).toBe(replacementInode);
+      expect(readdirSync(root).some(name => name.startsWith(".frogp-zshrc-recovery-"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === "win32")("setup preserves a same-byte symlink replacement and refuses", () => {
+    const { root, rcPath, binDir } = fixture();
+    const original = "# original\n";
+    const target = join(root, "replacement-target");
+    try {
+      writeFileSync(rcPath, original, "utf8");
+      writeFileSync(target, original, "utf8");
+      const result = configureZshAccountShortcuts({
+        rcPath,
+        binDir,
+        beforeAppend: () => {
+          rmSync(rcPath);
+          symlinkSync(target, rcPath);
+        },
+      });
+
+      expect(result.state).toBe("refused");
+      expect(lstatSync(rcPath).isSymbolicLink()).toBe(true);
+      expect(readFileSync(target, "utf8")).toBe(original);
+      expect(readdirSync(root).some(name => name.startsWith(".frogp-zshrc-recovery-"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === "win32")("cleanup refuses both exact and edited marker blocks without changing bytes", () => {
     const { root, rcPath, binDir } = fixture();
     try {
       writeFileSync(rcPath, "# user config\n", "utf8");
       expect(configureZshAccountShortcuts({ rcPath, binDir }).state).toBe("configured");
-      expect(removeZshAccountShortcuts({ rcPath, binDir }).state).toBe("configured");
-      expect(readFileSync(rcPath, "utf8")).toContain("# user config");
-      expect(readFileSync(rcPath, "utf8")).not.toContain("frogprogsy account shortcuts");
+      const configured = readFileSync(rcPath, "utf8");
+      expect(removeZshAccountShortcuts({ rcPath, binDir })).toMatchObject({ state: "refused" });
+      expect(readFileSync(rcPath, "utf8")).toBe(configured);
 
-      writeFileSync(rcPath, "# >>> frogprogsy account shortcuts >>>\n# edited\n# <<< frogprogsy account shortcuts <<<\n", "utf8");
+      const edited = "# >>> frogprogsy account shortcuts >>>\n# edited\n# <<< frogprogsy account shortcuts <<<\n";
+      writeFileSync(rcPath, edited, "utf8");
       expect(removeZshAccountShortcuts({ rcPath })).toMatchObject({ state: "refused" });
+      expect(readFileSync(rcPath, "utf8")).toBe(edited);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -54,18 +54,24 @@ export interface ClaudeSettingsBackup {
 export const LOCAL_CLAUDE_AUTH_TOKEN = "local-frogprogsy";
 const ROUTED_MODEL_PREFIX = "claude-frogp-";
 
-function isRoutedClaudeCodeModel(model: string): boolean {
-  return model.startsWith(ROUTED_MODEL_PREFIX);
+function isRoutedClaudeCodeModel(model: unknown): model is string {
+  return typeof model === "string" && model.startsWith(ROUTED_MODEL_PREFIX);
 }
 
 function removeRoutedClaudeCodeModel(settings: Record<string, unknown>): { settings: Record<string, unknown>; changed: boolean } {
   const next: Record<string, unknown> = { ...settings };
   const model = next.model;
-  if (typeof model === "string" && isRoutedClaudeCodeModel(model)) {
+  if (isRoutedClaudeCodeModel(model)) {
     delete next.model;
     return { settings: next, changed: true };
   }
   return { settings: next, changed: false };
+}
+
+function removeLegacyRoutedHaikuOverride(env: Record<string, unknown>): boolean {
+  if (!isRoutedClaudeCodeModel(env.ANTHROPIC_DEFAULT_HAIKU_MODEL)) return false;
+  delete env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+  return true;
 }
 
 
@@ -82,10 +88,12 @@ export function removeOrphanedFrogProgsySettings(settings: Record<string, unknow
   let removedFrogProxyEnv = false;
   const customHeaders = typeof env.ANTHROPIC_CUSTOM_HEADERS === "string" ? env.ANTHROPIC_CUSTOM_HEADERS : undefined;
   const hasProfileHeader = customHeaders !== undefined && removeClaudeProfileHeader(customHeaders) !== customHeaders;
+  const hasLegacyRoutedHaikuOverride = isRoutedClaudeCodeModel(env.ANTHROPIC_DEFAULT_HAIKU_MODEL);
   const hasFrogProgsyMarker = stripped.changed
     || env.ANTHROPIC_AUTH_TOKEN === LOCAL_CLAUDE_AUTH_TOKEN
     || env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY === "1"
     || env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS
+    || hasLegacyRoutedHaikuOverride
     || hasProfileHeader;
 
   if (isLocalFrogProgsyBaseUrl(env.ANTHROPIC_BASE_URL) && hasFrogProgsyMarker) {
@@ -102,6 +110,11 @@ export function removeOrphanedFrogProgsySettings(settings: Record<string, unknow
 
   if (env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS) {
     delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+    changed = true;
+    removedFrogProxyEnv = true;
+  }
+
+  if (removeLegacyRoutedHaikuOverride(env)) {
     changed = true;
     removedFrogProxyEnv = true;
   }
@@ -213,8 +226,15 @@ function resolveModelDiscoveryReady(applied: boolean, carrier: GatewayAuthCarrie
   return applied && (carrier === "token-free" || authTokenSet);
 }
 
-export function readClaudeGatewayState(port: number, options: { claudeHome?: string; profileId?: string } = {}): ClaudeGatewayState {
-  const settingsPath = claudeSettingsFilePath(options.claudeHome);
+/**
+ * Shared gateway-state reader for the user-level and project-level settings files. Only the settings
+ * path and the profile-header comparison differ between the two surfaces.
+ */
+function readGatewayStateFrom(
+  settingsPath: string,
+  port: number,
+  matchProfileHeader: (customHeaders: unknown) => boolean,
+): ClaudeGatewayState {
   const settingsFound = existsSync(settingsPath);
   let settings: Record<string, unknown> = {};
   if (settingsFound) {
@@ -229,7 +249,7 @@ export function readClaudeGatewayState(port: number, options: { claudeHome?: str
   const actualBaseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? env.ANTHROPIC_BASE_URL : undefined;
   const baseUrlMatchesExpected = typeof actualBaseUrl === "string" && stripTrailingSlash(actualBaseUrl.trim()) === expectedBaseUrl;
   const gatewayDiscovery = env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY === "1";
-  const profileHeaderMatches = customHeadersContainProfile(env.ANTHROPIC_CUSTOM_HEADERS, options.profileId);
+  const profileHeaderMatches = matchProfileHeader(env.ANTHROPIC_CUSTOM_HEADERS);
   const authTokenSet = typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim() !== "";
   const carrier = resolveObservedGatewayCarrier(env);
   const applied = baseUrlMatchesExpected && gatewayDiscovery && profileHeaderMatches;
@@ -246,6 +266,11 @@ export function readClaudeGatewayState(port: number, options: { claudeHome?: str
     carrier,
     modelDiscoveryReady: resolveModelDiscoveryReady(applied, carrier, authTokenSet),
   };
+}
+
+export function readClaudeGatewayState(port: number, options: { claudeHome?: string; profileId?: string } = {}): ClaudeGatewayState {
+  return readGatewayStateFrom(claudeSettingsFilePath(options.claudeHome), port, (headers) =>
+    customHeadersContainProfile(headers, options.profileId));
 }
 
 export function mergeClaudeCodeSettings(
@@ -320,6 +345,7 @@ export function restoreClaudeCodeSettingsFromBackup(
     if (!entry || !entry.existed) delete env[key];
     else env[key] = entry.value ?? "";
   }
+  removeLegacyRoutedHaikuOverride(env);
   if (Object.keys(env).length > 0) next.env = env;
   else delete next.env;
   return next;
@@ -508,38 +534,8 @@ function removeClaudeProjectProfileHeaderValue(existing: string | undefined, pro
 }
 
 export function readClaudeProjectGatewayState(port: number, options: ClaudeProjectSettingsOptions): ClaudeGatewayState {
-  const settingsPath = claudeProjectSettingsFilePath(options.projectPath);
-  const settingsFound = existsSync(settingsPath);
-  let settings: Record<string, unknown> = {};
-  if (settingsFound) {
-    try {
-      settings = readJsonFile(settingsPath);
-    } catch {
-      settings = {};
-    }
-  }
-  const env = isRecord(settings.env) ? settings.env : {};
-  const expectedBaseUrl = buildClaudeCodeEnv(port).ANTHROPIC_BASE_URL ?? `http://localhost:${port}`;
-  const actualBaseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? env.ANTHROPIC_BASE_URL : undefined;
-  const baseUrlMatchesExpected = typeof actualBaseUrl === "string" && stripTrailingSlash(actualBaseUrl.trim()) === expectedBaseUrl;
-  const gatewayDiscovery = env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY === "1";
-  const profileHeaderMatches = customHeadersMatchProjectProfile(env.ANTHROPIC_CUSTOM_HEADERS, options.routingProfileId);
-  const authTokenSet = typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim() !== "";
-  const carrier = resolveObservedGatewayCarrier(env);
-  const applied = baseUrlMatchesExpected && gatewayDiscovery && profileHeaderMatches;
-  return {
-    settingsPath,
-    settingsFound,
-    applied,
-    expectedBaseUrl,
-    actualBaseUrl,
-    baseUrlMatchesExpected,
-    gatewayDiscovery,
-    profileHeaderMatches,
-    authToken: typeof env.ANTHROPIC_AUTH_TOKEN === "string" ? "set_redacted" : "not_set",
-    carrier,
-    modelDiscoveryReady: resolveModelDiscoveryReady(applied, carrier, authTokenSet),
-  };
+  return readGatewayStateFrom(claudeProjectSettingsFilePath(options.projectPath), port, (headers) =>
+    customHeadersMatchProjectProfile(headers, options.routingProfileId));
 }
 
 export function restoreClaudeCodeSettings(options: { claudeHome?: string; profileId?: string } = {}): { success: boolean; message: string } {

@@ -160,7 +160,15 @@ export function loadConfig(): FrogConfig {
   try {
     const raw = readFileSync(configPath, "utf-8");
     return JSON.parse(raw) as FrogConfig;
-  } catch {
+  } catch (err) {
+    // An existing but unreadable/unparseable config.json falls back to defaults, which drops every
+    // configured provider and setting. Warn loudly instead of silently pretending it was a fresh
+    // install so the corruption is not mistaken for a reset, and the file can be inspected/restored.
+    console.warn(
+      `[frogp] config.json at ${configPath} could not be read; using built-in defaults for this run (existing file left untouched): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
     return getDefaultConfig();
   }
 }

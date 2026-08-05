@@ -168,8 +168,8 @@ export function removeClaudeProfile(config: FrogConfig, selector: string): Claud
   const profiles = ensureClaudeProfiles(config);
   const profile = resolveClaudeProfile(config, selector);
   if (profiles.profiles.length === 1) throw new Error("Cannot remove the only Claude Code home");
+  if (profiles.defaultProfileId === profile.id) throw new Error("Cannot remove the default Claude Code home");
   profiles.profiles = profiles.profiles.filter(candidate => candidate.id !== profile.id);
-  if (profiles.defaultProfileId === profile.id) profiles.defaultProfileId = profiles.profiles[0]!.id;
   return profile;
 }
 

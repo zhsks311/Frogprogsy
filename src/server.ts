@@ -22,12 +22,14 @@ import { applyModelMixingPatch, modelMixingSettingsSnapshot } from "./model-mixi
 import { runWithMixing } from "./model-mixing/loop";
 import { namespacedToolName } from "./types";
 import { signalWithTimeout } from "./abort";
+import { debugSwallowed } from "./debug";
 import {
   clearLoginState, getLoginStatus, isOAuthProvider,
   listOAuthProviders, reconcileOAuthProviders, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
 } from "./oauth/index";
 import { isAllowedClaudeGrantBaseUrl, resolveProviderAuth } from "./provider-auth";
-import type { CatalogModel } from "./claude-catalog";
+import { applyProviderConfigHints, type CatalogModel } from "./claude-catalog";
+import { getJawcodeModelMetadata } from "./generated/jawcode-model-metadata";
 import type { ClaudeCodeCatalogRefreshResult, ClaudeCodeGatewayModelsCacheSyncResult } from "./claude-refresh";
 import { buildWebSearchTool, planWebSearch, resolveWebSearchLadderPlan, runWithWebSearch } from "./web-search-fallback";
 import type { WebSearchUnavailablePlan } from "./web-search-fallback";
@@ -44,7 +46,7 @@ import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
 import { resolveModelCapabilities, supportsImageInput, supportsNativeWebSearch } from "./model-capabilities";
 import { isOpenAIResponsesFallbackProvider } from "./fallback-openai-responses";
-import { buildAttemptContexts, cloneParsedForAttempt, isSameProviderRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
+import { applyParsedModelId, buildAttemptContexts, cloneParsedForAttempt, isSameProviderRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
 import { redactConfigForApi, redactProviderForApi } from "./provider-redaction";
 import { effectiveKeyCandidates } from "./provider-keys";
 import { testProviderConnection as runProviderConnectionTest } from "./provider-test";
@@ -78,9 +80,9 @@ import {
   removeClaudeProject,
   resolveClaudeProject,
 } from "./claude-projects";
-import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, findRealClaudeExecutableOrNull, isExactManagedClaudeLauncher, syncClaudeLauncherShims, type ClaudeLauncherSyncSummary } from "./claude-launchers";
+import { claudeLauncherBinDir, claudeLauncherFileName, claudeProfileShortcutName, findRealClaudeExecutable, findRealClaudeExecutableOrNull, isManagedClaudeProfileLauncher, plannedClaudeLaunchers, syncClaudeLauncherShims } from "./claude-launchers";
 import { cleanupClaudeProjectsForRemovedProfile } from "./claude-routing-lifecycle";
-import { configureZshAccountShortcuts, zshAccountShortcutsSupported, zshManualPathLine } from "./shell-shortcuts";
+import { configureZshAccountShortcuts, shellManualPathLine, zshAccountShortcutsSupported } from "./shell-shortcuts";
 import {
   addClaudeGrant,
   assertClaudeGrantRemovalSafe,
@@ -120,6 +122,18 @@ function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
+}
+
+/** A header-timeout abort from `fetchWithHeaderTimeout`, as opposed to a transport failure. */
+function isUpstreamConnectTimeout(err: unknown): boolean {
+  return err instanceof Error && err.name === "TimeoutError";
+}
+
+/** Shared 502 message for an upstream connect failure. */
+function upstreamConnectErrorMessage(err: unknown, connectMs: number): string {
+  return isUpstreamConnectTimeout(err)
+    ? `Provider connect timeout after ${connectMs}ms`
+    : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
 }
 
 function findGuiDist(): string | null {
@@ -264,10 +278,7 @@ async function applyModelMixing(
   const res = await resolveMix(config, parsed, complete, signal);
   if (res.warning) console.error(`frogprogsy: ${res.warning}`);
   const target = `${res.target.provider}/${res.target.model}`;
-  if (parsed._rawBody && typeof parsed._rawBody === "object") {
-    (parsed._rawBody as { model?: string }).model = target;
-  }
-  parsed.modelId = target;
+  applyParsedModelId(parsed, target);
 }
 
 /** No-LLM mixing rewrite for side calls (token counting): first roster agent or default. */
@@ -275,10 +286,7 @@ function applyModelMixingCheap(config: FrogConfig, parsed: FrogParsedRequest): v
   if (!isModelMixingRequest(config, parsed.modelId)) return;
   const t = cheapMixTarget(config);
   const target = `${t.provider}/${t.model}`;
-  if (parsed._rawBody && typeof parsed._rawBody === "object") {
-    (parsed._rawBody as { model?: string }).model = target;
-  }
-  parsed.modelId = target;
+  applyParsedModelId(parsed, target);
 }
 
 /**
@@ -408,14 +416,8 @@ async function handleResponses(
   }
 
   // Apply the routed model id upstream: routing may strip a "<provider>/" namespace
-  // (e.g. "opencode-go/deepseek-v4-pro" → "deepseek-v4-pro"). Adapters read parsed.modelId,
-  // and Responses-style adapters serialize parsed._rawBody, so rewrite both.
-  if (route.modelId !== parsed.modelId) {
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      (parsed._rawBody as { model?: string }).model = route.modelId;
-    }
-    parsed.modelId = route.modelId;
-  }
+  // (e.g. "opencode-go/deepseek-v4-pro" → "deepseek-v4-pro").
+  if (route.modelId !== parsed.modelId) applyParsedModelId(parsed, route.modelId);
   setRouteLog(logCtx, route, route.routeKind, route.ambiguousCandidates);
 
   // OAuth / Claude-grant providers: resolve a fresh access token (auto-refreshed) as the Bearer key
@@ -459,10 +461,7 @@ async function handleResponses(
       }, upstream.signal, connectMs);
     } catch (err) {
       upstream.abort();
-      const msg = err instanceof Error && err.name === "TimeoutError"
-        ? `Provider connect timeout after ${connectMs}ms`
-        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
-      return formatErrorResponse(502, "upstream_error", msg);
+      return formatErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
     }
     const headers = sanitizeRelayedHeaders(upstreamResponse.headers);
     const isEventStream = headers.get("content-type")?.toLowerCase().includes("text/event-stream") ?? false;
@@ -507,10 +506,7 @@ async function handleResponses(
     }, upstream.signal, connectMs);
   } catch (err) {
     upstream.abort();
-    const msg = err instanceof Error && err.name === "TimeoutError"
-      ? `Provider connect timeout after ${connectMs}ms`
-      : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
-    return formatErrorResponse(502, "upstream_error", msg);
+    return formatErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
   }
 
   if (!upstreamResponse.ok) {
@@ -706,6 +702,36 @@ function directMessageResponse(text: string, parsed: FrogParsedRequest, response
   return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
 }
 
+/**
+ * Read and parse an Anthropic Messages request body, recording the read/parse log phases. Returns the
+ * parsed request, or the 400 response to return as-is when the body is not valid JSON/schema.
+ */
+async function readParsedMessagesRequest(
+  req: Request,
+  logCtx: RequestLogContext,
+  parseStarted: number,
+): Promise<{ parsed: FrogParsedRequest; error?: undefined } | { parsed?: undefined; error: Response }> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    recordLogPhase(logCtx, "read_request", "error", "invalid_json", parseStarted);
+    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "invalid_json" });
+    return { error: formatAnthropicErrorResponse(400, "invalid_request_error", "Invalid JSON body") };
+  }
+
+  try {
+    const parsed = parseMessagesRequest(body);
+    setParsedLog(logCtx, parsed);
+    recordLogPhase(logCtx, "parse", "ok", undefined, parseStarted);
+    return { parsed };
+  } catch (err) {
+    recordLogPhase(logCtx, "parse", "error", "parse_error", parseStarted);
+    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "parse_error" });
+    return { error: formatAnthropicErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err)) };
+  }
+}
+
 async function handleMessages(
   req: Request,
   config: FrogConfig,
@@ -713,25 +739,9 @@ async function handleMessages(
   options: { abortSignal?: AbortSignal; profileId?: string; noKeyDnsLookup?: PublicDnsLookup } = {},
 ): Promise<Response> {
   const parseStarted = Date.now();
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    recordLogPhase(logCtx, "read_request", "error", "invalid_json", parseStarted);
-    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "invalid_json" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", "Invalid JSON body");
-  }
-
-  let parsed: FrogParsedRequest;
-  try {
-    parsed = parseMessagesRequest(body);
-    setParsedLog(logCtx, parsed);
-    recordLogPhase(logCtx, "parse", "ok", undefined, parseStarted);
-  } catch (err) {
-    recordLogPhase(logCtx, "parse", "error", "parse_error", parseStarted);
-    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "parse_error" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
-  }
+  const read = await readParsedMessagesRequest(req, logCtx, parseStarted);
+  if (read.error) return read.error;
+  const parsed = read.parsed;
   // Keep Claude Code-facing response metadata on the requested model/alias; only upstream calls use
   // the resolved provider model. Otherwise resumed sessions persist unsupported ids like "gpt-5.5".
   const responseModelId = parsed.modelId;
@@ -940,7 +950,7 @@ async function handleMessages(
       recordLogPhase(logCtx, "upstream_connect", upstreamResponse.ok ? "ok" : "error", upstreamResponse.ok ? undefined : "provider_non_2xx", upstreamStarted);
     } catch (err) {
       upstream.abort();
-      const timeout = err instanceof Error && err.name === "TimeoutError";
+      const timeout = isUpstreamConnectTimeout(err);
       const code = timeout ? "connect_timeout" : "upstream_unreachable";
       recordLogPhase(logCtx, "upstream_connect", "error", code, upstreamStarted);
       recordAttemptLog(logCtx, attempt, "error", code);
@@ -952,11 +962,8 @@ async function handleMessages(
         attemptIndex = nextIndex;
         continue;
       }
-      const msg = timeout
-        ? `Provider connect timeout after ${connectMs}ms`
-        : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
       finalizeRequestLog(logCtx, timeout ? "timeout" : "upstream_abort", 502, { kind: timeout ? "timeout" : "upstream", code });
-      return formatAnthropicErrorResponse(502, "upstream_error", msg);
+      return formatAnthropicErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
     }
 
     if (!upstreamResponse.ok) {
@@ -1028,25 +1035,9 @@ async function handleCountTokens(
   options: { abortSignal?: AbortSignal; profileId?: string } = {},
 ): Promise<Response> {
   const parseStarted = Date.now();
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    recordLogPhase(logCtx, "read_request", "error", "invalid_json", parseStarted);
-    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "invalid_json" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", "Invalid JSON body");
-  }
-
-  let parsed: FrogParsedRequest;
-  try {
-    parsed = parseMessagesRequest(body);
-    setParsedLog(logCtx, parsed);
-    recordLogPhase(logCtx, "parse", "ok", undefined, parseStarted);
-  } catch (err) {
-    recordLogPhase(logCtx, "parse", "error", "parse_error", parseStarted);
-    finalizeRequestLog(logCtx, "internal_error", 400, { kind: "validation", code: "parse_error" });
-    return formatAnthropicErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
-  }
+  const read = await readParsedMessagesRequest(req, logCtx, parseStarted);
+  if (read.error) return read.error;
+  const parsed = read.parsed;
 
   applyModelMixingCheap(config, parsed);
   const routeStarted = Date.now();
@@ -1066,12 +1057,7 @@ async function handleCountTokens(
     return formatAnthropicErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
 
-  if (route.modelId !== parsed.modelId) {
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      (parsed._rawBody as { model?: string }).model = route.modelId;
-    }
-    parsed.modelId = route.modelId;
-  }
+  if (route.modelId !== parsed.modelId) applyParsedModelId(parsed, route.modelId);
   setRouteLog(logCtx, route, route.routeKind, route.ambiguousCandidates);
 
   const oauthStarted = Date.now();
@@ -1137,13 +1123,10 @@ async function handleCountTokens(
     recordLogPhase(logCtx, "upstream_connect", upstreamResponse.ok ? "ok" : "error", upstreamResponse.ok ? undefined : "provider_non_2xx", upstreamStarted);
   } catch (err) {
     upstream.abort();
-    const timeout = err instanceof Error && err.name === "TimeoutError";
-    const msg = timeout
-      ? `Provider connect timeout after ${connectMs}ms`
-      : `Provider unreachable: ${err instanceof Error ? err.message : String(err)}`;
+    const timeout = isUpstreamConnectTimeout(err);
     recordLogPhase(logCtx, "upstream_connect", "error", timeout ? "connect_timeout" : "upstream_unreachable", upstreamStarted);
     finalizeRequestLog(logCtx, timeout ? "timeout" : "upstream_abort", 502, { kind: timeout ? "timeout" : "upstream", code: timeout ? "connect_timeout" : "upstream_unreachable" });
-    return formatAnthropicErrorResponse(502, "upstream_error", msg);
+    return formatAnthropicErrorResponse(502, "upstream_error", upstreamConnectErrorMessage(err, connectMs));
   }
 
   if (!upstreamResponse.ok) {
@@ -1693,18 +1676,34 @@ function claudeProjectsSnapshot(config: FrogConfig, root?: string | null) {
 }
 
 
-function syncClaudeLaunchersBestEffort(config: FrogConfig): ClaudeLauncherSyncSummary {
+interface ClaudeLauncherSyncOutcome {
+  success: boolean;
+  error?: string;
+  realClaudeResolved?: boolean;
+  launchers?: Array<{ name: string; profileId: string }>;
+  warnings?: string[];
+}
+
+function syncClaudeLaunchersBestEffort(config: FrogConfig): ClaudeLauncherSyncOutcome {
   try {
     const result = syncClaudeLauncherShims(config);
+    const launchers = result.launchers
+      .filter(entry => isManagedClaudeProfileLauncher(join(result.binDir, claudeLauncherFileName(entry.name)), entry.profileId))
+      .map(({ name, profileId }) => ({ name, profileId }));
     return {
       success: true,
       realClaudeResolved: result.realClaudeResolved,
+      launchers,
       warnings: result.warnings,
-      shortcutProfileIds: result.launchers.map(entry => entry.profileId),
     };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function claudeLauncherSyncWarning(result: ClaudeLauncherSyncOutcome): string | undefined {
+  if (!result.warnings || result.warnings.length === 0) return undefined;
+  return result.warnings.join("; ");
 }
 
 
@@ -1809,7 +1808,13 @@ function usagePricingSnapshot(config: FrogConfig, rangeInput?: string | null) {
 
 function createRequestLog(endpoint: string, method: string, headers: Headers): RequestLogContext {
   const contentLength = headers.get("content-length");
-  const requestBytes = contentLength && /^\d+$/.test(contentLength) ? Number(contentLength) : undefined;
+  const requestBytes =
+    contentLength && /^\d+$/.test(contentLength)
+      ? (() => {
+          const n = Number(contentLength);
+          return Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+        })()
+      : undefined;
   const entry: RequestLogEntry = {
     id: crypto.randomUUID(),
     startedAt: Date.now(),
@@ -1906,8 +1911,9 @@ function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
       usageStatus: usageStatusForFinalLog(usage),
       ...(usage ? { usage, totalTokens: usageTotalTokens(usage) } : {}),
     });
-  } catch {
+  } catch (err) {
     /* usage accounting must never break the data plane */
+    debugSwallowed("usage-log", err);
   }
 }
 
@@ -2153,7 +2159,7 @@ interface ManagementAPIDeps {
   /** Isolated home root for name-only profile creation tests; production defaults to the OS home. */
   homeDir?: string;
   /** Launcher sync seam so management API tests never touch the real config directory. */
-  syncClaudeLaunchers?: (config: FrogConfig) => ClaudeLauncherSyncSummary;
+  syncClaudeLaunchers?: (config: FrogConfig) => ClaudeLauncherSyncOutcome;
   /** Branch-B claude-grant management fixtures (keep the API off real network/Keychain/native homes in tests). */
   claudeGrants?: ClaudeGrantManagementDeps;
 }
@@ -2516,7 +2522,32 @@ function anthropicForwardProvider(config: FrogConfig): [string, FrogProviderConf
   }) ?? null;
 }
 
-function parseAnthropicModelList(providerName: string, json: unknown): CatalogModel[] {
+function rawForwardCatalogModel(providerName: string, provider: FrogProviderConfig, id: string): CatalogModel {
+  return {
+    id,
+    provider: providerName,
+    owned_by: provider.adapter,
+  };
+}
+
+function forwardCatalogModel(providerName: string, provider: FrogProviderConfig, model: CatalogModel): CatalogModel {
+  const rawModel = { ...model };
+  delete rawModel.contextWindow;
+  const normalizedMetadataProvider = provider.baseUrl.endsWith("/v1/")
+    ? { ...provider, baseUrl: provider.baseUrl.slice(0, -1) }
+    : provider;
+  const metadataContextWindow = isAllowedClaudeGrantBaseUrl(normalizedMetadataProvider)
+    ? getJawcodeModelMetadata("anthropic", model.id)?.contextWindow
+    : undefined;
+  return applyProviderConfigHints(providerName, provider, {
+    ...rawModel,
+    provider: providerName,
+    owned_by: provider.adapter,
+    ...(metadataContextWindow !== undefined ? { contextWindow: metadataContextWindow } : {}),
+  });
+}
+
+function parseAnthropicModelList(providerName: string, provider: FrogProviderConfig, json: unknown): CatalogModel[] {
   const data = json && typeof json === "object"
     ? (json as { data?: unknown; models?: unknown }).data ?? (json as { data?: unknown; models?: unknown }).models
     : undefined;
@@ -2526,7 +2557,7 @@ function parseAnthropicModelList(providerName: string, json: unknown): CatalogMo
     if (!item || typeof item !== "object") continue;
     const id = (item as { id?: unknown }).id;
     if (typeof id !== "string" || !id.trim()) continue;
-    out.push({ id: id.trim(), provider: providerName, owned_by: "anthropic" });
+    out.push(rawForwardCatalogModel(providerName, provider, id.trim()));
   }
   return out;
 }
@@ -2539,18 +2570,29 @@ function configuredForwardCatalogModels(config: FrogConfig): CatalogModel[] {
     for (const model of provider.models ?? []) {
       if (model.trim()) ids.add(model.trim());
     }
-    for (const id of ids) out.push({ id, provider: providerName, owned_by: provider.adapter });
+    for (const id of ids) {
+      const rawModel = rawForwardCatalogModel(providerName, provider, id);
+      out.push(forwardCatalogModel(providerName, provider, rawModel));
+    }
   }
   return out;
 }
 
 
+function applyForwardProfileConfig(providerName: string, provider: FrogProviderConfig, models: CatalogModel[]): CatalogModel[] {
+  return models.map(model => forwardCatalogModel(providerName, provider, model));
+}
+
 async function fetchAnthropicProfileModels(config: FrogConfig, profileId: string | undefined, headers?: Headers): Promise<CatalogModel[]> {
   if (!profileId) return [];
+  const providerEntry = anthropicForwardProvider(config);
+  if (!providerEntry) return [];
+  const [providerName, provider] = providerEntry;
+  const applyCurrentConfig = (models: CatalogModel[]): CatalogModel[] => applyForwardProfileConfig(providerName, provider, models);
   const cacheKey = profileModelsCacheKey(profileId);
   const ttlMs = config.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS;
   const fresh = getFreshCached(cacheKey, ttlMs);
-  if (fresh) return fresh;
+  if (fresh) return applyCurrentConfig(fresh);
 
   const forwardedAuthorization = headers?.get("authorization")?.trim();
   const forwardedApiKey = headers?.get("x-api-key")?.trim();
@@ -2560,11 +2602,8 @@ async function fetchAnthropicProfileModels(config: FrogConfig, profileId: string
       ? { name: "Authorization", value: forwardedAuthorization! }
       : null;
 
-  if (!authHeader) return getStaleCached(cacheKey) ?? [];
+  if (!authHeader) return applyCurrentConfig(getStaleCached(cacheKey) ?? []);
 
-  const providerEntry = anthropicForwardProvider(config);
-  if (!providerEntry) return getStaleCached(cacheKey) ?? [];
-  const [providerName, provider] = providerEntry;
   const base = provider.baseUrl.replace(/\/v1\/?$/, "").replace(/\/$/, "");
   const requestHeaders: Record<string, string> = {
     ...(provider.headers ?? {}),
@@ -2578,13 +2617,13 @@ async function fetchAnthropicProfileModels(config: FrogConfig, profileId: string
     const res = await fetch(`${base}/v1/models?limit=1000`, { headers: requestHeaders, signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) updateClaudeProfileAuthState(config, profileId, "oauth_rejected");
-      return getStaleCached(cacheKey) ?? [];
+      return applyCurrentConfig(getStaleCached(cacheKey) ?? []);
     }
-    const models = parseAnthropicModelList(providerName, await res.json());
+    const models = parseAnthropicModelList(providerName, provider, await res.json());
     setCached(cacheKey, models);
-    return models;
+    return applyCurrentConfig(models);
   } catch {
-    return getStaleCached(cacheKey) ?? [];
+    return applyCurrentConfig(getStaleCached(cacheKey) ?? []);
   }
 }
 
@@ -2866,15 +2905,19 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
 
   if (url.pathname === "/api/claude-profiles" && req.method === "GET") {
     ensureClaudeProfiles(config);
+    const plannedByProfileId = new Map(
+      plannedClaudeLaunchers(config).launchers.map(launcher => [launcher.profileId, launcher] as const),
+    );
     const profiles = listClaudeProfiles(config).map(profile => {
       const gateway = profileGatewaySnapshot(config, profile);
       if (profile.isDefault) {
         const installed = findRealClaudeExecutableOrNull([claudeLauncherBinDir()]) !== null;
         return { ...profile, injected: gateway.injected, gateway, shortcut: { command: "claude", installed, native: true } };
       }
-      const command = claudeProfileShortcutName(profile);
-      const path = join(claudeLauncherBinDir(), claudeLauncherFileName(command));
-      return { ...profile, injected: gateway.injected, gateway, shortcut: { command, installed: isExactManagedClaudeLauncher(path, profile.id), native: false } };
+      const launcher = plannedByProfileId.get(profile.id);
+      if (!launcher) return { ...profile, injected: gateway.injected, gateway, shortcutIssue: "name_conflict" };
+      const path = join(claudeLauncherBinDir(), claudeLauncherFileName(launcher.name));
+      return { ...profile, injected: gateway.injected, gateway, shortcut: { command: launcher.name, installed: isManagedClaudeProfileLauncher(path, profile.id), native: false } };
     });
     return jsonResponse({ profiles });
   }
@@ -2920,20 +2963,36 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     } catch (error) {
       return jsonResponse({ code: "registration_failed", error: error instanceof Error ? error.message : String(error) }, 409);
     }
-    const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
-    const command = claudeProfileShortcutName(profile);
-    // A successful sync does not imply this account got a shortcut: the plan skips names that collide
-    // or fail the shortcut pattern, and nothing is generated at all without an original Claude Code.
-    const installed = launcherSync.shortcutProfileIds?.includes(profile.id) ?? launcherSync.success;
-    if (!launcherSync.success) {
+    const launcher = plannedClaudeLaunchers(config).launchers.find(entry => entry.profileId === profile.id);
+    if (!launcher) {
       return jsonResponse({
-        code: "shortcut_sync_failed",
-        error: "The account was saved, but its shortcut could not be created. Fix the issue and run frogp refresh.",
-        profile: { ...profile, shortcut: { command, installed: false } },
-        launcherSync,
-      }, 500);
+        code: "shortcut_conflict",
+        error: "The account was saved, but its shortcut name conflicts with another account. Rename the account to create a distinct shortcut.",
+        profile,
+      }, 409);
     }
-    return jsonResponse({ profile: { ...profile, shortcut: { command, installed } }, launcherSync }, 201);
+    const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
+    const command = launcher.name;
+    const installed = launcherSync.success
+      && (launcherSync.launchers === undefined
+        || launcherSync.launchers.some(entry => entry.profileId === profile.id && entry.name === command));
+    if (!installed) {
+      return jsonResponse({
+        profile: { ...profile, shortcut: { command, installed: false } },
+        warning: launcherSync.realClaudeResolved === false
+          ? "The account was saved, but Claude Code is not installed. Install Claude Code and run frogp refresh to create its shortcut."
+          : launcherSync.success
+            ? "The account was saved, but its shortcut could not be created. Rename the account if the shortcut name conflicts, or fix the reported launcher issue."
+            : "The account was saved, but its shortcut could not be created. Fix the issue and run frogp refresh.",
+        launcherSync,
+      }, 201);
+    }
+    const warning = claudeLauncherSyncWarning(launcherSync);
+    return jsonResponse({
+      profile: { ...profile, shortcut: { command, installed: true } },
+      ...(warning ? { warning } : {}),
+      launcherSync,
+    }, 201);
   }
 
   if (url.pathname === "/api/claude-shortcuts/setup" && req.method === "POST") {
@@ -2942,16 +3001,16 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         return jsonResponse({
           state: "manual_required",
           message: "Automatic shell setup currently supports zsh on POSIX only.",
-          manual: zshManualPathLine(),
+          manual: shellManualPathLine(),
         });
       }
       const result = configureZshAccountShortcuts();
       if (result.state === "refused") {
-        return jsonResponse({ ...result, manual: zshManualPathLine() }, 409);
+        return jsonResponse({ ...result, manual: shellManualPathLine() }, 409);
       }
-      return jsonResponse({ ...result, manual: zshManualPathLine() });
+      return jsonResponse({ ...result, manual: shellManualPathLine() });
     } catch (error) {
-      return jsonResponse({ state: "refused", error: error instanceof Error ? error.message : String(error), manual: zshManualPathLine() }, 409);
+      return jsonResponse({ state: "refused", error: error instanceof Error ? error.message : String(error), manual: shellManualPathLine() }, 409);
     }
   }
 
@@ -2975,6 +3034,25 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       const body = parsedBody as { name?: unknown; routeAutoModeClassifier?: unknown };
       if ("routeAutoModeClassifier" in body && typeof body.routeAutoModeClassifier !== "boolean") {
         return jsonResponse({ error: "routeAutoModeClassifier must be a boolean" }, 400);
+      }
+      const renamed = typeof body.name === "string";
+      if (renamed && config.claudeProfiles?.defaultProfileId !== profile.id) {
+        const prospectiveShortcutName = claudeProfileShortcutName({
+          ...profile,
+          name: (body.name as string).trim(),
+        });
+        const defaultProfileId = config.claudeProfiles?.defaultProfileId;
+        const shortcutConflict = ensureClaudeProfiles(config).profiles.some(candidate =>
+          candidate.id !== profile.id
+          && candidate.id !== defaultProfileId
+          && claudeProfileShortcutName(candidate) === prospectiveShortcutName
+        );
+        if (shortcutConflict) {
+          return jsonResponse({
+            code: "shortcut_conflict",
+            error: "The account was not renamed because its shortcut name belongs to another account. Choose a distinct account name.",
+          }, 409);
+        }
       }
       if (typeof body.routeAutoModeClassifier === "boolean") {
         const previousFlag = profile.routeAutoModeClassifier === true;
@@ -3039,17 +3117,38 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
           }
         }
       }
-      if (typeof body.name === "string") profile = renameClaudeProfile(config, profile.id, body.name);
+      if (renamed) profile = renameClaudeProfile(config, profile.id, body.name as string);
       persistConfig(config);
-      const launcherSync = syncClaudeLaunchersBestEffort(config);
+      const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
+      let launcherWarning: string | undefined;
+      if (renamed && config.claudeProfiles?.defaultProfileId !== profile.id) {
+        const plannedLauncher = plannedClaudeLaunchers(config).launchers.find(entry => entry.profileId === profile.id);
+        const installed = plannedLauncher !== undefined
+          && launcherSync.success
+          && (launcherSync.launchers === undefined
+            || launcherSync.launchers.some(entry => entry.profileId === profile.id && entry.name === plannedLauncher.name));
+        if (!installed) {
+          launcherWarning = launcherSync.realClaudeResolved === false
+            ? "The account rename was saved, but Claude Code is not installed. Install Claude Code and run frogp refresh to create its shortcut."
+            : "The account rename was saved, but its shortcut could not be created. Fix the reported launcher issue and run frogp refresh.";
+        }
+      }
       await refreshClaudeCodeCatalogBestEffort({ claudeHome: profile.claudeHome, profileId: profile.id });
-      return jsonResponse({ profile, launcherSync });
+      const warning = launcherWarning ?? claudeLauncherSyncWarning(launcherSync);
+      return jsonResponse({
+        profile,
+        ...(warning ? { warning } : {}),
+        launcherSync,
+      });
     }
 
     if (!action && req.method === "DELETE") {
       try {
         if (ensureClaudeProfiles(config).profiles.length <= 1) {
           return jsonResponse({ error: "Cannot remove the only Claude Code home" }, 409);
+        }
+        if (config.claudeProfiles?.defaultProfileId === profile.id) {
+          return jsonResponse({ error: "Cannot remove the default Claude Code home" }, 409);
         }
         if (profile.injected === true || profileGatewayApplied(config, profile)) {
           if (claudeWritesBlocked("Claude Code home remove restore")) {
@@ -3065,7 +3164,8 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         const removed = removeClaudeProfile(config, profile.id);
         persistConfig(config);
         const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
-        return jsonResponse({ removed, launcherSync });
+        const warning = claudeLauncherSyncWarning(launcherSync);
+        return jsonResponse({ removed, ...(warning ? { warning } : {}), launcherSync });
       } catch {
         return jsonResponse({ error: "Claude Code home could not be removed" }, 409);
       }

@@ -27,7 +27,7 @@ import { findAvailablePort } from "./ports";
 import { startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
 import { parseEnvFlag, resolveWatchdogEnabled } from "./watchdog";
-import { configureZshAccountShortcuts, maybeConfigureAccountShortcuts, removeZshAccountShortcuts, zshAccountShortcutsSupported, zshManualPathLine } from "./shell-shortcuts";
+import { configureZshAccountShortcuts, maybeConfigureAccountShortcuts, removeZshAccountShortcuts, shellManualPathLine, zshAccountShortcutsSupported } from "./shell-shortcuts";
 import { injectClaudeSettingsWithRetry } from "./inject-retry";
 import { findGuiDistFromModuleDir, formatGuiBuildWarning, resolveGuiBuildIdentity } from "./build-identity";
 import {
@@ -50,7 +50,7 @@ import {
   markClaudeProjectEnrolled,
   resolveClaudeProject,
 } from "./claude-projects";
-import { claudeLauncherBinDir, findRealClaudeExecutable, runClaudeProfile, syncClaudeLauncherShims } from "./claude-launchers";
+import { claudeLauncherBinDir, claudeProfileShortcutName, findRealClaudeExecutable, plannedClaudeLaunchers, REAL_CLAUDE_UNRESOLVED_WARNING, runClaudeProfile, syncClaudeLauncherShims } from "./claude-launchers";
 import {
   claudeProjectSettingsFilePath,
   injectClaudeProjectSettings,
@@ -1154,6 +1154,12 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         process.exit(1);
       }
 
+      if (!plannedClaudeLaunchers(config).launchers.some(entry => entry.profileId === profile.id)) {
+        console.error(`❌ Account was saved: ${profile.name} (${profile.id})`);
+        console.error("   Its shortcut name conflicts with another account. Run frogp claude rename with a distinct name.");
+        process.exit(1);
+      }
+
       try {
         const launchers = syncClaudeLauncherShims(config);
         printLauncherSync(launchers);
@@ -1183,9 +1189,45 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         console.error("Usage: frogp claude rename <name-or-id> <new-name>");
         process.exit(1);
       }
-      const profile = renameClaudeProfile(config, selector, nextName);
+      const profile = resolveClaudeProfile(config, selector);
+      const defaultProfileId = config.claudeProfiles?.defaultProfileId;
+      const isDefaultProfile = defaultProfileId === profile.id;
+      if (!isDefaultProfile) {
+        const prospectiveShortcutName = claudeProfileShortcutName({ ...profile, name: nextName });
+        const shortcutConflict = ensureClaudeProfiles(config).profiles.some(candidate =>
+          candidate.id !== profile.id
+          && candidate.id !== defaultProfileId
+          && claudeProfileShortcutName(candidate) === prospectiveShortcutName
+        );
+        if (shortcutConflict) {
+          console.error("❌ Account rename rejected: its shortcut name conflicts with another account.");
+          console.error("   Choose a distinct account name.");
+          process.exit(1);
+        }
+      }
+      renameClaudeProfile(config, profile.id, nextName);
       saveConfig(config);
-      syncLaunchers(config);
+      const plannedLauncher = plannedClaudeLaunchers(config).launchers.find(entry => entry.profileId === profile.id);
+      try {
+        const launchers = syncClaudeLauncherShims(config);
+        printLauncherSync(launchers);
+        if (!isDefaultProfile && !launchers.realClaudeResolved) {
+          console.error(`❌ Account rename was saved: ${profile.name} (${profile.id})`);
+          console.error(`   Its shortcut could not be created: ${REAL_CLAUDE_UNRESOLVED_WARNING}.`);
+          process.exit(1);
+        }
+        const installed = plannedLauncher
+          && launchers.launchers.some(entry => entry.profileId === profile.id && entry.name === plannedLauncher.name);
+        if (!isDefaultProfile && !installed) {
+          console.error(`❌ Account rename was saved: ${profile.name} (${profile.id})`);
+          console.error("   Its shortcut could not be created. Fix the reported launcher issue, then run frogp refresh.");
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error(`❌ Account rename was saved: ${profile.name} (${profile.id})`);
+        console.error(`   Its shortcut could not be created: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+      }
       console.log(`✅ Claude Code home renamed: ${profile.name} (${profile.id})`);
       return;
     }
@@ -1198,6 +1240,10 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       const profile = resolveClaudeProfile(config, selector);
       if (ensureClaudeProfiles(config).profiles.length <= 1) {
         console.error("❌ Cannot remove the only Claude Code home");
+        process.exit(1);
+      }
+      if (config.claudeProfiles?.defaultProfileId === profile.id) {
+        console.error("❌ Cannot remove the default Claude Code home");
         process.exit(1);
       }
       try {
@@ -1232,7 +1278,7 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       }
       if (!zshAccountShortcutsSupported(process.env)) {
         console.log("Automatic shell setup currently supports zsh on POSIX only.");
-        console.log(`Add this line to your shell configuration: ${zshManualPathLine()}`);
+        console.log(`Add this line to your shell configuration: ${shellManualPathLine()}`);
         return;
       }
       let result: ReturnType<typeof configureZshAccountShortcuts>;
@@ -1240,12 +1286,12 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         result = configureZshAccountShortcuts();
       } catch (error) {
         console.error(`❌ zsh setup failed: ${error instanceof Error ? error.message : String(error)}`);
-        console.error(`   Manual setup: ${zshManualPathLine()}`);
+        console.error(`   Manual setup: ${shellManualPathLine()}`);
         process.exit(1);
       }
       if (result.state === "refused") {
         console.error(`❌ ${result.message}`);
-        console.error(`   Manual setup: ${zshManualPathLine()}`);
+        console.error(`   Manual setup: ${shellManualPathLine()}`);
         process.exit(1);
       }
       console.log(`${result.state === "configured" ? "✅" : "ℹ️"} ${result.message}`);
