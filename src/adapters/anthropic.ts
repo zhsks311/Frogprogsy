@@ -20,12 +20,14 @@ import { namespacedToolName } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
 import { modelRecordValue } from "../model-capabilities";
 import { parseDataUrl } from "./image";
+import { isLocalAccessSecret } from "../local-access";
 
 const ANTHROPIC_FORWARD_AUTH_HEADERS = ["authorization", "x-api-key"] as const;
 const LOCAL_CLAUDE_AUTH_TOKEN = "local-frogprogsy";
 
 function isLocalClaudeAuthToken(value: string): boolean {
   const trimmed = value.trim();
+  if (isLocalAccessSecret(trimmed)) return true;
   return trimmed === LOCAL_CLAUDE_AUTH_TOKEN || /^Bearer\s+local-frogprogsy$/i.test(trimmed);
 }
 
@@ -34,7 +36,9 @@ function applyAnthropicForwardAuthHeaders(headers: Record<string, string>, incom
   for (const name of ANTHROPIC_FORWARD_AUTH_HEADERS) {
     const value = incoming.get(name);
     if (!value || !value.trim()) continue;
-    if (name === "authorization" && isLocalClaudeAuthToken(value)) continue;
+    // A relay-local credential (the discovery sentinel or a relay access key) is not an upstream key in
+    // either carrier: forwarding it leaks the key and guarantees a 401.
+    if (isLocalClaudeAuthToken(value)) continue;
     // A scheme-only value (e.g. "Bearer" / "Bearer   ") carries no credential — forwarding it
     // upstream guarantees a 401; drop it instead.
     if (name === "authorization" && /^[A-Za-z-]+\s*$/.test(value.trim())) continue;

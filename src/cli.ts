@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +24,8 @@ import {
   writeActivePort,
   writeShutdownIntent,
 } from "./config";
+import { createConfigMutationLock } from "./config-mutation-lock";
+import { generateLocalAccessSecret, hashLocalAccessSecret, sameMachineAccessHeaders } from "./local-access";
 import { findAvailablePort } from "./ports";
 import { startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
@@ -132,6 +135,7 @@ Usage:
   frogp login [--list|<provider>]  Login or add a key (codex, openai, xai, kimi, API-key catalog)
   frogp logout <provider>       Remove a stored OAuth login
   frogp providers set <name> --auth claude-grant --grant <id>   Bind a provider to an isolated Claude subscription grant
+  frogp local-key <command>     Manage relay access keys (required to bind a non-loopback hostname)
   frogp update [--no-restart]   Update frogprogsy to the latest published version
   frogp version                 Print the installed version and development build id
   frogp help [command]          Show this help, or usage for one command
@@ -173,6 +177,7 @@ const HELP_TOPICS = new Set([
   "login",
   "logout",
   "providers",
+  "local-key",
   "gui",
   "update",
   "version",
@@ -203,6 +208,9 @@ function printSubcommandUsage(name: string | undefined): boolean {
       break;
     case "providers":
       console.log("Usage: frogp providers set <name> --auth claude-grant --grant <id>\n\nBind an existing provider to an isolated Claude subscription grant. Unknown provider or grant is a hard error. This never touches OAuth or API-key logins; it only sets the provider's authMode to claude-grant and records the grant id. It does not log in and does not auto-rebind on grant removal.");
+      break;
+    case "local-key":
+      console.log("Usage: frogp local-key list|add|remove ...\n\nManage relay access keys (config `localAccess`). Every /api/*, /v1/*, and /usage request must present a key. Send it in the dedicated x-frogp-local-key header by default. x-api-key and Authorization: Bearer are accepted for compatible clients, but a forward provider needs those slots for the real upstream credential — never replace that credential with the relay key. Config stores only the SHA-256 hash; the plaintext is printed once by `frogp local-key add`. A non-loopback `hostname` requires at least one key.\n\n  frogp local-key list\n  frogp local-key add <label> [--limit <maxRequests>/<windowSec>]\n  frogp local-key remove <id-or-label>\n\nRestart the proxy (frogp stop && frogp start) after changing keys.");
       break;
     case "doctor":
       console.log("Usage: frogp doctor claude [--json]\n\nRead-only diagnostics for Claude Code /model visibility plus isolated Claude subscription grants (resolved real claude path/kind, grant config-dir confinement, expected scoped Keychain service, provider dangling bindings, native auth env conflicts). Never reads or writes native Claude homes or the global/unscoped Keychain. --json prints one redacted JSON object on stdout; credential values, JSON, email, and absolute home paths are never emitted.");
@@ -373,25 +381,52 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
   return selected;
 }
 
-async function handleStart(options: { block?: boolean } = {}) {
-  const existingPid = readPid();
-  if (existingPid) {
-    const config = loadConfig();
-    if (await proxyHealthy(config.port)) {
-      console.error(`⚠️  Proxy already running (PID ${existingPid}). Use 'frogp stop' first.`);
-      process.exit(1);
-    }
-    removePid();
+async function acquireConfigMutationLockOrExit(): Promise<() => void> {
+  try {
+    return await createConfigMutationLock().acquire();
+  } catch (error) {
+    console.error(`❌ Could not safely coordinate config/start/local-key access: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
   }
+}
 
+async function handleStart(options: { block?: boolean } = {}) {
   const requestedPort = parsePortOption();
-  const port = await chooseListenPort(requestedPort);
-
   printGuiBuildWarning();
 
-  const server = startServer(port);
-  writePid(process.pid);
-  writeActivePort(port); // record real listen port for watchdog health-poll
+  const startup = await (async () => {
+    const releaseConfigLock = await acquireConfigMutationLockOrExit();
+    try {
+      const existingPid = readPid();
+      if (existingPid) return { runningPid: existingPid };
+
+      const port = await chooseListenPort(requestedPort);
+      const server = startServer(port);
+      let pidPublished = false;
+      let activePortPublished = false;
+      try {
+        writePid(process.pid);
+        pidPublished = true;
+        writeActivePort(port);
+        activePortPublished = true;
+        return { server, port };
+      } catch (error) {
+        server.stop(true);
+        if (activePortPublished) removeActivePort();
+        if (pidPublished) removePid();
+        throw error;
+      }
+    } finally {
+      releaseConfigLock();
+    }
+  })();
+
+  if ("runningPid" in startup) {
+    console.error(`⚠️  Proxy already running (PID ${startup.runningPid}). Use 'frogp stop' first.`);
+    process.exit(1);
+  }
+  const { server, port } = startup;
+
   clearShutdownIntent();
   // Clear any stale watchdog give-up status so 'frogp status' doesn't show
   // both 'running' and 'gave up' after a give-up → 'frogp start' cycle.
@@ -825,6 +860,7 @@ async function handleModels(flags: string[]) {
   let models: unknown;
   try {
     const res = await fetch(`http://${healthHost(config.hostname)}:${port}/api/models`, {
+      headers: sameMachineAccessHeaders(),
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -847,6 +883,7 @@ async function fetchApiModelRowsForDoctor(config: ReturnType<typeof loadConfig>,
   if (!readPid() || !(await proxyHealthy(port))) return [];
   try {
     const res = await fetch(`http://${healthHost(config.hostname)}:${port}/api/models`, {
+      headers: sameMachineAccessHeaders(),
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) return [];
@@ -1766,6 +1803,188 @@ async function handleProvidersCommand(values: string[]): Promise<void> {
   console.log(`   Verify the grant is logged in with: frogp claude grants status ${grant.id}`);
 }
 
+function invalidLocalKeyAdd(message: string): never {
+  console.error(`❌ ${message}`);
+  console.error("Usage: frogp local-key add <label> [--limit <maxRequests>/<windowSec>]");
+  process.exit(1);
+}
+
+/** Parse `<label> [--limit <maxRequests>/<windowSec>]` without silently discarding malformed arguments. */
+function parseLocalKeyAddArguments(values: string[]): {
+  label: string;
+  requestLimit?: { windowSec: number; maxRequests: number };
+} {
+  const labelWords: string[] = [];
+  let rawLimit: string | undefined;
+
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (!value.startsWith("--")) {
+      if (rawLimit !== undefined) {
+        invalidLocalKeyAdd(`Unexpected positional argument after --limit: ${value}`);
+      }
+      labelWords.push(value);
+      continue;
+    }
+    if (value !== "--limit") {
+      invalidLocalKeyAdd(`Unknown option: ${value}`);
+    }
+    if (rawLimit !== undefined || values[index + 1] === "--limit") {
+      invalidLocalKeyAdd("--limit may be specified only once.");
+    }
+    if (labelWords.length === 0) {
+      invalidLocalKeyAdd("The label must appear before --limit.");
+    }
+    const limitValue = values[index + 1];
+    if (!limitValue || limitValue.startsWith("--")) {
+      invalidLocalKeyAdd("--limit requires <maxRequests>/<windowSec>.");
+    }
+    rawLimit = limitValue;
+    index += 1;
+  }
+
+  const label = labelWords.join(" ").trim();
+  if (!label) {
+    invalidLocalKeyAdd("A label is required.");
+  }
+  if (rawLimit === undefined) {
+    return { label };
+  }
+
+  const match = /^(\d+)\/(\d+)$/.exec(rawLimit);
+  const maxRequests = match ? Number(match[1]) : 0;
+  const windowSec = match ? Number(match[2]) : 0;
+  if (
+    !Number.isSafeInteger(maxRequests) ||
+    maxRequests <= 0 ||
+    !Number.isSafeInteger(windowSec) ||
+    windowSec <= 0
+  ) {
+    invalidLocalKeyAdd("--limit takes positive safe integers as <maxRequests>/<windowSec>, e.g. --limit 60/60.");
+  }
+  return { label, requestLimit: { windowSec, maxRequests } };
+}
+
+async function handleLocalKeyCommand(values: string[]): Promise<void> {
+  switch (values[0] ?? "list") {
+    case "list": {
+      const config = loadConfig();
+      const keys = config.localAccess?.keys ?? [];
+      if (keys.length === 0) {
+        console.log("No relay access keys. Create one with: frogp local-key add <label>");
+        console.log(`Relay authentication is ${config.localAccess?.enabled === true ? "enabled" : "disabled"}; a non-loopback hostname requires at least one key.`);
+        return;
+      }
+      for (const key of keys) {
+        const limit = key.requestLimit ? `  limit=${key.requestLimit.maxRequests}/${key.requestLimit.windowSec}s` : "";
+        console.log(`${key.id}  ${key.label ?? "(no label)"}${limit}`);
+      }
+      console.log(`Relay authentication: ${config.localAccess?.enabled === true ? "enabled" : "disabled"}`);
+      return;
+    }
+    case "add": {
+      const { label, requestLimit } = parseLocalKeyAddArguments(values.slice(1));
+      const result = await (async () => {
+        const releaseConfigLock = await acquireConfigMutationLockOrExit();
+        try {
+          const existingPid = readPid();
+          if (existingPid) {
+            return {
+              error: `Stop the proxy before you add a relay access key: frogp stop`,
+              detail: "A running proxy uses the config snapshot it loaded at start.",
+            };
+          }
+          const config = loadConfig();
+          const keys = config.localAccess?.keys ?? [];
+          if (keys.some(key => key.label === label)) {
+            return {
+              error: `A relay access key label already exists: ${label}`,
+              detail: "Choose a unique label; no key was created.",
+            };
+          }
+          const secret = generateLocalAccessSecret();
+          const id = `lk_${randomBytes(4).toString("hex")}`;
+          config.localAccess = {
+            enabled: true,
+            keys: [...keys, { id, label, secretHash: hashLocalAccessSecret(secret), ...(requestLimit ? { requestLimit } : {}) }],
+          };
+          saveConfig(config);
+          return { id, label, secret };
+        } finally {
+          releaseConfigLock();
+        }
+      })();
+      if ("error" in result) {
+        console.error(`❌ ${result.error}`);
+        console.error(`   ${result.detail}`);
+        process.exit(1);
+      }
+      console.log(`✅ Relay access key created: ${result.label} (${result.id})`);
+      console.log("");
+      console.log(`   ${result.secret}`);
+      console.log("");
+      console.log("This is the only time the key is shown — the config stores only its SHA-256 hash.");
+      console.log("Send it in x-frogp-local-key. If a forward provider uses Authorization or x-api-key for its upstream credential, keep that credential there and do not replace it with the relay key.");
+      console.log("Relay authentication is now enabled; start the proxy to apply: frogp start");
+      return;
+    }
+    case "remove": {
+      const selector = values.slice(1).join(" ").trim();
+      const result = await (async () => {
+        const releaseConfigLock = await acquireConfigMutationLockOrExit();
+        try {
+          const existingPid = readPid();
+          if (existingPid) {
+            return {
+              error: "Stop the proxy before you remove a relay access key: frogp stop",
+              detail: "A running proxy uses the config snapshot it loaded at start.",
+            };
+          }
+          const config = loadConfig();
+          const keys = config.localAccess?.keys ?? [];
+          let match = keys.find(key => key.id === selector);
+          if (!match) {
+            const labelMatches = keys.filter(key => key.label === selector);
+            if (labelMatches.length > 1) {
+              return {
+                error: `Relay access key label matches multiple relay access keys: ${selector}`,
+                detail: "Remove one by id. List ids with: frogp local-key list",
+              };
+            }
+            match = labelMatches[0];
+          }
+          if (!selector || !match) {
+            return {
+              error: `Unknown relay access key: ${selector || "(missing)"}`,
+              detail: "List keys and ids with: frogp local-key list",
+            };
+          }
+          const remaining = keys.filter(key => key !== match);
+          config.localAccess = { enabled: remaining.length > 0, keys: remaining };
+          saveConfig(config);
+          return { id: match.id, label: match.label, remaining: remaining.length };
+        } finally {
+          releaseConfigLock();
+        }
+      })();
+      if ("error" in result) {
+        console.error(`❌ ${result.error}`);
+        console.error(`   ${result.detail}`);
+        process.exit(1);
+      }
+      console.log(`✅ Relay access key removed: ${result.label ?? result.id} (${result.id})`);
+      if (result.remaining === 0) {
+        console.log("No keys remain, so relay authentication is now disabled. A non-loopback hostname will refuse to start.");
+      }
+      console.log("Start the proxy to apply: frogp start");
+      return;
+    }
+    default:
+      console.error("Usage: frogp local-key list|add <label> [--limit <maxRequests>/<windowSec>]|remove <id-or-label>");
+      process.exit(1);
+  }
+}
+
 switch (command) {
   case "init": {
     const { runInit } = await import("./init");
@@ -1809,6 +2028,9 @@ switch (command) {
     break;
   case "providers":
     await handleProvidersCommand(args.slice(1));
+    break;
+  case "local-key":
+    await handleLocalKeyCommand(args.slice(1));
     break;
   case "login": {
     const { handleLogin } = await import("./oauth/login-cli");

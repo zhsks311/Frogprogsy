@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { ClaudeProfileAuthState, ClaudeProfileRecord, FrogConfig, GatewayAuthCarrier } from "./types";
 import { resolveClaudeCodeHome } from "./claude-paths";
 import { AUTO_MODE_CLASSIFIER_ALIAS } from "./classifier-settings";
+import { LOCAL_ACCESS_HEADER } from "./local-access";
 
 export const CLAUDE_PROFILE_HEADER = "X-Frogp-Claude-Profile";
 const LOCAL_CLAUDE_AUTH_TOKEN = "local-frogprogsy";
@@ -202,14 +203,23 @@ export function resolveClaudeProfileClassifierFlag(config: FrogConfig, profileId
 }
 
 
-export function mergeClaudeProfileHeader(existing: string | undefined, profileId: string): string {
-  const entries = parseCustomHeaders(existing).filter(entry => entry.name.toLowerCase() !== CLAUDE_PROFILE_HEADER.toLowerCase());
-  entries.push({ name: CLAUDE_PROFILE_HEADER, value: profileId });
+function mergeClaudeCustomHeader(existing: string | undefined, name: string, value: string): string {
+  const entries = parseCustomHeaders(existing).filter(entry => entry.name.toLowerCase() !== name.toLowerCase());
+  entries.push({ name, value });
   return entries.map(entry => `${entry.name}: ${entry.value}`).join("\n");
 }
 
+export function mergeClaudeProfileHeader(existing: string | undefined, profileId: string): string {
+  return mergeClaudeCustomHeader(existing, CLAUDE_PROFILE_HEADER, profileId);
+}
+
 export function removeClaudeProfileHeader(existing: string | undefined): string | undefined {
-  const entries = parseCustomHeaders(existing).filter(entry => entry.name.toLowerCase() !== CLAUDE_PROFILE_HEADER.toLowerCase());
+  return removeClaudeCustomHeaders(existing, CLAUDE_PROFILE_HEADER);
+}
+
+function removeClaudeCustomHeaders(existing: string | undefined, ...names: string[]): string | undefined {
+  const removedNames = new Set(names.map(name => name.toLowerCase()));
+  const entries = parseCustomHeaders(existing).filter(entry => !removedNames.has(entry.name.toLowerCase()));
   if (entries.length === 0) return undefined;
   return entries.map(entry => `${entry.name}: ${entry.value}`).join("\n");
 }
@@ -230,14 +240,24 @@ function parseCustomHeaders(raw: string | undefined): Array<{ name: string; valu
   return entries;
 }
 
-export function buildClaudeProfileRunEnv(profile: ClaudeProfileRecord, port: number, carrier: GatewayAuthCarrier = "token-free", baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function buildClaudeProfileRunEnv(
+  profile: ClaudeProfileRecord,
+  port: number,
+  carrier: GatewayAuthCarrier = "token-free",
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  localAccessToken?: string,
+): NodeJS.ProcessEnv {
+  let customHeaders = mergeClaudeProfileHeader(baseEnv.ANTHROPIC_CUSTOM_HEADERS, profile.id);
+  if (localAccessToken?.trim()) {
+    customHeaders = mergeClaudeCustomHeader(customHeaders, LOCAL_ACCESS_HEADER, localAccessToken.trim());
+  }
   const env: NodeJS.ProcessEnv = {
     ...baseEnv,
     CLAUDE_CONFIG_DIR: profile.claudeHome,
     CLAUDE_HOME: profile.claudeHome,
     ANTHROPIC_BASE_URL: `http://localhost:${port}`,
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
-    ANTHROPIC_CUSTOM_HEADERS: mergeClaudeProfileHeader(baseEnv.ANTHROPIC_CUSTOM_HEADERS, profile.id),
+    ANTHROPIC_CUSTOM_HEADERS: customHeaders,
   };
   // Default/absent carrier is token-free: native claude.ai OAuth passes through, so no sentinel is
   // injected. Only "sentinel" restores the exact current per-process local gateway token. Any stale
@@ -262,7 +282,7 @@ export function buildClaudeProfileNativeEnv(profile: ClaudeProfileRecord, baseEn
   delete env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY;
   if (env.ANTHROPIC_AUTH_TOKEN === LOCAL_CLAUDE_AUTH_TOKEN) delete env.ANTHROPIC_AUTH_TOKEN;
   if (env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS) delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
-  const headers = removeClaudeProfileHeader(baseEnv.ANTHROPIC_CUSTOM_HEADERS);
+  const headers = removeClaudeCustomHeaders(baseEnv.ANTHROPIC_CUSTOM_HEADERS, CLAUDE_PROFILE_HEADER, LOCAL_ACCESS_HEADER);
   if (headers) env.ANTHROPIC_CUSTOM_HEADERS = headers;
   else delete env.ANTHROPIC_CUSTOM_HEADERS;
   return env;

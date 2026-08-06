@@ -115,4 +115,15 @@ describe("Claude Code homes", () => {
     expect(env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY).toBeUndefined();
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe("X-User: keep");
   });
+  test("native env strips frogp-owned headers while preserving unrelated custom headers", () => {
+    const env = buildClaudeProfileNativeEnv(
+      { id: "cp_native", name: "Native", claudeHome: "/tmp/.claude-native" },
+      {
+        ANTHROPIC_CUSTOM_HEADERS: "X-Frogp-Claude-Profile: cp_old\nx-frogp-local-key: fresh-token\nX-User: keep",
+      },
+    );
+
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe("X-User: keep");
+  });
+
 });

@@ -1,5 +1,6 @@
 import { FORWARD_HEADERS } from "./adapters/openai-responses";
 import { resolveEnvValue } from "./config";
+import { isLocalAccessSecret } from "./local-access";
 import { codexBackendHeaders, isCodexBackendBaseUrl } from "./oauth/codex";
 import { resolveProviderAuth } from "./provider-auth";
 import type { FrogConfig, FrogProviderConfig } from "./types";
@@ -58,12 +59,14 @@ export function resolveOpenAIResponsesFallbackProvider(
 }
 
 /**
- * True when the caller supplied a real upstream Authorization header. The local discovery sentinel
- * (`local-frogprogsy`) is not a usable upstream credential for a `forward`-auth fallback.
+ * True when the caller supplied a real upstream Authorization header. Neither the local discovery
+ * sentinel (`local-frogprogsy`) nor a relay access key is a usable upstream credential for a
+ * `forward`-auth fallback.
  */
 export function hasUsableForwardAuthorization(headers: Headers): boolean {
   const value = headers.get("authorization")?.trim();
-  return !!value && value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
+  if (!value || isLocalAccessSecret(value)) return false;
+  return value !== "local-frogprogsy" && !/^Bearer\s+local-frogprogsy$/i.test(value);
 }
 
 /** Configured OpenAI Responses helper provider — forward-auth, OAuth, or API-key backed. */
@@ -129,7 +132,8 @@ export function buildOpenAIResponsesFallbackFetch(
   if (provider.authMode === "forward") {
     for (const header of FORWARD_HEADERS) {
       const value = incomingHeaders.get(header);
-      if (value) headers[header] = value;
+      if (!value || (header === "authorization" && isLocalAccessSecret(value))) continue;
+      headers[header] = value;
     }
   } else {
     const apiKey = resolveEnvValue(provider.apiKey);

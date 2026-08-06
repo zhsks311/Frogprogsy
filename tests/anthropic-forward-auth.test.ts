@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { parseMessagesRequest } from "../src/messages/parser";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION } from "../src/oauth/anthropic";
+import { __resetLocalAccessRegistry, hashLocalAccessSecret, registerLocalAccessKeys } from "../src/local-access";
+import type { FrogConfig } from "../src/types";
 
 /**
  * Anthropic rejects subscription Bearer tokens whose first system block is not the Claude Code
@@ -70,6 +72,19 @@ describe("Anthropic forward auth (header relay)", () => {
     const { headers } = buildForward({ "x-api-key": "sk-ant-real" });
     expect(headers["x-api-key"]).toBe("sk-ant-real");
     expect(headers.Authorization).toBeUndefined();
+  });
+
+  test("a relay access key is not forwarded upstream in either carrier", () => {
+    const relayKey = "frogp_relay-access-key-for-this-test";
+    registerLocalAccessKeys({
+      localAccess: { enabled: true, keys: [{ id: "lk_test", secretHash: hashLocalAccessSecret(relayKey) }] },
+    } as unknown as FrogConfig);
+    try {
+      expect(buildForward({ "x-api-key": relayKey }).headers["x-api-key"]).toBeUndefined();
+      expect(buildForward({ authorization: `Bearer ${relayKey}` }).headers.Authorization).toBeUndefined();
+    } finally {
+      __resetLocalAccessRegistry();
+    }
   });
 });
 

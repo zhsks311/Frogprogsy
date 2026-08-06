@@ -2,6 +2,7 @@ import type { IncomingMeta, ProviderAdapter } from "./base";
 import type { AdapterEvent, FrogParsedRequest, FrogProviderConfig, FrogUsage } from "../types";
 import { debugDroppedFrame } from "../debug";
 import { codexBackendHeaders, isCodexBackendBaseUrl } from "../oauth/codex";
+import { isLocalAccessSecret } from "../local-access";
 
 // Headers relayed verbatim from the caller in forward-auth mode.
 // Exported so fallbacks reuse the exact same forwarded-auth set for ChatGPT/OpenAI Responses calls.
@@ -295,7 +296,8 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
         if (provider.headers) Object.assign(headers, provider.headers); // static headers first…
         for (const h of FORWARD_HEADERS) {
           const v = incoming?.headers.get(h);
-          if (v) headers[h] = v;                                        // …so forwarded auth always wins.
+          if (!v || (h === "authorization" && isLocalAccessSecret(v))) continue;
+          headers[h] = v;                                                // …so forwarded auth always wins.
         }
       } else if (isCodexBackend) {
         url = `${provider.baseUrl.replace(/\/$/, "")}/responses`;
