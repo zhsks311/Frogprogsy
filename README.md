@@ -89,6 +89,7 @@ In the dashboard, connect your first provider:
 3. Save an API key, or use OAuth for supported providers such as Codex/ChatGPT, xAI, and Kimi. For Anthropic Claude, keep subscription auth in Claude Code homes; adding the Anthropic provider creates a forward-auth model-picker entry without storing a Claude token in frogprogsy.
 4. Choose the default provider and model.
 5. Confirm the models appear in the Claude Code model picker.
+
 If the Claude Code model picker looks stale after changing providers or models, refresh the Claude Code profile list and reopen the picker from a fresh Claude Code session or a resumed session:
 
 ```bash
