@@ -25,7 +25,7 @@ import { signalWithTimeout } from "./abort";
 import { debugSwallowed } from "./debug";
 import {
   clearLoginState, getLoginStatus, isOAuthProvider,
-  listOAuthProviders, reconcileOAuthProviders, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
+  listOAuthProviders, reconcileOAuthProviderConfig, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
 } from "./oauth/index";
 import { isAllowedClaudeGrantBaseUrl, resolveProviderAuth } from "./provider-auth";
 import { authorizeLocalAccess, generateLocalAccessSecret, isLocalAccessEnabled, isLocalAccessSecret, LOCAL_ACCESS_HEADER, localAccessConfigIssue, registerLocalAccessKeys, setRuntimeAccessToken, type LocalAccessDenied } from "./local-access";
@@ -39,7 +39,7 @@ import { runSearchApi, type SearchApiOutcome } from "./web-search-fallback/searc
 import { runNoKeySearch, type PublicDnsLookup } from "./web-search-fallback/no-key";
 import { decideImageFallback, describeImagesInPlace } from "./image-fallback";
 import { removeCredential } from "./oauth/store";
-import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
+import { enrichProviderFromCatalog, listKeyLoginProviders, reconcileKeyProviderConfigs } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
 import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
@@ -4077,9 +4077,11 @@ export function startServer(port?: number) {
     saveConfig(config);
     console.error(`frogprogsy: removed runtime fixture provider(s) from config: ${removedFixtures.join(", ")}`);
   }
-  // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
-  // adding/dropping models reaches existing configs on start — not just fresh installs.
-  reconcileOAuthProviders(config);
+  // Refresh registry-managed OAuth and API-key provider catalog fields so model additions/removals
+  // reach existing configs. Explicit key-provider allowlists (`liveModels: false`) remain untouched.
+  const oauthCatalogChanged = reconcileOAuthProviderConfig(config);
+  const keyCatalogChanged = reconcileKeyProviderConfigs(config);
+  if (oauthCatalogChanged || keyCatalogChanged) saveConfig(config);
   // Seed default featured subagent models on first run only (UNSET → defaults). A user-set list,
   // even [], is left alone so GUI removals persist.
   if (config.subagentModels === undefined) {
