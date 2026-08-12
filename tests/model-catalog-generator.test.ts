@@ -130,6 +130,22 @@ describe("model catalog generator", () => {
     expect(modelCatalogDocumentV1Schema.safeParse(invalid).success).toBeFalse();
   });
 
+  test("reasoning이 없는 model의 reasoning effort map을 거부한다", () => {
+    const invalid = {
+      ...validDocument,
+      providers: [{
+        ...validDocument.providers[0],
+        models: [{
+          ...validDocument.providers[0].models[0],
+          reasoningEfforts: [],
+          reasoningEffortMap: { low: "high" },
+          noReasoning: true,
+        }],
+      }],
+    };
+    expect(modelCatalogDocumentV1Schema.safeParse(invalid).success).toBeFalse();
+  });
+
   test("source commit과 catalog revision 경계를 검증한다", () => {
     expect(modelCatalogDocumentV1Schema.safeParse({
       ...validDocument,

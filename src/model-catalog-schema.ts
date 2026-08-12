@@ -64,6 +64,13 @@ export const modelCatalogModelV1Schema = z.strictObject({
       path: ["reasoningEfforts"],
     });
   }
+  if (model.noReasoning === true && Object.keys(model.reasoningEffortMap ?? {}).length > 0) {
+    context.addIssue({
+      code: "custom",
+      message: "A model without reasoning cannot declare a reasoning effort map",
+      path: ["reasoningEffortMap"],
+    });
+  }
 });
 
 export const modelCatalogProviderV1Schema = z.strictObject({
