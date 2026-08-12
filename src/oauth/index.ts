@@ -6,7 +6,8 @@ import { loginXai, refreshXaiToken } from "./xai";
 import { ANTHROPIC_OAUTH_BETA } from "./anthropic";
 import { loginKimi, refreshKimiToken } from "./kimi";
 import { loginCodex, refreshCodexToken, isCodexBackendBaseUrl, codexBackendHeaders } from "./codex";
-import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
+import { deriveOAuthDefaultModel } from "../providers/derive";
+import { providerUserSeedFromRegistry } from "../providers/registry";
 
 const REFRESH_SKEW_MS = 60_000;
 
@@ -19,8 +20,8 @@ interface OAuthProviderDef {
 }
 
 function oauthConfig(id: string): FrogProviderConfig {
-  const config = deriveOAuthProviderConfig(id);
-  if (!config) throw new Error(`OAuth provider missing from registry: ${id}`);
+  const config = providerUserSeedFromRegistry(id);
+  if (config.authMode !== "oauth") throw new Error(`OAuth provider missing from registry: ${id}`);
   return config;
 }
 
@@ -113,38 +114,6 @@ export function buildModelsRequest(prov: FrogProviderConfig, apiKey: string | un
   return { url: `${prov.baseUrl}/models`, headers };
 }
 
-/**
- * Refresh OAuth-managed provider presets (`models`, `noReasoningModels`, and a stale `defaultModel`)
- * from the registry so a proxy update that revises a provider's models — e.g. dropping deprecated
- * Claude snapshots or adding a new grok endpoint not in the live `/models` — reaches EXISTING
- * configs on the next `frogp start`, instead of only fresh installs. The live `/models` fetch stays
- * the primary source; this keeps the static fallback (and models-not-in-/models) current.
- *
- * Only touches providers that are registry-managed AND still `authMode: "oauth"`, and only the
- * preset fields (never apiKey/baseUrl/user toggles). Persists + returns true when anything changed.
- */
-function cloneProviderField(value: unknown): unknown {
-  if (Array.isArray(value)) return [...value];
-  if (value && typeof value === "object") return JSON.parse(JSON.stringify(value));
-  return value;
-}
-
-const OAUTH_RECONCILE_FIELDS: (keyof FrogProviderConfig)[] = [
-  "models",
-  "contextWindow",
-  "modelContextWindows",
-  "modelCapabilities",
-  "noReasoningModels",
-  "reasoningEfforts",
-  "modelReasoningEfforts",
-  "reasoningEffortMap",
-  "modelReasoningEffortMap",
-  "noTemperatureModels",
-  "noTopPModels",
-  "noPenaltyModels",
-  "autoToolChoiceOnlyModels",
-  "preserveReasoningContentModels",
-];
 
 function hasStoredCredential(provider: string): boolean {
   return !!getCredential(provider);
@@ -164,45 +133,22 @@ export function restoreCredentialedOAuthProviderConfigs(
   return changed;
 }
 
-export function reconcileOAuthProviderConfig(
-  config: FrogConfig,
-  hasCredential: (provider: string) => boolean = hasStoredCredential,
-): boolean {
-  let changed = restoreCredentialedOAuthProviderConfigs(config, hasCredential);
-  for (const [name, prov] of Object.entries(config.providers)) {
-    const def = OAUTH_PROVIDERS[name];
-    if (!def || prov.authMode !== "oauth") continue;
-    const preset = def.providerConfig;
-    for (const field of OAUTH_RECONCILE_FIELDS) {
-      if (JSON.stringify(prov[field]) === JSON.stringify(preset[field])) continue;
-      if (preset[field] !== undefined) {
-        prov[field] = cloneProviderField(preset[field]) as never;
-      } else {
-        delete prov[field];
-      }
-      changed = true;
-    }
-    // Heal a defaultModel that no longer exists in the refreshed list (e.g. a deprecated snapshot).
-    if (prov.defaultModel && preset.defaultModel && !(prov.models ?? []).includes(prov.defaultModel)) {
-      prov.defaultModel = preset.defaultModel;
-      changed = true;
-    }
-  }
-  return changed;
-}
-
-export function reconcileOAuthProviders(config: FrogConfig): boolean {
-  const changed = reconcileOAuthProviderConfig(config);
-  if (changed) saveConfig(config);
-  return changed;
-}
 
 /** Add/refresh an OAuth provider's config entry on a config object (does not persist). */
 export function upsertOAuthProvider(config: FrogConfig, provider: string): boolean {
   const def = OAUTH_PROVIDERS[provider];
   if (!def) return false;
-  const next = { ...def.providerConfig };
-  const changed = JSON.stringify(config.providers[provider]) !== JSON.stringify(next);
+  const current = config.providers[provider];
+  const next = current ? {
+    ...def.providerConfig,
+    ...current,
+    adapter: def.providerConfig.adapter,
+    baseUrl: def.providerConfig.baseUrl,
+    authMode: def.providerConfig.authMode,
+    catalogProviderId: def.providerConfig.catalogProviderId,
+    defaultModel: current.defaultModel ?? def.providerConfig.defaultModel,
+  } : { ...def.providerConfig };
+  const changed = JSON.stringify(current) !== JSON.stringify(next);
   config.providers[provider] = next;
   return changed;
 }

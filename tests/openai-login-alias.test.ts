@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { KEY_LOGIN_PROVIDERS } from "../src/oauth/key-providers";
 import { providerConfigFromKeyLoginProvider, resolveKeyLoginRequest } from "../src/oauth/login-cli";
 
 describe("OpenAI login alias", () => {
@@ -8,11 +7,13 @@ describe("OpenAI login alias", () => {
 
     expect(request).toEqual({ lookupName: "openai-apikey", saveName: "openai", alias: true });
 
-    const provider = providerConfigFromKeyLoginProvider(KEY_LOGIN_PROVIDERS[request!.lookupName], "sk-test");
+    const provider = providerConfigFromKeyLoginProvider(request!.lookupName, "sk-test");
     expect(provider).toMatchObject({
       adapter: "openai-responses",
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test",
+      authMode: "key",
+      catalogProviderId: "openai-apikey",
       defaultModel: "gpt-5.5",
     });
   });

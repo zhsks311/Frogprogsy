@@ -61,22 +61,21 @@ describe("Umans provider", () => {
     expect(provider.escapeBuiltinToolNames).toBe(true);
   });
 
-  test("CLI key-login save payload preserves Umans runtime metadata", () => {
-    const provider = providerConfigFromKeyLoginProvider(KEY_LOGIN_PROVIDERS.umans, "sk-umans");
+  test("CLI key-login save payload excludes managed Umans runtime metadata", () => {
+    const provider = providerConfigFromKeyLoginProvider("umans", "sk-umans");
 
-    expect(provider).toMatchObject({
+    expect(provider).toEqual({
       adapter: "anthropic",
       baseUrl: "https://api.code.umans.ai",
+      authMode: "key",
+      catalogProviderId: "umans",
       apiKey: "sk-umans",
       defaultModel: "umans-coder",
-      escapeBuiltinToolNames: true,
     });
-    expect(provider.models).toContain("umans-kimi-k2.7");
-    expect(provider.modelReasoningEfforts?.["umans-glm-5.2"]).toEqual(["high", "xhigh"]);
-    expect(provider.modelReasoningEffortMap?.["umans-glm-5.2"]?.xhigh).toBe("max");
-    expect(provider.modelCapabilities?.["umans-kimi-k3"]?.input).toEqual(["text", "image"]);
-    expect(provider.modelContextWindows?.["umans-kimi-k3"]).toBe(1_000_000);
-    expect(provider.modelCapabilities?.["umans-deepseek-v4-flash-0731"]?.input).toEqual(["text"]);
+    expect(provider.models).toBeUndefined();
+    expect(provider.modelReasoningEfforts).toBeUndefined();
+    expect(provider.modelCapabilities).toBeUndefined();
+    expect(provider.modelContextWindows).toBeUndefined();
   });
 
   test("Anthropic adapter posts Umans requests to /v1/messages with x-api-key", () => {

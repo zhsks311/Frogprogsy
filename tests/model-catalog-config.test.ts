@@ -1,0 +1,289 @@
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  buildEffectiveConfig,
+  migratePersistedCatalogConfig,
+  providerUserSeedFromRegistry,
+  writeCatalogConfigBackupOnce,
+} from "../src/model-catalog-config";
+import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
+import type { ModelCatalogDocumentV1 } from "../src/model-catalog-schema";
+import type { FrogConfig } from "../src/types";
+
+function bundledCatalog(): ModelCatalogDocumentV1 {
+  return {
+    schemaVersion: 1,
+    catalogRevision: 1,
+    catalogDigest: "a".repeat(64),
+    sourceCommit: "b".repeat(40),
+    generatedAt: "2026-08-12T00:00:00.000Z",
+    minFrogprogsyVersion: "0.0.1",
+    providers: [
+      {
+        id: "umans",
+        defaultModel: "umans-coder",
+        models: [
+          {
+            id: "umans-coder",
+            contextWindow: 262_144,
+            inputModalities: ["text", "image"],
+            reasoningEfforts: ["low", "high"],
+            noTemperature: true,
+          },
+          {
+            id: "umans-glm-5.2",
+            contextWindow: 200_000,
+            inputModalities: ["text"],
+            noReasoning: true,
+          },
+        ],
+      },
+      {
+        id: "ollama",
+        models: [],
+      },
+    ],
+  };
+}
+
+function selectedCatalog(document = bundledCatalog()): SelectedModelCatalog {
+  return {
+    document,
+    status: {
+      source: "bundled",
+      catalogRevision: document.catalogRevision,
+      catalogDigest: document.catalogDigest,
+      sourceCommit: document.sourceCommit,
+      generatedAt: document.generatedAt,
+      skippedRecords: 0,
+      warnings: [],
+    },
+  };
+}
+
+function legacyConfig(): FrogConfig {
+  return {
+    port: 3764,
+    defaultProvider: "umans",
+    disabledModels: ["umans/user-disabled"],
+    providers: {
+      umans: {
+        adapter: "anthropic",
+        baseUrl: "https://api.code.umans.ai/",
+        apiKey: "secret",
+        apiKeys: ["second", "third"],
+        headers: { "x-user-setting": "keep" },
+        defaultModel: "user-added",
+        models: ["umans-glm-5.1", "user-added"],
+      },
+    },
+  };
+}
+
+describe("persisted model catalog config migration", () => {
+  test("backs up the legacy config before exact-identity migration and preserves user-owned values", () => {
+    const legacy = legacyConfig();
+    let backup = "";
+    let inputAtBackup = "";
+
+    const migrated = migratePersistedCatalogConfig(legacy, bundledCatalog(), {
+      writeBackup: bytes => {
+        backup = bytes;
+        inputAtBackup = JSON.stringify(legacy);
+      },
+    });
+
+    expect(migrated.changed).toBe(true);
+    expect(migrated.warnings).toEqual([]);
+    expect(migrated.config.modelCatalogConfigVersion).toBe(1);
+    expect(migrated.config.providers.umans).toEqual({
+      adapter: "anthropic",
+      baseUrl: "https://api.code.umans.ai/",
+      apiKey: "secret",
+      apiKeys: ["second", "third"],
+      headers: { "x-user-setting": "keep" },
+      defaultModel: "user-added",
+      catalogProviderId: "umans",
+      userModels: ["user-added"],
+    });
+    expect(migrated.config.disabledModels).toEqual(["umans/user-disabled"]);
+    expect(legacy.modelCatalogConfigVersion).toBeUndefined();
+    expect(legacy.providers.umans.models).toEqual(["umans-glm-5.1", "user-added"]);
+    expect(inputAtBackup).toBe(JSON.stringify(legacy));
+    expect(backup).toContain("\"apiKey\": \"secret\"");
+    expect(backup).toBe(`${JSON.stringify(legacy, null, 2)}\n`);
+  });
+
+  test("keeps renamed providers custom instead of guessing by adapter and URL", () => {
+    const legacy = legacyConfig();
+    legacy.defaultProvider = "my-umans";
+    legacy.providers["my-umans"] = legacy.providers.umans;
+    delete legacy.providers.umans;
+
+    const migrated = migratePersistedCatalogConfig(legacy, bundledCatalog(), { writeBackup: () => {} });
+
+    expect(migrated.config.providers["my-umans"]).toEqual(legacy.providers["my-umans"]);
+    expect(migrated.config.providers["my-umans"].catalogProviderId).toBeUndefined();
+    expect(migrated.warnings.join("\n")).toContain("my-umans");
+    expect(migrated.config.modelCatalogConfigVersion).toBe(1);
+  });
+
+  test("treats a missing auth mode as canonical key identity for local registry seeds", () => {
+    const legacy: FrogConfig = {
+      port: 3764,
+      defaultProvider: "ollama",
+      providers: {
+        ollama: {
+          adapter: "openai-chat",
+          baseUrl: "http://localhost:11434/v1/",
+          models: ["local-user-model"],
+        },
+      },
+    };
+
+    const migrated = migratePersistedCatalogConfig(legacy, bundledCatalog(), { writeBackup: () => {} });
+
+    expect(migrated.config.providers.ollama.catalogProviderId).toBe("ollama");
+    expect(migrated.config.providers.ollama.authMode).toBeUndefined();
+    expect(migrated.config.providers.ollama.userModels).toEqual(["local-user-model"]);
+  });
+
+  test("preserves a fixed allowlist and all provider credentials and settings byte-for-byte", () => {
+    const legacy = legacyConfig();
+    legacy.providers.umans.liveModels = false;
+    legacy.providers.umans.authMode = "key";
+    legacy.providers.umans.modelContextWindows = { "umans-glm-5.1": 123_456 };
+    const beforeProviderBytes = JSON.stringify(legacy.providers.umans);
+
+    const migrated = migratePersistedCatalogConfig(legacy, bundledCatalog(), { writeBackup: () => {} });
+
+    const provider = migrated.config.providers.umans;
+    expect(provider.catalogProviderId).toBe("umans");
+    expect(provider.liveModels).toBe(false);
+    expect(provider.models).toEqual(["umans-glm-5.1", "user-added"]);
+    const { catalogProviderId: _managedIdentity, ...persistedFields } = provider;
+    expect(JSON.stringify(persistedFields)).toBe(beforeProviderBytes);
+  });
+
+  test("leaves the input and version marker untouched when backup fails", () => {
+    const legacy = legacyConfig();
+    const before = JSON.stringify(legacy);
+
+    const migrated = migratePersistedCatalogConfig(legacy, bundledCatalog(), {
+      writeBackup: () => { throw new Error("disk full"); },
+    });
+
+    expect(migrated.changed).toBe(false);
+    expect(migrated.config).toBe(legacy);
+    expect(JSON.stringify(legacy)).toBe(before);
+    expect(migrated.config.modelCatalogConfigVersion).toBeUndefined();
+    expect(migrated.warnings.join("\n")).toContain("disk full");
+  });
+
+  test("does not back up or mutate an already migrated config", () => {
+    const config = { ...legacyConfig(), modelCatalogConfigVersion: 1 as const };
+    let backups = 0;
+
+    const migrated = migratePersistedCatalogConfig(config, bundledCatalog(), {
+      writeBackup: () => { backups += 1; },
+    });
+
+    expect(migrated).toEqual({ config, changed: false, warnings: [] });
+    expect(migrated.config).toBe(config);
+    expect(backups).toBe(0);
+  });
+
+  test("writes the pre-migration backup once with owner-only permissions", () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-catalog-migration-"));
+    try {
+      const configPath = join(home, "config.json");
+      writeCatalogConfigBackupOnce(configPath, "{\"apiKey\":\"original\"}\n");
+      writeCatalogConfigBackupOnce(configPath, "{\"apiKey\":\"replacement\"}\n");
+
+      const backupPath = join(home, "config.pre-model-catalog-v1.json");
+      expect(readFileSync(backupPath, "utf8")).toBe("{\"apiKey\":\"original\"}\n");
+      expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("effective model catalog config", () => {
+  test("combines managed models with user models while preserving persisted overrides", () => {
+    const persisted: FrogConfig = {
+      port: 3764,
+      defaultProvider: "umans",
+      modelCatalogConfigVersion: 1,
+      providers: {
+        umans: {
+          adapter: "anthropic",
+          baseUrl: "https://api.code.umans.ai",
+          catalogProviderId: "umans",
+          apiKey: "secret",
+          defaultModel: "user-added",
+          userModels: ["user-added", "umans-coder"],
+          modelContextWindows: { "umans-coder": 111_111 },
+          noTemperatureModels: [],
+        },
+      },
+    };
+
+    const effective = buildEffectiveConfig(persisted, selectedCatalog());
+
+    expect(effective.providers.umans.models).toEqual(["umans-coder", "umans-glm-5.2", "user-added"]);
+    expect(effective.providers.umans.modelContextWindows).toEqual({
+      "umans-coder": 111_111,
+      "umans-glm-5.2": 200_000,
+    });
+    expect(effective.providers.umans.modelCapabilities).toEqual({
+      "umans-coder": { input: ["text", "image"] },
+      "umans-glm-5.2": { input: ["text"] },
+    });
+    expect(effective.providers.umans.modelReasoningEfforts).toEqual({ "umans-coder": ["low", "high"] });
+    expect(effective.providers.umans.noReasoningModels).toEqual(["umans-glm-5.2"]);
+    expect(effective.providers.umans.noTemperatureModels).toEqual([]);
+    expect(effective.providers.umans.apiKey).toBe("secret");
+    expect(effective.providers.umans.defaultModel).toBe("user-added");
+    expect(persisted.providers.umans.models).toBeUndefined();
+  });
+
+  test("leaves custom and fixed-allowlist providers unchanged in the effective clone", () => {
+    const persisted: FrogConfig = {
+      port: 3764,
+      defaultProvider: "custom",
+      modelCatalogConfigVersion: 1,
+      providers: {
+        custom: { adapter: "openai-chat", baseUrl: "https://custom.invalid", models: ["mine"] },
+        fixed: {
+          adapter: "anthropic",
+          baseUrl: "https://api.code.umans.ai",
+          catalogProviderId: "umans",
+          liveModels: false,
+          models: ["fixed-only"],
+          apiKey: "fixed-secret",
+        },
+      },
+    };
+
+    const effective = buildEffectiveConfig(persisted, selectedCatalog());
+
+    expect(effective.providers).toEqual(persisted.providers);
+    expect(effective.providers.custom).not.toBe(persisted.providers.custom);
+    expect(effective.providers.fixed).not.toBe(persisted.providers.fixed);
+  });
+});
+
+describe("registry user seed", () => {
+  test("contains only user-owned identity, auth mode, and selected default fields", () => {
+    expect(providerUserSeedFromRegistry("umans")).toEqual({
+      adapter: "anthropic",
+      baseUrl: "https://api.code.umans.ai",
+      authMode: "key",
+      catalogProviderId: "umans",
+      defaultModel: "umans-coder",
+    });
+  });
+});

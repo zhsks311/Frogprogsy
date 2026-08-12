@@ -452,3 +452,17 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
 export function getProviderRegistryEntry(id: string): ProviderRegistryEntry | undefined {
   return PROVIDER_REGISTRY.find(entry => entry.id === id);
 }
+
+export function providerUserSeedFromRegistry(catalogProviderId: string): FrogProviderConfig {
+  const entry = getProviderRegistryEntry(catalogProviderId);
+  if (!entry) {
+    throw new Error(`Unknown provider registry entry: ${catalogProviderId}`);
+  }
+  return {
+    adapter: entry.adapter,
+    baseUrl: entry.baseUrl,
+    ...(entry.authKind !== "local" ? { authMode: entry.authKind } : {}),
+    catalogProviderId: entry.id,
+    ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
+  };
+}

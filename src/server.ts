@@ -25,7 +25,7 @@ import { signalWithTimeout } from "./abort";
 import { debugSwallowed } from "./debug";
 import {
   clearLoginState, getLoginStatus, isOAuthProvider,
-  listOAuthProviders, reconcileOAuthProviderConfig, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
+  listOAuthProviders, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
 } from "./oauth/index";
 import { isAllowedClaudeGrantBaseUrl, resolveProviderAuth } from "./provider-auth";
 import { authorizeLocalAccess, generateLocalAccessSecret, isLocalAccessEnabled, isLocalAccessSecret, LOCAL_ACCESS_HEADER, localAccessConfigIssue, registerLocalAccessKeys, setRuntimeAccessToken, type LocalAccessDenied } from "./local-access";
@@ -39,8 +39,11 @@ import { runSearchApi, type SearchApiOutcome } from "./web-search-fallback/searc
 import { runNoKeySearch, type PublicDnsLookup } from "./web-search-fallback/no-key";
 import { decideImageFallback, describeImagesInPlace } from "./image-fallback";
 import { removeCredential } from "./oauth/store";
-import { enrichProviderFromCatalog, listKeyLoginProviders, reconcileKeyProviderConfigs } from "./oauth/key-providers";
+import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
+import { providerUserSeedFromRegistry } from "./providers/registry";
+import { migratePersistedCatalogConfig, writeCatalogConfigBackupOnce } from "./model-catalog-config";
+import type { ModelCatalogDocumentV1 } from "./model-catalog-schema";
 import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
@@ -2257,6 +2260,8 @@ interface ManagementAPIDeps {
   syncClaudeLaunchers?: (config: FrogConfig) => ClaudeLauncherSyncOutcome;
   /** Branch-B claude-grant management fixtures (keep the API off real network/Keychain/native homes in tests). */
   claudeGrants?: ClaudeGrantManagementDeps;
+  /** Catalog refresh seam so provider persistence tests never fetch or write generated catalogs. */
+  refreshClaudeCodeCatalog?: (config: FrogConfig, profile?: { claudeHome?: string; profileId?: string }) => Promise<void>;
   /** Peer address of the request socket. Omitted for in-process calls (tests, direct invocation). */
   clientAddress?: string;
 }
@@ -2771,6 +2776,10 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
   }
   const persistConfig = deps.saveConfig ?? saveConfig;
   async function refreshClaudeCodeCatalogBestEffort(profile?: { claudeHome?: string; profileId?: string }): Promise<void> {
+    if (deps.refreshClaudeCodeCatalog) {
+      await deps.refreshClaudeCodeCatalog(config, profile);
+      return;
+    }
     if (claudeWritesBlocked("catalog refresh")) return;
     try {
       const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
@@ -3802,17 +3811,38 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     if (hasRedactedProviderCredentials(prov)) {
       return jsonResponse({ error: "provider contains redacted credential placeholders; re-enter secrets before saving" }, 400);
     }
-    const catalogId = typeof body.catalogId === "string" ? body.catalogId.trim() : "";
-    // Catalog providers (e.g. ollama-cloud, or renamed entries like anthropic-work) carry models
-    // plus provider/model capability metadata the GUI doesn't send — merge it in so fallback and
-    // reasoning policy are gated correctly.
-    enrichProviderFromCatalog(catalogId || name, prov);
+    const requestedCatalogId = typeof body.catalogId === "string"
+      ? body.catalogId.trim()
+      : prov.catalogProviderId?.trim() ?? "";
+    let persistedProvider = prov;
+    if (requestedCatalogId) {
+      let seed: FrogProviderConfig;
+      try {
+        seed = providerUserSeedFromRegistry(requestedCatalogId);
+      } catch {
+        return jsonResponse({ error: `unknown catalog provider: ${requestedCatalogId}` }, 400);
+      }
+      if (prov.liveModels === false) {
+        persistedProvider = { ...prov, catalogProviderId: requestedCatalogId };
+      } else {
+        persistedProvider = {
+          ...seed,
+          ...(prov.authMode !== undefined ? { authMode: prov.authMode } : {}),
+          ...(prov.defaultModel !== undefined ? { defaultModel: prov.defaultModel } : {}),
+          ...(prov.userModels !== undefined ? { userModels: [...prov.userModels] } : {}),
+          ...(prov.apiKey !== undefined ? { apiKey: prov.apiKey } : {}),
+          ...(prov.apiKeys !== undefined ? { apiKeys: [...prov.apiKeys] } : {}),
+          ...(prov.headers !== undefined ? { headers: { ...prov.headers } } : {}),
+          ...(prov.claudeGrantId !== undefined ? { claudeGrantId: prov.claudeGrantId } : {}),
+        };
+      }
+    }
     // Hard-validate claude-grant bindings before persisting: unknown/missing id or a non-Anthropic
     // adapter is rejected. oauth/key/forward save + masking paths are untouched.
-    const grantBinding = validateClaudeGrantProviderBinding(config, prov, deps.claudeGrants?.validateGrantTarget);
+    const grantBinding = validateClaudeGrantProviderBinding(config, persistedProvider, deps.claudeGrants?.validateGrantTarget);
     if (!grantBinding.ok) return jsonResponse({ error: grantBinding.message }, 400);
-    const isAnthropicClaudeCodeProvider = prov.adapter === "anthropic" && prov.authMode === "forward";
-    if (catalogId === "anthropic" && isAnthropicClaudeCodeProvider && !(typeof body.claudeHome === "string" && body.claudeHome.trim())) {
+    const isAnthropicClaudeCodeProvider = persistedProvider.adapter === "anthropic" && persistedProvider.authMode === "forward";
+    if (requestedCatalogId === "anthropic" && isAnthropicClaudeCodeProvider && !(typeof body.claudeHome === "string" && body.claudeHome.trim())) {
       return jsonResponse({ error: "Claude Code home path is required" }, 400);
     }
     if (isAnthropicClaudeCodeProvider && typeof body.claudeHome === "string" && body.claudeHome.trim()) {
@@ -3825,10 +3855,10 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     if (config.autoModeClassifier?.provider?.trim() === name) {
       const candidateConfig: FrogConfig = {
         ...config,
-        providers: { ...config.providers, [name]: prov },
+        providers: { ...config.providers, [name]: persistedProvider },
       };
       const candidateTarget = resolveAutoModeClassifierTarget(candidateConfig);
-      const unknownModel = candidateTarget.ok && prov.liveModels !== true
+      const unknownModel = candidateTarget.ok && persistedProvider.liveModels !== true
         ? validateClassifierModel(candidateConfig, candidateTarget.provider, candidateTarget.model)
         : null;
       if (!candidateTarget.ok || unknownModel) {
@@ -3839,7 +3869,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       }
     }
 
-    config.providers[name] = prov;
+    config.providers[name] = persistedProvider;
     if (body.setDefault) config.defaultProvider = name;
     persistConfig(config);
     await refreshClaudeCodeCatalogBestEffort();
@@ -4071,17 +4101,35 @@ export function buildAnthropicModelsList(
 }
 
 export function startServer(port?: number) {
-  const config = loadConfig();
+  const configPath = getConfigPath();
+  let config = loadConfig();
+  if (!existsSync(configPath)) {
+    config.modelCatalogConfigVersion = 1;
+  } else if (config.modelCatalogConfigVersion !== 1) {
+    try {
+      const originalBytes = readFileSync(configPath, "utf8");
+      JSON.parse(originalBytes);
+      const bundled = JSON.parse(readFileSync(
+        new URL("./generated/model-catalog-v1.json", import.meta.url),
+        "utf8",
+      )) as ModelCatalogDocumentV1;
+      const migration = migratePersistedCatalogConfig(config, bundled, {
+        writeBackup: () => writeCatalogConfigBackupOnce(configPath, originalBytes),
+      });
+      for (const warning of migration.warnings) console.warn(`[frogp] ${warning}`);
+      if (migration.changed) {
+        config = migration.config;
+        saveConfig(config);
+      }
+    } catch (error) {
+      console.warn(`[frogp] model catalog config migration was skipped: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const removedFixtures = dropRuntimeFixtureProviders(config);
   if (removedFixtures.length > 0) {
     saveConfig(config);
     console.error(`frogprogsy: removed runtime fixture provider(s) from config: ${removedFixtures.join(", ")}`);
   }
-  // Refresh registry-managed OAuth and API-key provider catalog fields so model additions/removals
-  // reach existing configs. Explicit key-provider allowlists (`liveModels: false`) remain untouched.
-  const oauthCatalogChanged = reconcileOAuthProviderConfig(config);
-  const keyCatalogChanged = reconcileKeyProviderConfigs(config);
-  if (oauthCatalogChanged || keyCatalogChanged) saveConfig(config);
   // Seed default featured subagent models on first run only (UNSET → defaults). A user-set list,
   // even [], is left alone so GUI removals persist.
   if (config.subagentModels === undefined) {
