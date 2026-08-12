@@ -389,7 +389,7 @@ describe("provider connection test API", () => {
             adapter: "anthropic",
             baseUrl: "https://api.anthropic.com",
             authMode: "forward",
-            defaultModel: "claude-sonnet-4-6",
+            defaultModel: "claude-sonnet-5",
             contextWindow: 100_000,
           },
         }),
@@ -403,11 +403,11 @@ describe("provider connection test API", () => {
     expect(res?.status).toBe(200);
     expect(body).toMatchObject({ success: true, name: "anthropic-work" });
     expect(cfg.providers["anthropic-work"]?.authMode).toBe("forward");
-    expect(cfg.providers["anthropic-work"]?.models).toContain("claude-sonnet-4-6");
+    expect(cfg.providers["anthropic-work"]?.models).toContain("claude-sonnet-5");
     expect(cfg.providers["anthropic-work"]?.contextWindow).toBe(100_000);
     expect(cfg.providers["anthropic-work"]?.modelContextWindows).toBeUndefined();
     const view = await __requestLogTest.effectiveModelView(cfg, { includeConfiguredForwardModels: true });
-    expect(view.models.find(model => model.provider === "anthropic-work" && model.id === "claude-sonnet-4-6")?.contextWindow).toBe(100_000);
+    expect(view.models.find(model => model.provider === "anthropic-work" && model.id === "claude-sonnet-5")?.contextWindow).toBe(100_000);
     expect(cfg.claudeProfiles?.profiles).toContainEqual(expect.objectContaining({
       name: "anthropic-work",
       claudeHome: workHome,

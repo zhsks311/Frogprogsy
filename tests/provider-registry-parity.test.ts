@@ -68,6 +68,23 @@ describe("provider registry parity", () => {
     });
     expect(xai?.models).toContain("grok-4.5");
 
+    expect(KEY_LOGIN_PROVIDERS.anthropic).toMatchObject({
+      defaultModel: "claude-sonnet-5",
+      models: [
+        "claude-fable-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-opus-4-5",
+        "claude-haiku-4-5",
+      ],
+    });
+    expect(KEY_LOGIN_PROVIDERS.anthropic.modelCapabilities?.["claude-opus-5"]?.input).toEqual(["text", "image"]);
+
     const moonshot = KEY_LOGIN_PROVIDERS.moonshot;
     expect(moonshot.models).toEqual([
       "kimi-k3",
@@ -237,6 +254,30 @@ describe("provider registry parity", () => {
     expect(config.providers.umans.modelContextWindows?.["umans-kimi-k3"]).toBe(1_000_000);
   });
 
+  test("stored Anthropic catalog adds current Claude models without changing a valid legacy default", () => {
+    const config: FrogConfig = {
+      port: 10100,
+      defaultProvider: "anthropic",
+      providers: {
+        anthropic: {
+          adapter: "anthropic",
+          baseUrl: "https://api.anthropic.com",
+          apiKey: "sk-existing",
+          defaultModel: "claude-sonnet-4-6",
+          models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-private-preview"],
+        },
+      },
+    };
+
+    expect(reconcileKeyProviderConfigs(config)).toBe(true);
+    expect(config.providers.anthropic.apiKey).toBe("sk-existing");
+    expect(config.providers.anthropic.defaultModel).toBe("claude-sonnet-4-6");
+    expect(config.providers.anthropic.models).toEqual([
+      ...KEY_LOGIN_PROVIDERS.anthropic.models!,
+      "claude-private-preview",
+    ]);
+  });
+
   test("stored key provider catalog refresh respects explicit model allowlists", () => {
     const config: FrogConfig = {
       port: 10100,
@@ -342,7 +383,7 @@ describe("provider registry parity", () => {
     expect(presets.some(p => p.id === "openai-forward")).toBe(false);
     expect(presets.at(-1)?.id).toBe("custom");
     expect(presets.find(p => p.id === "kimi")?.baseUrl).toBe("https://api.kimi.com/coding/v1");
-    expect(presets.find(p => p.id === "anthropic")?.defaultModel).toBe("claude-sonnet-4-6");
+    expect(presets.find(p => p.id === "anthropic")?.defaultModel).toBe("claude-sonnet-5");
     expect(presets.find(p => p.id === "umans")).toMatchObject({
       adapter: "anthropic",
       baseUrl: "https://api.code.umans.ai",

@@ -118,8 +118,8 @@ describe("frogp init CLI", () => {
       expect(config.port).toBe(3764);
       expect(config.providers.anthropic.authMode).toBe("forward");
       expect(config.providers.anthropic.apiKey).toBeUndefined();
-      expect(config.providers.anthropic.defaultModel).toBe("claude-sonnet-4-6");
-      expect(config.providers.anthropic.models).toContain("claude-sonnet-4-6");
+      expect(config.providers.anthropic.defaultModel).toBe("claude-sonnet-5");
+      expect(config.providers.anthropic.models).toContain("claude-sonnet-5");
       expect(readdirSync(claudeHome)).toEqual([]);
     });
   });
