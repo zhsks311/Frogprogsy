@@ -80,6 +80,10 @@ export function getConfigDir(): string {
   return resolveConfigDir();
 }
 
+export function getModelCatalogCachePath(): string {
+  return join(getConfigDir(), "cache", "model-catalog-v1.json");
+}
+
 export function getConfigPath(): string {
   return resolveConfigPath();
 }
