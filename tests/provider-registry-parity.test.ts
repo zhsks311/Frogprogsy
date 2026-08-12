@@ -3,7 +3,7 @@ import { buildCatalogEntries } from "../src/claude-catalog";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
 import { buildInitProviders } from "../src/init";
 import { OAUTH_PROVIDERS, loggedOutOAuthProviders, reconcileOAuthProviderConfig } from "../src/oauth";
-import { KEY_LOGIN_PROVIDERS } from "../src/oauth/key-providers";
+import { KEY_LOGIN_PROVIDERS, reconcileKeyProviderConfigs } from "../src/oauth/key-providers";
 import {
   deriveFeaturedProviderIds,
   deriveInitProviders,
@@ -12,6 +12,7 @@ import {
   deriveProviderPresets,
 } from "../src/providers/derive";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
+import { configuredReasoningEfforts, mapReasoningEffort } from "../src/reasoning-effort";
 import type { FrogConfig } from "../src/types";
 import { resolveAdapter } from "../src/server";
 
@@ -59,6 +60,101 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text"]);
   });
 
+  test("curated provider fallbacks match current provider catalogs", () => {
+    const xai = PROVIDER_REGISTRY.find(entry => entry.id === "xai");
+    expect(xai).toMatchObject({
+      defaultModel: "grok-4.5",
+      modelContextWindows: { "grok-4.5": 500_000 },
+    });
+    expect(xai?.models).toContain("grok-4.5");
+
+    expect(KEY_LOGIN_PROVIDERS.anthropic).toMatchObject({
+      defaultModel: "claude-sonnet-5",
+      models: [
+        "claude-fable-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-opus-4-5",
+        "claude-haiku-4-5",
+      ],
+    });
+    expect(KEY_LOGIN_PROVIDERS.anthropic.modelCapabilities?.["claude-opus-5"]?.input).toEqual(["text", "image"]);
+
+    const moonshot = KEY_LOGIN_PROVIDERS.moonshot;
+    expect(moonshot.models).toEqual([
+      "kimi-k3",
+      "kimi-k2.7-code",
+      "kimi-k2.7-code-highspeed",
+      "kimi-k2.6",
+      "kimi-k2.5",
+      "kimi-k2-0905-preview",
+    ]);
+    expect(moonshot.modelContextWindows?.["kimi-k3"]).toBe(1_000_000);
+    expect(moonshot.modelReasoningEfforts?.["kimi-k3"]).toEqual(["low", "high", "xhigh"]);
+    expect(configuredReasoningEfforts(moonshot, "kimi-k3")).toEqual(["low", "high", "xhigh"]);
+    expect(mapReasoningEffort(moonshot, "kimi-k3", "xhigh")).toBe("max");
+    expect(moonshot.noTemperatureModels).toContain("kimi-k3");
+    expect(moonshot.noTopPModels).toContain("kimi-k3");
+    expect(moonshot.noPenaltyModels).toContain("kimi-k3");
+
+    expect(KEY_LOGIN_PROVIDERS.umans.models).toEqual([
+      "umans-kimi-k3",
+      "umans-coder",
+      "umans-kimi-k2.7",
+      "umans-glm-5.2",
+      "umans-deepseek-v4-flash-0731",
+      "umans-flash",
+    ]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-kimi-k3"]).toBe(1_000_000);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-deepseek-v4-flash-0731"]).toBe(1_000_000);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-kimi-k3"]?.input).toEqual(["text", "image"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-deepseek-v4-flash-0731"]?.input).toEqual(["text"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-kimi-k3"]).toEqual(["low", "high", "xhigh"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-deepseek-v4-flash-0731"]).toEqual(["low", "high", "xhigh"]);
+
+    expect(KEY_LOGIN_PROVIDERS.deepseek).toMatchObject({
+      defaultModel: "deepseek-v4-pro",
+      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      modelContextWindows: {
+        "deepseek-v4-flash": 1_000_000,
+        "deepseek-v4-pro": 1_000_000,
+      },
+    });
+
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.models).toEqual([
+      "deepseek-v4-flash",
+      "glm-5.2",
+      "glm-5.2-fast",
+      "glm-5.2-short",
+      "glm-5.2-short-fast",
+      "gemma-4-31b",
+      "kimi-k2.7-code",
+      "kimi-k2.7-code-fast",
+      "kimi-k3",
+      "kimi-k3-fast",
+      "qwen3.6-35b",
+      "qwen3.6-35b-fast",
+    ]);
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelContextWindows?.["kimi-k3"]).toBe(1_048_560);
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelCapabilities?.["gemma-4-31b"]?.input).toEqual(["text", "image"]);
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelCapabilities?.["deepseek-v4-flash"]?.input).toEqual(["text"]);
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["gemma-4-31b"]).toEqual(["xhigh"]);
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["deepseek-v4-flash"]).toEqual(["high", "xhigh"]);
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["kimi-k3"]).toEqual(["low", "high", "xhigh"]);
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["kimi-k3-fast"]).toEqual([]);
+    expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "gemma-4-31b", "xhigh")).toBe("max");
+    expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "deepseek-v4-flash", "xhigh")).toBe("max");
+    expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "kimi-k3", "xhigh")).toBe("max");
+
+    expect(KEY_LOGIN_PROVIDERS.zai.models).toContain("glm-4.7");
+    expect(KEY_LOGIN_PROVIDERS.zai.modelContextWindows?.["glm-5.2[1m]"]).toBe(1_000_000);
+  });
+
   test("CLI init providers are derived from the registry", () => {
     expect(buildInitProviders()).toEqual(deriveInitProviders());
     expect(buildInitProviders().find(p => p.id === "azure-openai")?.adapter).toBe("azure-openai");
@@ -86,7 +182,7 @@ describe("provider registry parity", () => {
     expect(codex.modelContextWindows?.["gpt-5.6-luna"]).toBe(272_000);
     expect(OAUTH_PROVIDERS.kimi.providerConfig.baseUrl).toBe("https://api.kimi.com/coding/v1");
     expect(OAUTH_PROVIDERS.anthropic).toBeUndefined();
-    expect(OAUTH_PROVIDERS.xai.providerConfig.defaultModel).toBe("grok-4.3");
+    expect(OAUTH_PROVIDERS.xai.providerConfig.defaultModel).toBe("grok-4.5");
     expect(OAUTH_PROVIDERS.xai.providerConfig.modelCapabilities).toBeUndefined();
   });
 
@@ -126,9 +222,137 @@ describe("provider registry parity", () => {
       adapter: "openai-chat",
       baseUrl: "https://api.x.ai/v1",
       authMode: "oauth",
-      defaultModel: "grok-4.3",
+      defaultModel: "grok-4.5",
     });
-    expect(config.providers.xai?.models).toContain("grok-4.3");
+    expect(config.providers.xai?.models).toContain("grok-4.5");
+  });
+
+  test("stored canonical key providers receive refreshed catalog fields without losing credentials", () => {
+    const config: FrogConfig = {
+      port: 10100,
+      defaultProvider: "umans",
+      providers: {
+        umans: {
+          adapter: "anthropic",
+          baseUrl: "https://api.code.umans.ai",
+          apiKey: "sk-existing",
+          defaultModel: "umans-glm-5.1",
+          models: ["umans-coder", "umans-glm-5.1", "umans-private-preview"],
+          modelContextWindows: { "umans-glm-5.1": 202_752 },
+        },
+      },
+    };
+
+    expect(reconcileKeyProviderConfigs(config)).toBe(true);
+    expect(config.providers.umans.apiKey).toBe("sk-existing");
+    expect(config.providers.umans.defaultModel).toBe("umans-coder");
+    expect(config.providers.umans.models).toEqual([
+      ...KEY_LOGIN_PROVIDERS.umans.models!,
+      "umans-private-preview",
+    ]);
+    expect(config.providers.umans.modelContextWindows?.["umans-glm-5.1"]).toBeUndefined();
+    expect(config.providers.umans.modelContextWindows?.["umans-kimi-k3"]).toBe(1_000_000);
+  });
+
+  test("stored Anthropic catalog adds current Claude models without changing a valid legacy default", () => {
+    const config: FrogConfig = {
+      port: 10100,
+      defaultProvider: "anthropic",
+      providers: {
+        anthropic: {
+          adapter: "anthropic",
+          baseUrl: "https://api.anthropic.com",
+          apiKey: "sk-existing",
+          defaultModel: "claude-sonnet-4-6",
+          models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-private-preview"],
+        },
+      },
+    };
+
+    expect(reconcileKeyProviderConfigs(config)).toBe(true);
+    expect(config.providers.anthropic.apiKey).toBe("sk-existing");
+    expect(config.providers.anthropic.defaultModel).toBe("claude-sonnet-4-6");
+    expect(config.providers.anthropic.models).toEqual([
+      ...KEY_LOGIN_PROVIDERS.anthropic.models!,
+      "claude-private-preview",
+    ]);
+  });
+
+  test("stored key provider catalog refresh respects explicit model allowlists", () => {
+    const config: FrogConfig = {
+      port: 10100,
+      defaultProvider: "umans",
+      providers: {
+        umans: {
+          adapter: "anthropic",
+          baseUrl: "https://api.code.umans.ai",
+          apiKey: "sk-existing",
+          liveModels: false,
+          defaultModel: "umans-glm-5.1",
+          models: ["umans-glm-5.1"],
+        },
+      },
+    };
+
+    expect(reconcileKeyProviderConfigs(config)).toBe(false);
+    expect(config.providers.umans.models).toEqual(["umans-glm-5.1"]);
+    expect(config.providers.umans.defaultModel).toBe("umans-glm-5.1");
+  });
+
+  test("key catalog refresh preserves live-only defaults and explicit model additions", () => {
+    const config: FrogConfig = {
+      port: 10100,
+      defaultProvider: "neuralwatt",
+      providers: {
+        neuralwatt: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.neuralwatt.com/v1",
+          apiKey: "nw-existing",
+          defaultModel: "kimi-k3-flex",
+          models: ["qwen3.5-397b", "kimi-k3-flex"],
+          modelContextWindows: { "qwen3.5-397b": 100_000, "kimi-k3-flex": 900_000 },
+          modelCapabilities: {
+            "qwen3.5-397b": { input: ["text"] },
+            "kimi-k3-flex": { input: ["text", "image"] },
+          },
+          modelReasoningEfforts: {
+            "qwen3.5-397b": ["high"],
+            "kimi-k3-flex": ["xhigh"],
+          },
+          modelReasoningEffortMap: {
+            "qwen3.5-397b": { xhigh: "high" },
+            "kimi-k3-flex": { xhigh: "max" },
+          },
+          preserveReasoningContentModels: ["qwen3.5-397b", "kimi-k3-flex"],
+          noReasoningModels: ["glm-5.2-fast", "kimi-k3-flex"],
+        },
+        openrouter: {
+          adapter: "openai-chat",
+          baseUrl: "https://openrouter.ai/api/v1",
+          apiKey: "or-existing",
+          defaultModel: "private/model",
+          models: ["private/model"],
+        },
+      },
+    };
+
+    expect(reconcileKeyProviderConfigs(config)).toBe(true);
+    expect(config.providers.neuralwatt.defaultModel).toBe("kimi-k3-flex");
+    expect(config.providers.neuralwatt.models).toContain("kimi-k3-flex");
+    expect(config.providers.neuralwatt.models).not.toContain("qwen3.5-397b");
+    expect(config.providers.neuralwatt.modelContextWindows?.["kimi-k3-flex"]).toBe(900_000);
+    expect(config.providers.neuralwatt.modelCapabilities?.["kimi-k3-flex"]?.input).toEqual(["text", "image"]);
+    expect(config.providers.neuralwatt.modelReasoningEfforts?.["kimi-k3-flex"]).toEqual(["xhigh"]);
+    expect(config.providers.neuralwatt.modelReasoningEffortMap?.["kimi-k3-flex"]?.xhigh).toBe("max");
+    expect(config.providers.neuralwatt.preserveReasoningContentModels).toContain("kimi-k3-flex");
+    expect(config.providers.neuralwatt.modelContextWindows?.["qwen3.5-397b"]).toBeUndefined();
+    expect(config.providers.neuralwatt.modelReasoningEffortMap?.["qwen3.5-397b"]).toBeUndefined();
+    expect(config.providers.neuralwatt.noReasoningModels).not.toContain("glm-5.2-fast");
+    expect(config.providers.neuralwatt.noReasoningModels).toContain("kimi-k3-flex");
+    expect(config.providers.openrouter).toMatchObject({
+      defaultModel: "private/model",
+      models: ["private/model"],
+    });
   });
 
   test("a logged-out default OAuth provider does not reset to the native fallback", () => {
@@ -159,7 +383,7 @@ describe("provider registry parity", () => {
     expect(presets.some(p => p.id === "openai-forward")).toBe(false);
     expect(presets.at(-1)?.id).toBe("custom");
     expect(presets.find(p => p.id === "kimi")?.baseUrl).toBe("https://api.kimi.com/coding/v1");
-    expect(presets.find(p => p.id === "anthropic")?.defaultModel).toBe("claude-sonnet-4-6");
+    expect(presets.find(p => p.id === "anthropic")?.defaultModel).toBe("claude-sonnet-5");
     expect(presets.find(p => p.id === "umans")).toMatchObject({
       adapter: "anthropic",
       baseUrl: "https://api.code.umans.ai",

@@ -63,6 +63,41 @@ Docs-only changes intentionally route through the docs workflow instead of the r
 docs change also edits runtime/package/release files, run the relevant local checks before push and
 let `ci.yml` plus `package-lifecycle.yml` provide the three-platform confirmation.
 
+## Branch strategy decision
+
+**Decision recorded 2026-08-12; rollout is not yet implemented.** frogprogsy will adopt
+Didimlog's two-branch promotion model. This section is the durable decision record. The workflow
+map above and the rollout checklist below distinguish current enforcement from the target policy.
+
+| Branch | Role | Accepted changes |
+| --- | --- | --- |
+| `main` | Released or release-ready history | A reviewed `develop` → `main` promotion only. The resulting `main` commit is the only release source. |
+| `develop` | Integration branch for the next release | Reviewed short-lived task branches. |
+| Short-lived task branches such as `feat/*` and `fix/*` | One bounded task in one worktree | Branch from `develop`, then return to `develop` through review. |
+
+The target flow is:
+
+1. Start each ordinary change from current `develop` in a dedicated branch and worktree.
+2. Merge reviewed task branches into `develop`; do not merge ordinary work directly into `main`.
+3. When `develop` is release-ready, promote it through one reviewed `develop` → `main` pull request.
+4. Use the exact promoted `main` commit as the release SHA. Never release an unpromoted task or
+   integration commit.
+5. Keep `main` as the default branch. Do not retain `dev` as an alias or a third long-lived branch.
+
+The policy becomes active only after one rollout change lands all of these items together:
+
+- create the remote `develop` branch from the chosen `main` baseline;
+- replace the current `dev` CI and package-lifecycle triggers with `develop`;
+- change release preparation so the version change reaches `main` through the
+  `develop` → `main` promotion instead of a direct release commit;
+- update repository branch protection and pull-request targets; and
+- switch `AGENTS.md` and `CLAUDE.md` from the current direct-to-`main` landing rule.
+
+Until that rollout is implemented and verified, the existing direct-to-`main` landing rule,
+`dev` workflow triggers, and release helper remain the implemented behavior. Do not describe this
+recorded target as active or enforced.
+
+
 ## Root README
 
 The root READMEs are the concise product entrypoint. They should explain what frogprogsy does, how to

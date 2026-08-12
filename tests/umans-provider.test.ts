@@ -74,9 +74,9 @@ describe("Umans provider", () => {
     expect(provider.models).toContain("umans-kimi-k2.7");
     expect(provider.modelReasoningEfforts?.["umans-glm-5.2"]).toEqual(["high", "xhigh"]);
     expect(provider.modelReasoningEffortMap?.["umans-glm-5.2"]?.xhigh).toBe("max");
-    expect(provider.modelCapabilities?.["umans-glm-5.1"]?.input).toEqual(["text"]);
-    expect(provider.modelContextWindows?.["umans-glm-5.1"]).toBe(202_752);
-    expect(provider.modelCapabilities?.["umans-kimi-k2.7"]?.input).toEqual(["text", "image"]);
+    expect(provider.modelCapabilities?.["umans-kimi-k3"]?.input).toEqual(["text", "image"]);
+    expect(provider.modelContextWindows?.["umans-kimi-k3"]).toBe(1_000_000);
+    expect(provider.modelCapabilities?.["umans-deepseek-v4-flash-0731"]?.input).toEqual(["text"]);
   });
 
   test("Anthropic adapter posts Umans requests to /v1/messages with x-api-key", () => {

@@ -48,3 +48,7 @@ Non-negotiable highlights (full detail in `CLAUDE.md`):
 
 Land work via a branch + worktree → commit → merge to `main`. Do NOT push to a remote without an explicit
 request. Never resolve/commit/revert the user's in-progress merge or conflicts unless explicitly asked.
+The accepted two-branch target (`develop` integration → `main` release promotion), its rollout
+checklist, and its current inactive status are recorded in
+[`structure/06_docs-and-release.md`](structure/06_docs-and-release.md). Keep using the rule above
+until that checklist lands; do not claim the target strategy is active merely because it is documented.
