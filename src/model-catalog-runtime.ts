@@ -25,7 +25,6 @@ const FETCH_TIMEOUT_MS = 2_000;
 const MAX_CATALOG_BYTES = 2 * 1024 * 1024;
 const MAX_PROVIDERS = 256;
 const MAX_MODELS = 20_000;
-const MAX_FUTURE_TIME_MS = 24 * 60 * 60 * 1_000;
 const JSON_CONTENT_TYPE = /^(?:application\/json|[^/\s]+\/[^;\s]+\+json)(?:\s*;|$)/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
@@ -212,7 +211,7 @@ function validateEnvelope(raw: unknown, runtimeVersion: string, now: Date): raw 
   const compatible = isRuntimeCompatible(raw.minFrogprogsyVersion, runtimeVersion);
   if (compatible !== true) return false;
   const generatedAt = Date.parse(raw.generatedAt);
-  if (!Number.isFinite(generatedAt) || generatedAt > now.getTime() + MAX_FUTURE_TIME_MS) return false;
+  if (!Number.isFinite(generatedAt) || generatedAt > now.getTime()) return false;
   return true;
 }
 
@@ -246,11 +245,6 @@ function overlayProvider(
       invalidPrefix = true;
       break;
     }
-    if (seenModelIds.has(prefix.id)) {
-      invalidPrefix = true;
-      break;
-    }
-    seenModelIds.add(prefix.id);
     if (prefix.minFrogprogsyVersion !== undefined) {
       const compatible = isRuntimeCompatible(prefix.minFrogprogsyVersion, runtimeVersion);
       if (compatible === null) {
@@ -262,6 +256,11 @@ function overlayProvider(
         continue;
       }
     }
+    if (seenModelIds.has(prefix.id)) {
+      invalidPrefix = true;
+      break;
+    }
+    seenModelIds.add(prefix.id);
     compatibleModels.push(rawModel);
   }
 
@@ -323,15 +322,8 @@ export function validateCatalogCandidate(
 
   for (const rawProvider of raw.providers) {
     const prefix = prefixOf(rawProvider);
-    if (!prefix || seenProviderIds.has(prefix.id)) {
+    if (!prefix) {
       return { ok: false, warnings: ["Catalog provider prefix validation failed."] };
-    }
-    seenProviderIds.add(prefix.id);
-    const bundledProvider = bundledById.get(prefix.id);
-    if (!bundledProvider) {
-      skippedRecords++;
-      warnings.push(`Unknown provider ${prefix.id} was skipped.`);
-      continue;
     }
     if (prefix.minFrogprogsyVersion !== undefined) {
       const compatible = isRuntimeCompatible(prefix.minFrogprogsyVersion, runtimeVersion);
@@ -344,6 +336,16 @@ export function validateCatalogCandidate(
         continue;
       }
     }
+    const bundledProvider = bundledById.get(prefix.id);
+    if (!bundledProvider) {
+      skippedRecords++;
+      warnings.push(`Unknown provider ${prefix.id} was skipped.`);
+      continue;
+    }
+    if (seenProviderIds.has(prefix.id)) {
+      return { ok: false, warnings: ["Catalog provider prefix validation failed."] };
+    }
+    seenProviderIds.add(prefix.id);
     const overlaid = overlayProvider(rawProvider as Record<string, unknown>, bundledProvider, runtimeVersion);
     overlays.set(prefix.id, overlaid.provider);
     skippedRecords += overlaid.skippedRecords;
@@ -368,26 +370,26 @@ export function validateCatalogCandidate(
 }
 
 async function readBodyWithLimit(response: Response): Promise<string | null> {
-  const chunks: Uint8Array[] = [];
-  let byteLength = 0;
-  if (response.body) {
-    const reader = response.body.getReader();
-    try {
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        byteLength += chunk.value.byteLength;
-        if (byteLength > MAX_CATALOG_BYTES) {
-          await reader.cancel();
-          return null;
-        }
-        chunks.push(chunk.value);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-  }
   try {
+    const chunks: Uint8Array[] = [];
+    let byteLength = 0;
+    if (response.body) {
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          byteLength += chunk.value.byteLength;
+          if (byteLength > MAX_CATALOG_BYTES) {
+            await reader.cancel();
+            return null;
+          }
+          chunks.push(chunk.value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
     return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, byteLength));
   } catch {
     return null;

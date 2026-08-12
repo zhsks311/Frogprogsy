@@ -190,6 +190,79 @@ describe("model catalog candidate validation", () => {
     expect(validateCatalogCandidate(tooNew, bundled, "1.0.0", NOW).ok).toBeFalse();
     expect(validateCatalogCandidate(future, bundled, "1.0.0", NOW).ok).toBeFalse();
   });
+  test("a compatible model wins when a too-new model has the same ID", () => {
+    const baselineProvider = bundled.providers.find(provider => provider.models.length > 0)!;
+    const baselineModel = baselineProvider.models[0]!;
+    const compatibleContextWindow = (baselineModel.contextWindow ?? 1) + 1;
+    const rawProvider = structuredClone(baselineProvider);
+    rawProvider.models = [
+      {
+        ...structuredClone(baselineModel),
+        minFrogprogsyVersion: "2.0.0",
+        futureField: true,
+      } as typeof baselineModel,
+      {
+        ...structuredClone(baselineModel),
+        contextWindow: compatibleContextWindow,
+      },
+      ...rawProvider.models.slice(1),
+    ];
+    const raw = makeDocument({ providers: [rawProvider] });
+
+    const result = validateCatalogCandidate(raw, bundled, "1.0.0", NOW);
+
+    expect(result.ok).toBeTrue();
+    if (!result.ok) return;
+    const selectedModel = result.document.providers
+      .find(provider => provider.id === baselineProvider.id)!
+      .models.find(model => model.id === baselineModel.id)!;
+    expect(selectedModel.contextWindow).toBe(compatibleContextWindow);
+    expect(result.skippedRecords).toBe(1);
+  });
+
+  test("a compatible provider wins when a too-new provider has the same ID", () => {
+    const baselineProvider = bundled.providers.find(provider => provider.models.length > 0)!;
+    const compatibleProvider = structuredClone(baselineProvider);
+    compatibleProvider.escapeBuiltinToolNames = !baselineProvider.escapeBuiltinToolNames;
+    const tooNewProvider = {
+      ...structuredClone(baselineProvider),
+      minFrogprogsyVersion: "2.0.0",
+      futureField: true,
+    } as ModelCatalogProviderV1;
+    const raw = makeDocument({ providers: [tooNewProvider, compatibleProvider] });
+
+    const result = validateCatalogCandidate(raw, bundled, "1.0.0", NOW);
+
+    expect(result.ok).toBeTrue();
+    if (!result.ok) return;
+    expect(result.document.providers.find(provider => provider.id === baselineProvider.id)!
+      .escapeBuiltinToolNames).toBe(compatibleProvider.escapeBuiltinToolNames);
+    expect(result.skippedRecords).toBe(1);
+  });
+
+  test("duplicate unknown providers are filtered without invalidating compatible providers", () => {
+    const baselineProvider = bundled.providers.find(provider => provider.models.length > 0)!;
+    const compatibleProvider = structuredClone(baselineProvider);
+    compatibleProvider.escapeBuiltinToolNames = !baselineProvider.escapeBuiltinToolNames;
+    const unknownProvider = { id: "unknown-provider", models: [] };
+    const raw = makeDocument({
+      providers: [unknownProvider, structuredClone(unknownProvider), compatibleProvider],
+    });
+
+    const result = validateCatalogCandidate(raw, bundled, "1.0.0", NOW);
+
+    expect(result.ok).toBeTrue();
+    if (!result.ok) return;
+    expect(result.document.providers.find(provider => provider.id === baselineProvider.id)!
+      .escapeBuiltinToolNames).toBe(compatibleProvider.escapeBuiltinToolNames);
+    expect(result.skippedRecords).toBe(2);
+  });
+
+  test("rejects a generation time one millisecond in the future", () => {
+    const future = makeDocument({ generatedAt: new Date(NOW.getTime() + 1).toISOString() });
+
+    expect(validateCatalogCandidate(future, bundled, "1.0.0", NOW).ok).toBeFalse();
+  });
 });
 
   test("rejects a parseable date that is not an ISO offset datetime", () => {
@@ -242,6 +315,43 @@ describe("model catalog refresh fallback", () => {
       expect(result.status.warnings).not.toBeEmpty();
     });
   }
+
+  test("a response stream read failure keeps the valid cache", async () => {
+    const cached = makeDocument({ revision: bundled.catalogRevision + 1 });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("stream read failed"));
+      },
+    });
+
+    const result = await refreshModelCatalog(runtimeDeps({
+      cacheDocument: cached,
+      fetchImpl: async () => new Response(body, { headers: { "content-type": "application/json" } }),
+    }));
+
+    expect(result.status.source).toBe("cached");
+    expect(result.status.warnings).not.toBeEmpty();
+  });
+
+  test("a response stream cancel failure keeps the valid cache", async () => {
+    const cached = makeDocument({ revision: bundled.catalogRevision + 1 });
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(2 * 1024 * 1024 + 1));
+      },
+      cancel() {
+        throw new Error("stream cancel failed");
+      },
+    });
+
+    const result = await refreshModelCatalog(runtimeDeps({
+      cacheDocument: cached,
+      fetchImpl: async () => new Response(body, { headers: { "content-type": "application/json" } }),
+    }));
+
+    expect(result.status.source).toBe("cached");
+    expect(result.status.warnings).not.toBeEmpty();
+  });
 
   test("a decoded body over 2 MiB keeps the valid cache", async () => {
     const cached = makeDocument({ revision: bundled.catalogRevision + 1 });
