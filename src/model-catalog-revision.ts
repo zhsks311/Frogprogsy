@@ -1,0 +1,1 @@
+export const MODEL_CATALOG_REVISION = 1;

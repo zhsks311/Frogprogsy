@@ -1,0 +1,187 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import {
+  listJawcodeModelMetadata,
+  type JawcodeModelMetadata,
+} from "./generated/jawcode-model-metadata";
+import { MODEL_CATALOG_REVISION } from "./model-catalog-revision";
+import {
+  modelCatalogDocumentV1Schema,
+  type ModelCatalogDocumentV1,
+  type ModelCatalogModelV1,
+  type ModelCatalogProviderV1,
+} from "./model-catalog-schema";
+import {
+  PROVIDER_REGISTRY,
+  type ProviderRegistryEntry,
+} from "./providers/registry";
+
+const MIN_FROGPROGSY_VERSION = readPackageVersion();
+
+function readPackageVersion(): string {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version?: unknown };
+  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
+    throw new Error("package.json must contain a non-empty version");
+  }
+  return packageJson.version;
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(record).sort()) {
+    if (record[key] !== undefined) {
+      sorted[key] = canonicalize(record[key]);
+    }
+  }
+  return sorted;
+}
+
+export function catalogDataDigest(
+  input: Pick<ModelCatalogDocumentV1, "providers">,
+): string {
+  const canonicalJson = JSON.stringify(canonicalize(input.providers));
+  return createHash("sha256").update(canonicalJson).digest("hex");
+}
+
+function addModelIds(ids: Set<string>, values: readonly string[] | undefined): void {
+  for (const value of values ?? []) {
+    ids.add(value);
+  }
+}
+
+function modelIdsForProvider(
+  provider: ProviderRegistryEntry,
+  jawcodeModels: readonly JawcodeModelMetadata[],
+): string[] {
+  const ids = new Set<string>();
+  addModelIds(ids, provider.models);
+  addModelIds(ids, provider.defaultModel === undefined ? undefined : [provider.defaultModel]);
+  addModelIds(ids, Object.keys(provider.modelContextWindows ?? {}));
+  addModelIds(ids, Object.keys(provider.modelCapabilities ?? {}));
+  addModelIds(ids, Object.keys(provider.modelReasoningEfforts ?? {}));
+  addModelIds(ids, Object.keys(provider.modelReasoningEffortMap ?? {}));
+  addModelIds(ids, provider.noReasoningModels);
+  addModelIds(ids, provider.noTemperatureModels);
+  addModelIds(ids, provider.noTopPModels);
+  addModelIds(ids, provider.noPenaltyModels);
+  addModelIds(ids, provider.autoToolChoiceOnlyModels);
+  addModelIds(ids, provider.preserveReasoningContentModels);
+  addModelIds(ids, jawcodeModels.map(model => model.id));
+  return [...ids].sort();
+}
+
+function includes(values: readonly string[] | undefined, modelId: string): boolean {
+  return values?.includes(modelId) ?? false;
+}
+
+function sortedRecord(input: Record<string, string>): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const key of Object.keys(input).sort()) {
+    output[key] = input[key];
+  }
+  return output;
+}
+
+function modelFromSources(
+  provider: ProviderRegistryEntry,
+  modelId: string,
+  jawcodeModel: JawcodeModelMetadata | undefined,
+): ModelCatalogModelV1 {
+  const model: ModelCatalogModelV1 = { id: modelId };
+  const contextWindow = provider.modelContextWindows?.[modelId]
+    ?? provider.contextWindow
+    ?? jawcodeModel?.contextWindow;
+  const inputModalities = provider.modelCapabilities?.[modelId]?.input
+    ?? jawcodeModel?.input;
+  const reasoningEfforts = provider.modelReasoningEfforts?.[modelId]
+    ?? provider.reasoningEfforts;
+  const reasoningEffortMap = provider.modelReasoningEffortMap?.[modelId]
+    ?? provider.reasoningEffortMap;
+
+  if (contextWindow !== undefined) {
+    model.contextWindow = contextWindow;
+  }
+  if (inputModalities !== undefined) {
+    model.inputModalities = [...inputModalities];
+  }
+  if (reasoningEfforts !== undefined) {
+    model.reasoningEfforts = [...reasoningEfforts] as ModelCatalogModelV1["reasoningEfforts"];
+  }
+  if (reasoningEffortMap !== undefined) {
+    model.reasoningEffortMap = sortedRecord(reasoningEffortMap);
+  }
+  if (jawcodeModel?.wireModelId !== undefined) {
+    model.wireModelId = jawcodeModel.wireModelId;
+  }
+  if (includes(provider.noReasoningModels, modelId) || jawcodeModel?.reasoning === false) {
+    model.noReasoning = true;
+  }
+  if (includes(provider.noTemperatureModels, modelId)) {
+    model.noTemperature = true;
+  }
+  if (includes(provider.noTopPModels, modelId)) {
+    model.noTopP = true;
+  }
+  if (includes(provider.noPenaltyModels, modelId)) {
+    model.noPenalty = true;
+  }
+  if (includes(provider.autoToolChoiceOnlyModels, modelId)) {
+    model.autoToolChoiceOnly = true;
+  }
+  if (includes(provider.preserveReasoningContentModels, modelId)) {
+    model.preserveReasoningContent = true;
+  }
+
+  return model;
+}
+
+function providerFromRegistry(provider: ProviderRegistryEntry): ModelCatalogProviderV1 {
+  const jawcodeModels = provider.jawcodeBundle === undefined
+    ? []
+    : listJawcodeModelMetadata(provider.jawcodeBundle);
+  const jawcodeById = new Map(jawcodeModels.map(model => [model.id, model]));
+  const models = modelIdsForProvider(provider, jawcodeModels)
+    .map(modelId => modelFromSources(provider, modelId, jawcodeById.get(modelId)));
+
+  const catalogProvider: ModelCatalogProviderV1 = {
+    id: provider.id,
+    models,
+  };
+  if (provider.defaultModel !== undefined) {
+    catalogProvider.defaultModel = provider.defaultModel;
+  }
+  if (provider.escapeBuiltinToolNames !== undefined) {
+    catalogProvider.escapeBuiltinToolNames = provider.escapeBuiltinToolNames;
+  }
+  return catalogProvider;
+}
+
+export function generateModelCatalog(input: {
+  sourceCommit: string;
+  generatedAt: string;
+  catalogRevision?: number;
+}): ModelCatalogDocumentV1 {
+  const providers = PROVIDER_REGISTRY
+    .map(providerFromRegistry)
+    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  const document: ModelCatalogDocumentV1 = {
+    schemaVersion: 1,
+    catalogRevision: input.catalogRevision ?? MODEL_CATALOG_REVISION,
+    catalogDigest: catalogDataDigest({ providers }),
+    sourceCommit: input.sourceCommit,
+    generatedAt: input.generatedAt,
+    minFrogprogsyVersion: MIN_FROGPROGSY_VERSION,
+    providers,
+  };
+  return modelCatalogDocumentV1Schema.parse(document);
+}
