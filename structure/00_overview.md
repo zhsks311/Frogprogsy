@@ -17,6 +17,7 @@ belong in `docs-site/`; historical investigations belong in `docs/`.
 | [`07_classifier-routing.md`](07_classifier-routing.md) | Auto-mode classifier model selection, routing precedence, config, API, GUI. |
 | [`08_model-mixing.md`](08_model-mixing.md) | Model mixing (fusion/pipeline/rules) alias, config, modules, streaming contract. |
 | [`09_claude-dual-auth.md`](09_claude-dual-auth.md) | Isolated Claude grants, central auth resolution, dual-auth failure boundaries, and probe decision record. |
+| [`10_remote-model-catalog.md`](10_remote-model-catalog.md) | Release fallback and startup refresh of validated model data. |
 
 ## Product boundary
 
@@ -41,6 +42,7 @@ explicit `provider/model`, provider model lists, or the configured `defaultProvi
 | --- | --- | --- |
 | `~/.frogprogsy/config.json` | frogprogsy | Main config written by `frogp init` and the dashboard. |
 | `~/.frogprogsy/auth.json` | frogprogsy | OAuth tokens; not committed. |
+| `~/.frogprogsy/cache/model-catalog-v1.json` | frogprogsy | Last valid remote model catalog; runtime cache, not user configuration. |
 | `~/.frogprogsy/claude-profiles/<cp_id>/claude-settings-backup.json` | frogprogsy | Per-home `settings.json` backup for restore. |
 | `~/.frogprogsy/claude-grants/<cg_id>/.frogprogsy-grant.json` | frogprogsy | Non-secret isolated-grant metadata marker; credentials are never embedded here. |
 | scoped Keychain service or `<grant-dir>/.credentials.json` | frogprogsy grant broker | One credential origin per grant; never the global Claude service or a native `~/.claude*` home. |
