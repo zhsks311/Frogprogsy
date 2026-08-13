@@ -367,7 +367,12 @@ async function refreshClaudeProfileThroughRunningProxy(
     `http://${healthHost(config.hostname)}:${port}/api/claude-profiles/${encodeURIComponent(profileId)}/refresh`,
     {
       method: "POST",
-      headers: { ...sameMachineAccessHeaders(), "content-type": "application/json" },
+      // Management mutations require a loopback Origin even when the authenticated relay binds to a LAN address.
+      headers: {
+        ...sameMachineAccessHeaders(),
+        "content-type": "application/json",
+        Origin: `http://127.0.0.1:${port}`,
+      },
       body: JSON.stringify(includeAuthToken ? { globalDiscoveryAuth: true } : {}),
       signal: AbortSignal.timeout(15_000),
     },

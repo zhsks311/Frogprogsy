@@ -799,10 +799,10 @@ describe("CLI subcommand help", () => {
       rmSync(workClaudeHome, { recursive: true, force: true });
     }
   });
-  test("claude reload-models delegates to the running proxy snapshot", async () => {
+  test("claude reload-models sends the local Origin required by a non-loopback management guard", async () => {
     const frogHome = mkdtempSync(join(tmpdir(), "frogp-running-reload-cli-"));
     const claudeHome = mkdtempSync(join(tmpdir(), "frogp-running-reload-claude-"));
-    const refreshRequests: Array<{ path: string; body: unknown }> = [];
+    const refreshRequests: Array<{ path: string; origin: string | null; body: unknown }> = [];
     let writesBlocked = false;
     const server = Bun.serve({
       port: 0,
@@ -810,7 +810,14 @@ describe("CLI subcommand help", () => {
         const url = new URL(request.url);
         if (url.pathname === "/healthz") return Response.json({ status: "ok" });
         if (url.pathname === "/api/claude-profiles/cp_work/refresh" && request.method === "POST") {
-          refreshRequests.push({ path: url.pathname, body: await request.json() });
+          refreshRequests.push({
+            path: url.pathname,
+            origin: request.headers.get("origin"),
+            body: await request.json(),
+          });
+          if (request.headers.get("origin") !== `http://127.0.0.1:${server.port}`) {
+            return Response.json({ error: "cross-origin request blocked" }, { status: 403 });
+          }
           if (writesBlocked) {
             return Response.json({
               success: true,
@@ -888,6 +895,7 @@ describe("CLI subcommand help", () => {
       expect(stderr).toBe("");
       expect(refreshRequests).toEqual([{
         path: "/api/claude-profiles/cp_work/refresh",
+        origin: `http://127.0.0.1:${server.port}`,
         body: { globalDiscoveryAuth: true },
       }]);
       expect(stdout).toContain("server snapshot refreshed");
@@ -911,10 +919,12 @@ describe("CLI subcommand help", () => {
       expect(refreshRequests).toEqual([
         {
           path: "/api/claude-profiles/cp_work/refresh",
+          origin: `http://127.0.0.1:${server.port}`,
           body: { globalDiscoveryAuth: true },
         },
         {
           path: "/api/claude-profiles/cp_work/refresh",
+          origin: `http://127.0.0.1:${server.port}`,
           body: {},
         },
       ]);
