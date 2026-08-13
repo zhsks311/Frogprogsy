@@ -166,12 +166,15 @@ function providerFromRegistry(provider: ProviderRegistryEntry): ModelCatalogProv
   return catalogProvider;
 }
 
-export function generateModelCatalog(input: {
-  sourceCommit: string;
-  generatedAt: string;
-  catalogRevision?: number;
-}): ModelCatalogDocumentV1 {
-  const providers = PROVIDER_REGISTRY
+export function generateModelCatalog(
+  input: {
+    sourceCommit: string;
+    generatedAt: string;
+    catalogRevision?: number;
+  },
+  registry: readonly ProviderRegistryEntry[] = PROVIDER_REGISTRY,
+): ModelCatalogDocumentV1 {
+  const providers = registry
     .map(providerFromRegistry)
     .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
   const document: ModelCatalogDocumentV1 = {

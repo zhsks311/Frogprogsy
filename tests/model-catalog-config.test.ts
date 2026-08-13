@@ -359,7 +359,7 @@ describe("effective model catalog config", () => {
       baseUrl: "https://api.code.umans.ai",
       catalogProviderId: "umans",
       defaultModel: "umans-glm-5.1",
-      userModels: ["user-added"],
+      userModels: ["user-added", "umans-glm-5.1"],
     };
     persisted.providers.custom = {
       adapter: "anthropic",
@@ -371,7 +371,8 @@ describe("effective model catalog config", () => {
     const effective = buildEffectiveConfig(persisted, selectedCatalog(document));
 
     expect(effective.providers.umans.defaultModel).toBe("umans-coder");
-    expect(effective.providers.umans.models).not.toContain("umans-glm-5.1");
+    expect(effective.providers.umans.models).toContain("umans-glm-5.1");
+    expect(effective.providers.umans.userModels).toEqual(["user-added", "umans-glm-5.1"]);
     expect(effective.providers.custom.defaultModel).toBe("umans-glm-5.1");
 
     persisted.providers.umans.defaultModel = "user-added";

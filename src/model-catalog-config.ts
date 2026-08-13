@@ -345,8 +345,7 @@ function mergeManagedProvider(
   const effective = { ...managed, ...persisted } as FrogProviderConfig;
   const managedModelIds = new Set(managed.models ?? []);
   const retiredModelIds = new Set(catalogProvider.retiredModels ?? []);
-  const persistedUserModels = uniqueStrings(persisted.userModels ?? [])
-    .filter(model => !retiredModelIds.has(model));
+  const persistedUserModels = uniqueStrings(persisted.userModels ?? []);
   effective.models = uniqueStrings([
     ...(managed.models ?? []),
     ...persistedUserModels,

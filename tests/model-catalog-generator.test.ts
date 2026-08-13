@@ -96,6 +96,22 @@ describe("model catalog generator", () => {
     expect(providers.get("deepseek")?.retiredModels).toEqual(["deepseek-chat", "deepseek-reasoner"]);
   });
 
+  test("record별 최소 runtime 버전을 provider와 model에 직렬화한다", () => {
+    const catalog = generateModelCatalog(input, [{
+      id: "future",
+      label: "Future",
+      adapter: "anthropic",
+      baseUrl: "https://future.invalid",
+      authKind: "key",
+      minFrogprogsyVersion: "0.0.3",
+      models: ["future-model"],
+      modelMinFrogprogsyVersions: { "future-model": "0.0.4" },
+    }]);
+
+    expect(catalog.providers[0]?.minFrogprogsyVersion).toBe("0.0.3");
+    expect(catalog.providers[0]?.models[0]?.minFrogprogsyVersion).toBe("0.0.4");
+  });
+
   test("중복 provider ID를 거부한다", () => {
     const duplicate = {
       ...validDocument,
