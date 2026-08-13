@@ -11,7 +11,7 @@ import { bridgeToMessagesSSE, buildMessageJSON, formatAnthropicErrorResponse } f
 import { classifyError, parseUpstreamErrorDetails, type UpstreamErrorDetails } from "./errors";
 import { safeResponseHeaders, type WsData } from "./ws-bridge";
 import type { ServerWebSocket } from "bun";
-import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, loadConfig, readActivePort, readPid, saveConfig, websocketsEnabled, writeLocalAccessToken } from "./config";
+import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, readActivePort, readPid, saveConfig, websocketsEnabled, writeLocalAccessToken } from "./config";
 import { parseRequest } from "./responses/parser";
 import { estimateMessagesInputTokens, parseMessagesRequest, buildResponsesBody } from "./messages/parser";
 import { materializeModelAliases, type ModelAliasEntry } from "./model-aliases";
@@ -41,8 +41,8 @@ import { decideImageFallback, describeImagesInPlace } from "./image-fallback";
 import { removeCredential } from "./oauth/store";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
-import { migratePersistedCatalogConfig, sanitizeCatalogProviderForPersistence, writeCatalogConfigBackupOnce } from "./model-catalog-config";
-import type { ModelCatalogDocumentV1 } from "./model-catalog-schema";
+import { sanitizeCatalogProviderForPersistence } from "./model-catalog-config";
+import { createRuntimeConfigState, type RuntimeConfigState } from "./runtime-config-state";
 import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
@@ -1995,6 +1995,41 @@ function observeLoggedStream(body: ReadableStream<Uint8Array>, ctx: RequestLogCo
     },
   });
 }
+
+function managementTestState(config: FrogConfig, save: (config: FrogConfig) => void): RuntimeConfigState {
+  const state: RuntimeConfigState = {
+    persisted: config,
+    effective: structuredClone(config),
+    catalog: {
+      document: {
+        schemaVersion: 1,
+        catalogRevision: 0,
+        catalogDigest: "0".repeat(64),
+        sourceCommit: "0".repeat(40),
+        generatedAt: "1970-01-01T00:00:00Z",
+        minFrogprogsyVersion: "0.0.0",
+        providers: [],
+      },
+      status: {
+        source: "bundled",
+        catalogRevision: 0,
+        catalogDigest: "0".repeat(64),
+        sourceCommit: "0".repeat(40),
+        generatedAt: "1970-01-01T00:00:00Z",
+        skippedRecords: 0,
+        warnings: [],
+      },
+    },
+    rebuild() {
+      state.effective = structuredClone(state.persisted);
+    },
+    persist() {
+      save(state.persisted);
+      state.rebuild();
+    },
+  };
+  return state;
+}
 export const __requestLogTest = {
   createRequestLog,
   finalizeRequestLog,
@@ -2005,7 +2040,15 @@ export const __requestLogTest = {
   recordUsageFromEvents,
   handleMessages,
   usageSummarySnapshot,
-  handleManagementAPI,
+  handleManagementAPI(
+    req: Request,
+    url: URL,
+    config: FrogConfig,
+    deps: ManagementAPIDeps = {},
+  ) {
+    const state = managementTestState(config, deps.saveConfig ?? saveConfig);
+    return handleManagementAPI(req, url, state, deps);
+  },
   handleCountTokens,
   runLoggedDataPlane,
   effectiveModelView,
@@ -2769,20 +2812,21 @@ function noteClaudeProfileRequest(config: FrogConfig, profileId: string | undefi
 }
 
 
-async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, deps: ManagementAPIDeps = {}): Promise<Response | null> {
+async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigState, deps: ManagementAPIDeps = {}): Promise<Response | null> {
+  const config = state.persisted;
   if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && !isLocalRequest(req, deps.clientAddress)) {
     return jsonResponse({ error: "cross-origin request blocked" }, 403);
   }
-  const persistConfig = deps.saveConfig ?? saveConfig;
+  // All management mutations target persisted state; state.persist() rebuilds the effective view.
   async function refreshClaudeCodeCatalogBestEffort(profile?: { claudeHome?: string; profileId?: string }): Promise<void> {
     if (deps.refreshClaudeCodeCatalog) {
-      await deps.refreshClaudeCodeCatalog(config, profile);
+      await deps.refreshClaudeCodeCatalog(state.effective, profile);
       return;
     }
     if (claudeWritesBlocked("catalog refresh")) return;
     try {
       const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
-      await refreshClaudeCodeModelCatalog(config, undefined, profile);
+      await refreshClaudeCodeModelCatalog(state.effective, undefined, profile);
     } catch {
       /* catalog absent */
     }
@@ -2790,13 +2834,13 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
 
   async function persistProviderConfigIfChanged(changed: boolean): Promise<void> {
     if (!changed) return;
-    persistConfig(config);
+    state.persist();
     await refreshClaudeCodeCatalogBestEffort();
   }
 
   await persistProviderConfigIfChanged(restoreCredentialedOAuthProviderConfigs(config));
 
-  const providerSummaries = () => Object.entries(config.providers).map(([name, p]) => ({
+  const providerSummaries = () => Object.entries(state.effective.providers).map(([name, p]) => ({
     name,
     ...redactProviderForApi(p),
     hasApiKey: effectiveKeyCandidates(p).length > 0,
@@ -2854,7 +2898,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
   const fallbackProviderOptions = (
     feature: FallbackFeature,
     extraModels: Record<string, string | undefined> = {},
-  ): FallbackProviderOption[] => Object.entries(config.providers)
+  ): FallbackProviderOption[] => Object.entries(state.effective.providers)
     .filter(([, provider]) => isOpenAIResponsesFallbackProvider(provider))
     .map(([name, provider]) => ({
       name,
@@ -2976,7 +3020,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       });
       if (!result.success) return jsonResponse({ success: false, error: result.message }, 409);
       markClaudeProjectEnrolled(config, project.id, true);
-      persistConfig(config);
+      state.persist();
       return jsonResponse({ success: true, message: result.message, project: { ...project, gateway: projectGatewaySnapshot(config, project) } }, 201);
     } catch (error) {
       return jsonResponse({ error: error instanceof Error ? error.message : "Claude project could not be enrolled" }, 409);
@@ -2998,7 +3042,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       const result = restoreClaudeProjectSettings(project.projectPath);
       if (!result.success) return jsonResponse({ success: false, error: result.message }, 500);
       project.enrolled = false;
-      persistConfig(config);
+      state.persist();
       return jsonResponse({ success: true, message: result.message, project: { ...project, gateway: projectGatewaySnapshot(config, project) } });
     }
 
@@ -3006,7 +3050,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       const result = restoreClaudeProjectSettings(project.projectPath);
       if (!result.success) return jsonResponse({ success: false, error: result.message }, 500);
       const removed = removeClaudeProject(config, project.id);
-      persistConfig(config);
+      state.persist();
       return jsonResponse({ success: true, removed });
     }
   }
@@ -3067,7 +3111,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     let profile: ClaudeProfileRecord;
     try {
       profile = addClaudeProfile(config, { name, claudeHome });
-      persistConfig(config);
+      state.persist();
     } catch (error) {
       return jsonResponse({ code: "registration_failed", error: error instanceof Error ? error.message : String(error) }, 409);
     }
@@ -3167,13 +3211,13 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         const nextFlag = body.routeAutoModeClassifier;
         if (nextFlag !== previousFlag) {
           if (nextFlag) {
-            const view = await effectiveModelView(config, {
+            const view = await effectiveModelView(state.effective, {
               profileId: profile.id,
               headers: req.headers,
               includeConfiguredForwardModels: true,
             });
             const effectiveModels = view.models.map(({ provider, id }) => ({ provider, id }));
-            const issue = classifierTargetIssue(config, effectiveModels);
+            const issue = classifierTargetIssue(state.effective, effectiveModels);
             if (issue) return jsonResponse({ error: `cannot enable auto-mode classifier routing: ${issue.message}`, reason: issue.reason }, 409);
           }
 
@@ -3226,7 +3270,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         }
       }
       if (renamed) profile = renameClaudeProfile(config, profile.id, body.name as string);
-      persistConfig(config);
+      state.persist();
       const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
       let launcherWarning: string | undefined;
       if (renamed && config.claudeProfiles?.defaultProfileId !== profile.id) {
@@ -3270,7 +3314,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         const projectCleanup = cleanupClaudeProjectsForRemovedProfile(config, profile.id);
         if (!projectCleanup.success) return jsonResponse({ error: projectCleanup.error ?? "project profile cleanup failed", projects: projectCleanup.projects }, 409);
         const removed = removeClaudeProfile(config, profile.id);
-        persistConfig(config);
+        state.persist();
         const launcherSync = (deps.syncClaudeLaunchers ?? syncClaudeLaunchersBestEffort)(config);
         const warning = claudeLauncherSyncWarning(launcherSync);
         return jsonResponse({ removed, ...(warning ? { warning } : {}), launcherSync });
@@ -3323,7 +3367,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       const result = await injectClaudeCodeConfig(config.port ?? DEFAULT_PORT, config, { catalogPath, claudeHome: profile.claudeHome, profileId: profile.id, includeAuthToken });
       if (!result.success) return jsonResponse({ success: false, error: result.message }, 500);
       markClaudeProfileInjected(config, profile.id, true);
-      persistConfig(config);
+      state.persist();
       return jsonResponse({ success: true, message: result.message, profile, ...(modelReload ? { modelReload } : {}) });
     }
 
@@ -3334,7 +3378,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       if (!result.success) return jsonResponse({ success: false, error: result.message }, 500);
       profile.injected = false;
       profile.lastInjectedAt = new Date().toISOString();
-      persistConfig(config);
+      state.persist();
       return jsonResponse({ success: true, message: result.message, profile });
     }
   }
@@ -3397,7 +3441,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     } catch {
       return jsonResponse({ error: "claude grant could not be created" }, 409);
     }
-    persistConfig(config);
+    state.persist();
 
     return jsonResponse({
       grant: { id: record.id, label: record.label, createdAt: record.createdAt },
@@ -3448,7 +3492,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         const mapped = mapGrantRemovalError(err);
         return jsonResponse({ error: { code: mapped.code, message: mapped.message } }, mapped.status);
       }
-      persistConfig(config);
+      state.persist();
       return jsonResponse({
         removed: { id: removed.id, label: removed.label },
         danglingProviders: bound,
@@ -3632,19 +3676,19 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       }
       if (typeof body.image.model === "string") config.imageFallback.model = body.image.model;
     }
-    persistConfig(config);
+    state.persist();
     return jsonResponse(fallbackSettingsSnapshot(true));
   }
 
   if (url.pathname === "/api/classifier-settings" && req.method === "GET") {
     const profileId = url.searchParams.get("profileId") ?? undefined;
-    const view = await effectiveModelView(config, {
+    const view = await effectiveModelView(state.effective, {
       profileId,
       headers: req.headers,
       includeConfiguredForwardModels: true,
     });
     const effectiveModels = view.models.map(({ provider, id }) => ({ provider, id }));
-    return jsonResponse(classifierSettingsSnapshot(config, effectiveModels));
+    return jsonResponse(classifierSettingsSnapshot(state.effective, effectiveModels));
   }
 
   if (url.pathname === "/api/classifier-settings" && req.method === "PUT") {
@@ -3660,7 +3704,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
 
     const target = (body as { autoModeClassifier: unknown }).autoModeClassifier;
     const profileId = url.searchParams.get("profileId") ?? undefined;
-    const view = await effectiveModelView(config, {
+    const view = await effectiveModelView(state.effective, {
       profileId,
       headers: req.headers,
       includeConfiguredForwardModels: true,
@@ -3673,8 +3717,8 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
         return jsonResponse({ error: `cannot clear the auto-mode classifier target while ${dependent.length} Claude Code home(s) route to it; disable routeAutoModeClassifier first`, profiles: dependent.map(entry => entry.id) }, 409);
       }
       delete config.autoModeClassifier;
-      persistConfig(config);
-      return jsonResponse(classifierSettingsSnapshot(config, effectiveModels));
+      state.persist();
+      return jsonResponse(classifierSettingsSnapshot(state.effective, effectiveModels));
     }
     if (typeof target !== "object" || target === null || Array.isArray(target)) {
       return jsonResponse({ error: "autoModeClassifier must be an object { provider, model } or null" }, 400);
@@ -3689,18 +3733,18 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     const model = typeof modelInput === "string" ? modelInput.trim() : "";
     const previousTarget = config.autoModeClassifier;
     config.autoModeClassifier = { provider, model };
-    const issue = classifierTargetIssue(config, effectiveModels);
+    const issue = classifierTargetIssue({ ...state.effective, autoModeClassifier: config.autoModeClassifier }, effectiveModels);
     if (issue) {
       if (previousTarget === undefined) delete config.autoModeClassifier;
       else config.autoModeClassifier = previousTarget;
       return jsonResponse({ error: issue.message, reason: issue.reason }, 400);
     }
-    persistConfig(config);
-    return jsonResponse(classifierSettingsSnapshot(config, effectiveModels));
+    state.persist();
+    return jsonResponse(classifierSettingsSnapshot(state.effective, effectiveModels));
   }
 
   if (url.pathname === "/api/model-mixing-settings" && req.method === "GET") {
-    return jsonResponse(modelMixingSettingsSnapshot(config));
+    return jsonResponse(modelMixingSettingsSnapshot(state.effective));
   }
 
   if (url.pathname === "/api/model-mixing-settings" && req.method === "PUT") {
@@ -3717,11 +3761,11 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     const afterEnabled = config.modelMixing?.enabled === true;
     const afterAliasId = config.modelMixing?.aliasId?.trim() || "frogp/mix";
 
-    persistConfig(config);
+    state.persist();
     if (beforeEnabled !== afterEnabled || beforeAliasId !== afterAliasId) {
       await refreshClaudeCodeCatalogBestEffort();
     }
-    return jsonResponse({ ...modelMixingSettingsSnapshot(config), ok: true, warnings });
+    return jsonResponse({ ...modelMixingSettingsSnapshot(state.effective), ok: true, warnings });
   }
 
   if (url.pathname === "/api/model-mixing/call-plan" && req.method === "GET") {
@@ -3729,8 +3773,8 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     // Draft preview must not mutate the live config, but computeCallPlan only reads modelMixing —
     // clone just that subtree instead of deep-copying the full config (which carries secrets).
     const effectiveConfig = draft === null
-      ? config
-      : { ...config, modelMixing: structuredClone(config.modelMixing) } as FrogConfig;
+      ? state.effective
+      : { ...state.effective, modelMixing: structuredClone(state.effective.modelMixing) } as FrogConfig;
     const warnings: string[] = [];
     if (draft !== null) {
       let patch: unknown;
@@ -3749,7 +3793,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
   }
 
   if (url.pathname === "/api/usage-pricing" && req.method === "GET") {
-    return jsonResponse(usagePricingSnapshot(config, url.searchParams.get("range")));
+    return jsonResponse(usagePricingSnapshot(state.effective, url.searchParams.get("range")));
   }
 
   if (url.pathname === "/api/provider-state" && req.method === "GET") {
@@ -3783,17 +3827,17 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       provider.baseUrl = provider.baseUrl.trim();
       enrichProviderFromCatalog(name, provider);
     } else {
-      provider = config.providers[name];
+      provider = state.effective.providers[name];
       if (!provider) return jsonResponse({ error: "unknown provider" }, 404);
     }
 
     if (!testingDraftProvider && (!provider.models || provider.models.length === 0)) {
-      const legacyResult = await testProviderConnection(config, name, req.headers);
+      const legacyResult = await testProviderConnection(state.effective, name, req.headers);
       const status = legacyResult.ok ? 200 : legacyResult.code === "unknown_provider" ? 404 : legacyResult.code === "auth_missing" || legacyResult.code === "model_missing" ? 409 : 502;
       return jsonResponse(legacyResult, status);
     }
 
-    return jsonResponse(await runProviderConnectionTest(name, provider, { config }));
+    return jsonResponse(await runProviderConnectionTest(name, provider, { config: state.effective }));
   }
 
   // Add (or overwrite) a single provider. Merges into the live in-memory config and
@@ -3859,7 +3903,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
 
     config.providers[name] = persistedProvider;
     if (body.setDefault) config.defaultProvider = name;
-    persistConfig(config);
+    state.persist();
     await refreshClaudeCodeCatalogBestEffort();
     return jsonResponse({ success: true, name });
   }
@@ -3871,7 +3915,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     if (!name || !config.providers[name]) return jsonResponse({ error: "unknown provider" }, 404);
 
     config.defaultProvider = name;
-    persistConfig(config);
+    state.persist();
     await refreshClaudeCodeCatalogBestEffort();
     return jsonResponse({ success: true, defaultProvider: name });
   }
@@ -3892,7 +3936,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       removeCredential(name);
       clearLoginState(name);
     }
-    persistConfig(config);
+    state.persist();
     // Drop its models from Claude Code's catalog immediately (re-sync + cache bust) so removal is live.
     await refreshClaudeCodeCatalogBestEffort();
     return jsonResponse({ success: true });
@@ -3900,10 +3944,10 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
 
   if (url.pathname === "/api/models" && req.method === "GET") {
     const profileId = url.searchParams.get("profileId") ?? undefined;
-    const view = await effectiveModelView(config, { profileId, includeConfiguredForwardModels: true });
+    const view = await effectiveModelView(state.effective, { profileId, includeConfiguredForwardModels: true });
     return jsonResponse(view.models.map(m => {
       const namespaced = `${m.provider}/${m.id}`;
-      return { ...m, namespaced, disabled: isCatalogModelHidden(config, m) };
+      return { ...m, namespaced, disabled: isCatalogModelHidden(state.effective, m) };
     }));
   }
 
@@ -3926,7 +3970,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     }
     config.disabledModels = disabled;
 
-    persistConfig(config);
+    state.persist();
     await refreshClaudeCodeCatalogBestEffort();
     return jsonResponse({ ok: true, disabled });
   }
@@ -3951,12 +3995,12 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
   // catalog so the chosen ones lead by priority (spawn_agent still advertises only the first 5).
   if (url.pathname === "/api/subagent-models" && req.method === "GET") {
     const profileId = url.searchParams.get("profileId") ?? undefined;
-    const view = await effectiveModelView(config, { profileId, includeConfiguredForwardModels: true });
+    const view = await effectiveModelView(state.effective, { profileId, includeConfiguredForwardModels: true });
     const chosen = view.featured ?? [];
     // Native gpt/claude slugs are also valid subagent picks — they're picker-visible models in the catalog,
     // just buried by priority. List them first so the user can feature them over routed.
     const { listCatalogNativeSlugs } = await import("./claude-catalog");
-    const nativeAvailable = listCatalogNativeSlugs().filter(slug => !isNativeSlugHidden(config, slug));
+    const nativeAvailable = listCatalogNativeSlugs().filter(slug => !isNativeSlugHidden(state.effective, slug));
     const routedAvailable = view.models
       .map(m => `${m.provider}/${m.id}`)
       .filter(ns => !view.disabled.has(ns));
@@ -3969,7 +4013,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     const chosen = Array.isArray(body.models) ? body.models.filter((m): m is string => typeof m === "string") : [];
     config.subagentModels = chosen;
 
-    persistConfig(config);
+    state.persist();
     await refreshClaudeCodeCatalogBestEffort();
     return jsonResponse({ ok: true, applied: chosen });
   }
@@ -3988,7 +4032,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
           // filtered Claude catalog on login completion — including re-login of an already-configured
           // provider, where upsert reports no change yet the now-authReady aliases must reappear in the
           // picker. Refresh targets the default claudeHome; secondary profiles refresh at pre-launch.
-          if (upsertOAuthProvider(config, provider)) persistConfig(config);
+          if (upsertOAuthProvider(config, provider)) state.persist();
           await refreshClaudeCodeCatalogBestEffort();
         },
         restart: body.restart === true,
@@ -4037,7 +4081,7 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
     // canonical lifecycle (no per-endpoint loop). Enrollment intent is retained; only explicit
     // per-project restore flips `enrolled`. Persist after the aggregate attempt so partial progress sticks.
     const restore = restoreManagedClaudeRouting(config);
-    persistConfig(config);
+    state.persist();
     if (!restore.success) return jsonResponse({ success: false, error: restore.message }, 500);
     const proxyPid = readPid();
     if (proxyPid !== null) writeShutdownIntent(proxyPid); // signal watchdog: graceful GUI stop
@@ -4088,53 +4132,41 @@ export function buildAnthropicModelsList(
   return buildAnthropicModelsListFromAliases(aliasEntries);
 }
 
-export function startServer(port?: number) {
-  const configPath = getConfigPath();
-  let config = loadConfig();
-  if (!existsSync(configPath)) {
-    config.modelCatalogConfigVersion = 1;
-  } else if (config.modelCatalogConfigVersion !== 1) {
-    try {
-      const originalBytes = readFileSync(configPath, "utf8");
-      JSON.parse(originalBytes);
-      const bundled = JSON.parse(readFileSync(
-        new URL("./generated/model-catalog-v1.json", import.meta.url),
-        "utf8",
-      )) as ModelCatalogDocumentV1;
-      const migration = migratePersistedCatalogConfig(config, bundled, {
-        writeBackup: () => writeCatalogConfigBackupOnce(configPath, originalBytes),
-      });
-      for (const warning of migration.warnings) console.warn(`[frogp] ${warning}`);
-      if (migration.changed) {
-        config = migration.config;
-        saveConfig(config);
-      }
-    } catch (error) {
-      console.warn(`[frogp] model catalog config migration was skipped: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  const removedFixtures = dropRuntimeFixtureProviders(config);
+export interface ServerStartDeps {
+  createRuntimeConfigState?: () => Promise<RuntimeConfigState>;
+  serve?: typeof Bun.serve;
+}
+
+export async function startServer(
+  port?: number,
+  deps: ServerStartDeps = {},
+): Promise<ReturnType<typeof Bun.serve>> {
+  const state = await (deps.createRuntimeConfigState ?? createRuntimeConfigState)();
+  const persistedConfig = state.persisted;
+  const removedFixtures = dropRuntimeFixtureProviders(persistedConfig);
+  let persistedChanged = removedFixtures.length > 0;
   if (removedFixtures.length > 0) {
-    saveConfig(config);
     console.error(`frogprogsy: removed runtime fixture provider(s) from config: ${removedFixtures.join(", ")}`);
   }
   // Seed default featured subagent models on first run only (UNSET → defaults). A user-set list,
   // even [], is left alone so GUI removals persist.
-  if (config.subagentModels === undefined) {
-    config.subagentModels = [...DEFAULT_SUBAGENT_MODELS];
-    saveConfig(config);
+  if (persistedConfig.subagentModels === undefined) {
+    persistedConfig.subagentModels = [...DEFAULT_SUBAGENT_MODELS];
+    persistedChanged = true;
   }
+  if (persistedChanged) state.persist();
+  const startupConfig = state.effective;
   // Auto-mode classifier: never back-fill or guess. Invalid configured targets and opted-in homes
   // without a usable target fail before the proxy begins listening. Static provider catalogs are
   // also validated; live-catalog providers were validated when saved and cannot be refreshed here.
-  const classifierResolution = resolveAutoModeClassifierTarget(config);
-  const classifierRoutedHomes = (config.claudeProfiles?.profiles ?? []).filter(entry => entry.routeAutoModeClassifier === true);
+  const classifierResolution = resolveAutoModeClassifierTarget(startupConfig);
+  const classifierRoutedHomes = (startupConfig.claudeProfiles?.profiles ?? []).filter(entry => entry.routeAutoModeClassifier === true);
   const classifierUnknownModel = classifierResolution.ok
-    && config.providers[classifierResolution.provider]?.liveModels !== true
-    ? validateClassifierModel(config, classifierResolution.provider, classifierResolution.model)
+    && startupConfig.providers[classifierResolution.provider]?.liveModels !== true
+    ? validateClassifierModel(startupConfig, classifierResolution.provider, classifierResolution.model)
     : null;
   if (
-    (!classifierResolution.ok && (config.autoModeClassifier !== undefined || classifierRoutedHomes.length > 0))
+    (!classifierResolution.ok && (startupConfig.autoModeClassifier !== undefined || classifierRoutedHomes.length > 0))
     || classifierUnknownModel
   ) {
     const detail = classifierResolution.ok
@@ -4145,18 +4177,18 @@ export function startServer(port?: number) {
       `Disable routeAutoModeClassifier or fix ${getConfigPath()}.`,
     );
   }
-  const listenPort = port ?? config.port ?? DEFAULT_PORT;
+  const listenPort = port ?? startupConfig.port ?? DEFAULT_PORT;
   setCorsOrigin(listenPort);
-  const bindHostname = config.hostname ?? "127.0.0.1";
+  const bindHostname = startupConfig.hostname ?? "127.0.0.1";
   // Trust is per request, not per network position: a bind reachable from outside this machine must
   // authenticate every relay request, and an enabled key list that cannot authenticate anything must
   // not come up at all.
-  const localAccessEnabled = isLocalAccessEnabled(config);
+  const localAccessEnabled = isLocalAccessEnabled(startupConfig);
   let runtimeToken: string | undefined;
   if (localAccessEnabled) {
-    const issue = localAccessConfigIssue(config);
+    const issue = localAccessConfigIssue(startupConfig);
     if (issue) throw new Error(`Invalid localAccess (${issue}). Fix ${getConfigPath()}.`);
-    registerLocalAccessKeys(config);
+    registerLocalAccessKeys(startupConfig);
     // Generate now, but do not publish it until this process has successfully bound the relay.
     runtimeToken = generateLocalAccessSecret();
   } else if (!isLoopbackHostname(bindHostname)) {
@@ -4167,12 +4199,15 @@ export function startServer(port?: number) {
     );
   }
 
-  const server = Bun.serve<WsData>({
+  const serve = deps.serve ?? Bun.serve;
+  const server = serve<WsData>({
     port: listenPort,
     hostname: bindHostname,
     idleTimeout: 255,
     async fetch(req, srv) {
       const response = await (async () => {
+      const persistedConfig = state.persisted;
+      const config = state.effective;
       const url = new URL(req.url);
       const clientAddress = srv.requestIP(req)?.address;
 
@@ -4205,7 +4240,7 @@ export function startServer(port?: number) {
       }
 
       if (url.pathname.startsWith("/api/")) {
-        const mgmtResponse = await handleManagementAPI(req, url, config, { clientAddress });
+        const mgmtResponse = await handleManagementAPI(req, url, state, { clientAddress });
         return mgmtResponse ?? jsonResponse({ error: `Unknown API endpoint: ${req.method} ${url.pathname}` }, 404);
       }
 
@@ -4216,9 +4251,9 @@ export function startServer(port?: number) {
         } catch (err) {
           return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
         }
-        noteClaudeProfileRequest(config, profileId, req.headers);
+        noteClaudeProfileRequest(persistedConfig, profileId, req.headers);
         const view = await effectiveModelView(config, { profileId, headers: req.headers });
-        if (profileId) saveConfig(config);
+        if (profileId) state.persist();
         const { buildCatalogEntries, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents } = await import("./claude-catalog");
         const nativeSlugs = nativeOpenAiSlugs().filter(slug => !isNativeSlugHidden(config, slug));
         // Picker/export readiness filter: hide any provider whose configured credential is not ready
@@ -4249,10 +4284,10 @@ export function startServer(port?: number) {
         } catch (err) {
           return formatAnthropicErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
         }
-        noteClaudeProfileRequest(config, profileId, req.headers);
+        noteClaudeProfileRequest(persistedConfig, profileId, req.headers);
         const response = await runLoggedDataPlane(req, url.pathname, logCtx => handleCountTokens(req, config, logCtx, { abortSignal: req.signal, profileId }));
-        if (profileId && response.status === 401) noteClaudeProfileRequest(config, profileId, req.headers, "oauth_rejected");
-        if (profileId) saveConfig(config);
+        if (profileId && response.status === 401) noteClaudeProfileRequest(persistedConfig, profileId, req.headers, "oauth_rejected");
+        if (profileId) state.persist();
         return response;
       }
 
@@ -4266,10 +4301,10 @@ export function startServer(port?: number) {
         } catch (err) {
           return formatAnthropicErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
         }
-        noteClaudeProfileRequest(config, profileId, req.headers);
+        noteClaudeProfileRequest(persistedConfig, profileId, req.headers);
         const response = await runLoggedDataPlane(req, url.pathname, logCtx => handleMessages(req, config, logCtx, { abortSignal: req.signal, profileId }));
-        if (profileId && response.status === 401) noteClaudeProfileRequest(config, profileId, req.headers, "oauth_rejected");
-        if (profileId) saveConfig(config);
+        if (profileId && response.status === 401) noteClaudeProfileRequest(persistedConfig, profileId, req.headers, "oauth_rejected");
+        if (profileId) state.persist();
         return response;
       }
       if (url.pathname === "/v1/responses" && req.method === "POST") {

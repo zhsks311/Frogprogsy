@@ -401,7 +401,7 @@ async function handleStart(options: { block?: boolean } = {}) {
       if (existingPid) return { runningPid: existingPid };
 
       const port = await chooseListenPort(requestedPort);
-      const server = startServer(port);
+      const server = await startServer(port);
       let pidPublished = false;
       let activePortPublished = false;
       try {

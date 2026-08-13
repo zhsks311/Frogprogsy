@@ -136,7 +136,7 @@ describe("local access config validation", () => {
 describe("relay enforcement", () => {
   test("loopback browser preflight can request the local access header without trusting hostile origins", async () => {
     saveConfig(baseConfig({ localAccess: { enabled: true, keys: [key()] } }));
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const preflight = await fetch(new URL("/api/settings", server.url), {
         method: "OPTIONS",
@@ -164,7 +164,7 @@ describe("relay enforcement", () => {
 
   test("an enabled relay authenticates /api and /v1 while /healthz stays open", async () => {
     saveConfig(baseConfig({ localAccess: { enabled: true, keys: [key()] } }));
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const anonymous = await fetch(new URL("/api/settings", server.url), { headers: { Origin: LOOPBACK_ORIGIN } });
       expect(anonymous.status).toBe(401);
@@ -204,7 +204,7 @@ describe("relay enforcement", () => {
 
   test("an enabled relay authenticates the usage summary", async () => {
     saveConfig(baseConfig({ localAccess: { enabled: true, keys: [key()] } }));
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       expect((await fetch(new URL("/usage", server.url))).status).toBe(401);
       const authenticated = await fetch(new URL("/usage", server.url), { headers: { [LOCAL_ACCESS_HEADER]: SECRET } });
@@ -216,7 +216,7 @@ describe("relay enforcement", () => {
 
   test("an authenticated exposed bind serves a remote caller whose Host is not loopback", async () => {
     saveConfig(baseConfig({ hostname: "0.0.0.0", localAccess: { enabled: true, keys: [key()] } }));
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       // A remote client sends the address it dialed as Host; that must not be read as a trust signal
       // now that the key is what authenticates the request.
@@ -233,7 +233,7 @@ describe("relay enforcement", () => {
     saveConfig(baseConfig({
       localAccess: { enabled: true, keys: [key({ requestLimit: { windowSec: 60, maxRequests: 1 } })] },
     }));
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const requestHeaders = { [LOCAL_ACCESS_HEADER]: SECRET, Origin: LOOPBACK_ORIGIN };
       const first = await fetch(new URL("/api/settings", server.url), { headers: requestHeaders });
@@ -256,7 +256,7 @@ describe("relay enforcement", () => {
 
   test("an enabled relay admits same-machine tooling through the per-start token file", async () => {
     saveConfig(baseConfig({ localAccess: { enabled: true, keys: [key()] } }));
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const token = readLocalAccessToken();
       expect(token).toMatch(/^frogp_/);
@@ -275,12 +275,12 @@ describe("relay enforcement", () => {
     }
   });
 
-  test("a failed bind does not replace the running relay token", () => {
+  test("a failed bind does not replace the running relay token", async () => {
     saveConfig(baseConfig({ localAccess: { enabled: true, keys: [key()] } }));
     writeLocalAccessToken("frogp_existing-runtime-token");
     const blocker = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("occupied") });
     try {
-      expect(() => startServer(blocker.port)).toThrow();
+      await expect(startServer(blocker.port)).rejects.toThrow();
       expect(readLocalAccessToken()).toBe("frogp_existing-runtime-token");
     } finally {
       blocker.stop(true);
@@ -289,7 +289,7 @@ describe("relay enforcement", () => {
 
   test("a disabled relay writes no token and keeps loopback requests unauthenticated", async () => {
     saveConfig(baseConfig());
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       expect(readLocalAccessToken()).toBeNull();
       expect((await fetch(new URL("/api/settings", server.url))).status).toBe(200);
@@ -298,13 +298,13 @@ describe("relay enforcement", () => {
     }
   });
 
-  test("refuses to bind a non-loopback hostname without any key", () => {
+  test("refuses to bind a non-loopback hostname without any key", async () => {
     saveConfig(baseConfig({ hostname: "0.0.0.0" }));
-    expect(() => startServer(0)).toThrow(/Refusing to bind 0\.0\.0\.0 without request authentication/);
+    await expect(startServer(0)).rejects.toThrow(/Refusing to bind 0\.0\.0\.0 without request authentication/);
   });
 
-  test("refuses to start when an enabled key list cannot authenticate anything", () => {
+  test("refuses to start when an enabled key list cannot authenticate anything", async () => {
     saveConfig(baseConfig({ localAccess: { enabled: true, keys: [key({ secretHash: "nope" })] } }));
-    expect(() => startServer(0)).toThrow(/Invalid localAccess/);
+    await expect(startServer(0)).rejects.toThrow(/Invalid localAccess/);
   });
 });

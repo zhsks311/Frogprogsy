@@ -131,7 +131,7 @@ describe("modelMixingSettingsSnapshot", () => {
 
 describe("GET/PUT /api/model-mixing-settings", () => {
   test("GET returns normalized settings, provider roster, catalog alias status, presets, and evidence", async () => {
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const res = await fetch(new URL("/api/model-mixing-settings", server.url));
       expect(res.status).toBe(200);
@@ -153,7 +153,7 @@ describe("GET/PUT /api/model-mixing-settings", () => {
   });
 
   test("PUT round-trips GUI-owned fields and persists unknown model strings with warnings", async () => {
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const put = await fetch(new URL("/api/model-mixing-settings", server.url), {
         method: "PUT",
@@ -176,7 +176,7 @@ describe("GET/PUT /api/model-mixing-settings", () => {
   });
 
   test("PUT ignores wrong field shapes with warnings and only malformed JSON returns 400", async () => {
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const put = await fetch(new URL("/api/model-mixing-settings", server.url), {
         method: "PUT",
@@ -221,7 +221,7 @@ describe("GET/PUT /api/model-mixing-settings", () => {
     saveConfig(config);
 
     const preserved = JSON.parse(JSON.stringify(config.modelMixing));
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const put = await fetch(new URL("/api/model-mixing-settings", server.url), {
         method: "PUT",

@@ -347,18 +347,18 @@ export async function syncClaudeCodeGatewayModelsCache(
  * same catalog content the CLI debug path reads.
  */
 export async function refreshClaudeCodeModelCatalog(
-  config: FrogConfig,
+  effectiveConfig: FrogConfig,
   deps: RefreshDeps = defaultDeps,
   options: { claudeHome?: string; profileId?: string } = {},
 ): Promise<ClaudeCodeCatalogRefreshResult> {
-  const result = await deps.syncCatalogModels(config, options);
+  const result = await deps.syncCatalogModels(effectiveConfig, options);
   let gatewayCache: ClaudeCodeGatewayModelsCacheSyncResult;
   const warnings: string[] = [];
   try {
-    gatewayCache = await deps.syncClaudeCodeGatewayModelsCache(config, options);
+    gatewayCache = await deps.syncClaudeCodeGatewayModelsCache(effectiveConfig, options);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    gatewayCache = gatewaySyncFailureResult(claudeGatewayModelsCachePath(options.claudeHome), gatewayBaseUrl(config), message, options);
+    gatewayCache = gatewaySyncFailureResult(claudeGatewayModelsCachePath(options.claudeHome), gatewayBaseUrl(effectiveConfig), message, options);
   }
   if (gatewayCache.warning) warnings.push(gatewayCache.warning);
   const catalogExists = deps.existsSync(result.path);
