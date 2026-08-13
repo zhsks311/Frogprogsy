@@ -281,7 +281,7 @@ describe("persisted model catalog config migration", () => {
 });
 
 describe("effective model catalog config", () => {
-  test("combines managed models with user models while preserving persisted overrides", () => {
+  test("combines managed and user models while allowing persisted metadata to narrow limits only", () => {
     const persisted: FrogConfig = {
       port: 3764,
       defaultProvider: "umans",
@@ -303,6 +303,7 @@ describe("effective model catalog config", () => {
     const effective = buildEffectiveConfig(persisted, selectedCatalog());
 
     expect(effective.providers.umans.models).toEqual(["umans-coder", "umans-glm-5.2", "user-added"]);
+    expect(effective.providers.umans.userModels).toEqual(["user-added"]);
     expect(effective.providers.umans.modelContextWindows).toEqual({
       "umans-coder": 111_111,
       "umans-glm-5.2": 200_000,
@@ -313,10 +314,12 @@ describe("effective model catalog config", () => {
     });
     expect(effective.providers.umans.modelReasoningEfforts).toEqual({ "umans-coder": ["low", "high"] });
     expect(effective.providers.umans.noReasoningModels).toEqual(["umans-glm-5.2"]);
-    expect(effective.providers.umans.noTemperatureModels).toEqual([]);
+    expect(effective.providers.umans.noTemperatureModels).toEqual(["umans-coder"]);
     expect(effective.providers.umans.apiKey).toBe("secret");
     expect(effective.providers.umans.defaultModel).toBe("user-added");
     expect(persisted.providers.umans.models).toBeUndefined();
+    expect(persisted.providers.umans.userModels).toEqual(["user-added", "umans-coder"]);
+    expect(persisted.providers.umans.noTemperatureModels).toEqual([]);
   });
 
   test("leaves custom and fixed-allowlist providers unchanged in the effective clone", () => {

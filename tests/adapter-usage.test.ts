@@ -2,10 +2,96 @@ import { describe, expect, test } from "bun:test";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { createGoogleAdapter } from "../src/adapters/google";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { buildEffectiveConfig } from "../src/model-catalog-config";
+import type { ModelCatalogProviderV1 } from "../src/model-catalog-schema";
+import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
+import type { FrogProviderConfig } from "../src/types";
 
 const provider = { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "key" };
 
+function effectiveManagedProvider(
+  persisted: FrogProviderConfig,
+  catalogProvider: ModelCatalogProviderV1,
+): FrogProviderConfig {
+  const selected = {
+    document: {
+      schemaVersion: 1,
+      catalogRevision: 1,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "2026-08-12T00:00:00.000Z",
+      minFrogprogsyVersion: "0.0.0",
+      providers: [catalogProvider],
+    },
+    status: {
+      source: "bundled",
+      catalogRevision: 1,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "2026-08-12T00:00:00.000Z",
+      skippedRecords: 0,
+      warnings: [],
+    },
+  } satisfies SelectedModelCatalog;
+  return buildEffectiveConfig({
+    port: 3764,
+    defaultProvider: "managed",
+    providers: {
+      managed: {
+        ...persisted,
+        catalogProviderId: catalogProvider.id,
+      },
+    },
+  }, selected).providers.managed;
+}
+
 describe("adapter reasoning and usage details", () => {
+  test("effective managed restrictions constrain the actual OpenAI request", () => {
+    const effectiveProvider = effectiveManagedProvider({
+      adapter: "openai-chat",
+      baseUrl: "https://managed.test/v1",
+      noReasoningModels: [],
+      noTemperatureModels: [],
+      noTopPModels: [],
+      noPenaltyModels: [],
+      autoToolChoiceOnlyModels: [],
+    }, {
+      id: "managed",
+      models: [{
+        id: "strict-model",
+        noReasoning: true,
+        noTemperature: true,
+        noTopP: true,
+        noPenalty: true,
+        autoToolChoiceOnly: true,
+      }],
+    });
+    const request = createOpenAIChatAdapter(effectiveProvider).buildRequest({
+      modelId: "strict-model",
+      context: {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+        tools: [{ name: "run_tests", description: "Run tests", parameters: { type: "object", properties: {} } }],
+      },
+      stream: false,
+      options: {
+        reasoning: "high",
+        temperature: 0.2,
+        topP: 0.7,
+        presencePenalty: 1,
+        frequencyPenalty: 1,
+        toolChoice: { name: "run_tests" },
+      },
+    });
+    const body = JSON.parse(request.body as string) as Record<string, unknown>;
+
+    expect(body).not.toHaveProperty("reasoning_effort");
+    expect(body).not.toHaveProperty("temperature");
+    expect(body).not.toHaveProperty("top_p");
+    expect(body).not.toHaveProperty("presence_penalty");
+    expect(body).not.toHaveProperty("frequency_penalty");
+    expect(body.tool_choice).toBe("auto");
+  });
+
   test("OpenAI-compatible non-streaming maps reasoning_content and usage details", async () => {
     const adapter = createOpenAIChatAdapter(provider);
     const events = await adapter.parseResponse?.(new Response(JSON.stringify({

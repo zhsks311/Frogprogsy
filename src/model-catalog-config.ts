@@ -3,13 +3,14 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { SelectedModelCatalog } from "./model-catalog-runtime";
 import type { ModelCatalogDocumentV1, ModelCatalogProviderV1 } from "./model-catalog-schema";
+import { intersectReasoningEfforts, mergeReasoningEffortMap } from "./reasoning-effort";
 import { providerConfigSeed } from "./providers/derive";
 import {
   PROVIDER_REGISTRY,
   providerUserSeedFromRegistry as registryUserSeed,
   type ProviderRegistryEntry,
 } from "./providers/registry";
-import type { FrogConfig, FrogProviderConfig } from "./types";
+import type { FrogConfig, FrogModelCapabilities, FrogProviderConfig } from "./types";
 
 export interface CatalogConfigMigrationResult {
   config: FrogConfig;
@@ -72,13 +73,6 @@ const MANAGED_METADATA_FIELDS = [
   "escapeBuiltinToolNames",
 ] as const satisfies readonly (keyof FrogProviderConfig)[];
 
-const RECORD_METADATA_FIELDS = new Set<keyof FrogProviderConfig>([
-  "modelContextWindows",
-  "modelCapabilities",
-  "modelReasoningEfforts",
-  "reasoningEffortMap",
-  "modelReasoningEffortMap",
-]);
 
 const LEGACY_RETIRED_MODELS_BY_PROVIDER: Record<string, readonly string[]> = {
   umans: ["umans-kimi-k2.6", "umans-glm-5.1", "umans-qwen3.6-35b-a3b"],
@@ -269,23 +263,165 @@ export function migratePersistedCatalogConfig(
   return { config: migrated, changed: true, warnings };
 }
 
+function minimumPositive(left: number | undefined, right: number | undefined): number | undefined {
+  const values = [left, right].filter((value): value is number => typeof value === "number" && value > 0);
+  return values.length > 0 ? Math.min(...values) : undefined;
+}
+
+function intersectValues<T>(managed: readonly T[] | undefined, userOverride: readonly T[] | undefined): T[] | undefined {
+  if (managed === undefined) return userOverride === undefined ? undefined : [...userOverride];
+  if (userOverride === undefined) return [...managed];
+  return managed.filter(value => userOverride.includes(value));
+}
+
+function mergePositiveRecords(
+  managed: Record<string, number> | undefined,
+  userOverride: Record<string, number> | undefined,
+): Record<string, number> | undefined {
+  if (!managed && !userOverride) return undefined;
+  const merged: Record<string, number> = {};
+  for (const key of new Set([...Object.keys(managed ?? {}), ...Object.keys(userOverride ?? {})])) {
+    const value = minimumPositive(managed?.[key], userOverride?.[key]);
+    if (value !== undefined) merged[key] = value;
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function mergeModelCapabilities(
+  managed: Record<string, FrogModelCapabilities> | undefined,
+  userOverride: Record<string, FrogModelCapabilities> | undefined,
+): Record<string, FrogModelCapabilities> | undefined {
+  if (!managed && !userOverride) return undefined;
+  const merged: Record<string, FrogModelCapabilities> = {};
+  for (const key of new Set([...Object.keys(managed ?? {}), ...Object.keys(userOverride ?? {})])) {
+    const managedCapabilities = managed?.[key];
+    const userCapabilities = userOverride?.[key];
+    const input = intersectValues(managedCapabilities?.input, userCapabilities?.input);
+    merged[key] = {
+      ...managedCapabilities,
+      ...userCapabilities,
+      ...(input !== undefined ? { input } : {}),
+    };
+  }
+  return merged;
+}
+
+function mergeReasoningEffortRecords(
+  managed: Record<string, string[]> | undefined,
+  userOverride: Record<string, string[]> | undefined,
+): Record<string, string[]> | undefined {
+  if (!managed && !userOverride) return undefined;
+  const merged: Record<string, string[]> = {};
+  for (const key of new Set([...Object.keys(managed ?? {}), ...Object.keys(userOverride ?? {})])) {
+    const efforts = intersectReasoningEfforts(managed?.[key], userOverride?.[key]);
+    if (efforts !== undefined) merged[key] = efforts;
+  }
+  return merged;
+}
+
+function mergeReasoningEffortMapRecords(
+  managed: Record<string, Record<string, string>> | undefined,
+  userOverride: Record<string, Record<string, string>> | undefined,
+  modelEfforts: Record<string, string[]> | undefined,
+  providerEfforts: readonly string[] | undefined,
+): Record<string, Record<string, string>> | undefined {
+  if (!managed && !userOverride) return undefined;
+  const merged: Record<string, Record<string, string>> = {};
+  for (const key of new Set([...Object.keys(managed ?? {}), ...Object.keys(userOverride ?? {})])) {
+    const effortMap = mergeReasoningEffortMap(
+      undefined,
+      managed?.[key],
+      userOverride?.[key],
+      modelEfforts?.[key] ?? providerEfforts,
+    );
+    if (effortMap !== undefined) merged[key] = effortMap;
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function unionRestrictions(
+  managed: readonly string[] | undefined,
+  userOverride: readonly string[] | undefined,
+): string[] | undefined {
+  if (!managed && !userOverride) return undefined;
+  return uniqueStrings([...(managed ?? []), ...(userOverride ?? [])]);
+}
+
 function mergeManagedProvider(
   persisted: FrogProviderConfig,
   catalogProvider: ModelCatalogProviderV1,
 ): FrogProviderConfig {
   const managed = catalogProviderConfig(catalogProvider);
   const effective = { ...managed, ...persisted } as FrogProviderConfig;
+  const managedModelIds = new Set(managed.models ?? []);
+  const persistedUserModels = uniqueStrings(persisted.userModels ?? []);
   effective.models = uniqueStrings([
     ...(managed.models ?? []),
-    ...(persisted.userModels ?? []),
+    ...persistedUserModels,
   ]);
+  const effectiveUserModels = persistedUserModels.filter(model => !managedModelIds.has(model));
+  if (effectiveUserModels.length > 0) effective.userModels = effectiveUserModels;
+  else delete effective.userModels;
 
-  for (const field of RECORD_METADATA_FIELDS) {
-    const managedValue = managed[field];
-    const persistedValue = persisted[field];
-    if (!managedValue || typeof managedValue !== "object" || Array.isArray(managedValue)) continue;
-    if (!persistedValue || typeof persistedValue !== "object" || Array.isArray(persistedValue)) continue;
-    effective[field] = { ...managedValue, ...persistedValue } as never;
+  const contextWindow = minimumPositive(managed.contextWindow, persisted.contextWindow);
+  if (contextWindow !== undefined) effective.contextWindow = contextWindow;
+  else delete effective.contextWindow;
+
+  const modelContextWindows = mergePositiveRecords(managed.modelContextWindows, persisted.modelContextWindows);
+  if (modelContextWindows !== undefined) effective.modelContextWindows = modelContextWindows;
+  else delete effective.modelContextWindows;
+
+  const modelCapabilities = mergeModelCapabilities(managed.modelCapabilities, persisted.modelCapabilities);
+  if (modelCapabilities !== undefined) effective.modelCapabilities = modelCapabilities;
+  else delete effective.modelCapabilities;
+
+  const reasoningEfforts = intersectReasoningEfforts(managed.reasoningEfforts, persisted.reasoningEfforts);
+  if (reasoningEfforts !== undefined) effective.reasoningEfforts = reasoningEfforts;
+  else delete effective.reasoningEfforts;
+
+  const modelReasoningEfforts = mergeReasoningEffortRecords(
+    managed.modelReasoningEfforts,
+    persisted.modelReasoningEfforts,
+  );
+  if (modelReasoningEfforts !== undefined) effective.modelReasoningEfforts = modelReasoningEfforts;
+  else delete effective.modelReasoningEfforts;
+
+  const reasoningEffortMap = mergeReasoningEffortMap(
+    undefined,
+    managed.reasoningEffortMap,
+    persisted.reasoningEffortMap,
+    reasoningEfforts,
+  );
+  if (reasoningEffortMap !== undefined) effective.reasoningEffortMap = reasoningEffortMap;
+  else delete effective.reasoningEffortMap;
+
+  const modelReasoningEffortMap = mergeReasoningEffortMapRecords(
+    managed.modelReasoningEffortMap,
+    persisted.modelReasoningEffortMap,
+    modelReasoningEfforts,
+    reasoningEfforts,
+  );
+  if (modelReasoningEffortMap !== undefined) effective.modelReasoningEffortMap = modelReasoningEffortMap;
+  else delete effective.modelReasoningEffortMap;
+
+  for (const field of [
+    "noReasoningModels",
+    "noTemperatureModels",
+    "noTopPModels",
+    "noPenaltyModels",
+    "autoToolChoiceOnlyModels",
+    "preserveReasoningContentModels",
+  ] as const) {
+    const restrictions = unionRestrictions(managed[field], persisted[field]);
+    if (restrictions !== undefined) effective[field] = restrictions;
+    else delete effective[field];
+  }
+
+  if (managed.escapeBuiltinToolNames !== undefined || persisted.escapeBuiltinToolNames !== undefined) {
+    effective.escapeBuiltinToolNames = managed.escapeBuiltinToolNames === true
+      || persisted.escapeBuiltinToolNames === true;
+  } else {
+    delete effective.escapeBuiltinToolNames;
   }
   return effective;
 }

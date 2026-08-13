@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { parseMessagesRequest } from "../src/messages/parser";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION } from "../src/oauth/anthropic";
+import { buildEffectiveConfig } from "../src/model-catalog-config";
+import type { ModelCatalogProviderV1 } from "../src/model-catalog-schema";
+import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
+import type { FrogProviderConfig } from "../src/types";
 import type { AdapterEvent } from "../src/types";
 
 /**
@@ -68,6 +72,42 @@ function build(
 
 function weatherTool() {
   return { name: "get_weather", description: "Report the weather.", input_schema: { type: "object" } };
+}
+
+function effectiveManagedProvider(
+  persisted: FrogProviderConfig,
+  catalogProvider: ModelCatalogProviderV1,
+): FrogProviderConfig {
+  const selected = {
+    document: {
+      schemaVersion: 1,
+      catalogRevision: 1,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "2026-08-12T00:00:00.000Z",
+      minFrogprogsyVersion: "0.0.0",
+      providers: [catalogProvider],
+    },
+    status: {
+      source: "bundled",
+      catalogRevision: 1,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "2026-08-12T00:00:00.000Z",
+      skippedRecords: 0,
+      warnings: [],
+    },
+  } satisfies SelectedModelCatalog;
+  return buildEffectiveConfig({
+    port: 3764,
+    defaultProvider: "managed",
+    providers: {
+      managed: {
+        ...persisted,
+        catalogProviderId: catalogProvider.id,
+      },
+    },
+  }, selected).providers.managed;
 }
 
 describe("claude-grant shares the Claude OAuth subscription wire identity", () => {
@@ -145,6 +185,25 @@ describe("claude-grant shares the Claude OAuth subscription wire identity", () =
       expect(grant.headers).toEqual(oauth.headers);
       expect(grant.body).toEqual(oauth.body);
     }
+  });
+});
+
+describe("effective managed Anthropic request settings", () => {
+  test("managed tool-name escaping cannot be disabled by a persisted override", () => {
+    const effectiveProvider = effectiveManagedProvider({
+      ...keyProvider,
+      escapeBuiltinToolNames: false,
+    }, {
+      id: "managed",
+      escapeBuiltinToolNames: true,
+      models: [{ id: "claude-opus-4-8" }],
+    });
+
+    const { body } = build(effectiveProvider, { tools: [weatherTool()] });
+    const tools = body.tools as Array<{ name: string }>;
+
+    expect(effectiveProvider.escapeBuiltinToolNames).toBe(true);
+    expect(tools[0]?.name).toBe("frogp_get_weather");
   });
 });
 
