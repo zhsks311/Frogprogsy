@@ -43,6 +43,7 @@ import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-pr
 import { deriveProviderPresets } from "./providers/derive";
 import { sanitizeCatalogProviderForPersistence } from "./model-catalog-config";
 import { createRuntimeConfigState, type RuntimeConfigState } from "./runtime-config-state";
+import type { CatalogRuntimeStatus, SelectedModelCatalog } from "./model-catalog-runtime";
 import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
@@ -1996,15 +1997,62 @@ function observeLoggedStream(body: ReadableStream<Uint8Array>, ctx: RequestLogCo
   });
 }
 
+type PublicCatalogWarningCause = "refresh_failed" | "validation_failed" | "incompatible_records" | "fallback_active";
+
+interface PublicCatalogRuntimeStatus extends Omit<CatalogRuntimeStatus, "warnings"> {
+  warnings: {
+    count: number;
+    causes: PublicCatalogWarningCause[];
+  };
+}
+
+function publicCatalogWarningCause(warning: string): PublicCatalogWarningCause {
+  const normalized = warning.toLowerCase();
+  if (normalized.includes("newer") || normalized.includes("unknown provider") || normalized.includes("skipped")) return "incompatible_records";
+  if (normalized.includes("validation") || normalized.includes("digest") || normalized.includes("envelope") || normalized.includes("prefix")) return "validation_failed";
+  if (normalized.includes("refresh") || normalized.includes("remote") || normalized.includes("cache")) return "refresh_failed";
+  return "fallback_active";
+}
+
+function publicCatalogRuntimeStatus(status: CatalogRuntimeStatus): PublicCatalogRuntimeStatus {
+  return {
+    source: status.source,
+    catalogRevision: status.catalogRevision,
+    catalogDigest: status.catalogDigest,
+    sourceCommit: status.sourceCommit,
+    generatedAt: status.generatedAt,
+    ...(status.refreshedAt !== undefined ? { refreshedAt: status.refreshedAt } : {}),
+    skippedRecords: status.skippedRecords,
+    warnings: {
+      count: status.warnings.length,
+      causes: [...new Set(status.warnings.map(publicCatalogWarningCause))],
+    },
+  };
+}
+
+function publicModelSupportStatus(status: CatalogModel["supportStatus"]): "validated" | "discovered" | "unknown" {
+  return status === "validated" || status === "discovered" ? status : "unknown";
+}
+
+function publicCatalogModelFields(status: CatalogRuntimeStatus) {
+  return {
+    catalogSource: status.source,
+    catalogRevision: status.catalogRevision,
+    catalogSourceCommit: status.sourceCommit,
+    ...(status.refreshedAt !== undefined ? { catalogRefreshedAt: status.refreshedAt } : {}),
+  };
+}
+
 function managementTestState(
   config: FrogConfig,
   save: (config: FrogConfig) => void,
   effectiveConfig: FrogConfig = config,
+  selectedCatalog?: SelectedModelCatalog,
 ): RuntimeConfigState {
   const state: RuntimeConfigState = {
     persisted: config,
     effective: structuredClone(effectiveConfig),
-    catalog: {
+    catalog: selectedCatalog ?? {
       document: {
         schemaVersion: 1,
         catalogRevision: 0,
@@ -2050,7 +2098,7 @@ export const __requestLogTest = {
     config: FrogConfig,
     deps: ManagementAPIDeps = {},
   ) {
-    const state = managementTestState(config, deps.saveConfig ?? saveConfig, deps.effectiveConfig);
+    const state = managementTestState(config, deps.saveConfig ?? saveConfig, deps.effectiveConfig, deps.catalog);
     return handleManagementAPI(req, url, state, deps);
   },
   handleCountTokens,
@@ -2312,6 +2360,8 @@ interface ManagementAPIDeps {
   clientAddress?: string;
   /** Effective config fixture for management boundary tests. Production always uses RuntimeConfigState. */
   effectiveConfig?: FrogConfig;
+  /** Selected catalog fixture for management boundary tests. Production reads RuntimeConfigState. */
+  catalog?: SelectedModelCatalog;
   /** Profile refresh seam for asserting the effective config passed to Claude catalog generation. */
   refreshProfileCatalog?: (
     config: FrogConfig,
@@ -3958,12 +4008,23 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     return jsonResponse({ success: true });
   }
 
+  if (url.pathname === "/api/model-catalog/status" && req.method === "GET") {
+    return jsonResponse(publicCatalogRuntimeStatus(state.catalog.status));
+  }
+
   if (url.pathname === "/api/models" && req.method === "GET") {
     const profileId = url.searchParams.get("profileId") ?? undefined;
     const view = await effectiveModelView(state.effective, { profileId, includeConfiguredForwardModels: true });
-    return jsonResponse(view.models.map(m => {
-      const namespaced = `${m.provider}/${m.id}`;
-      return { ...m, namespaced, disabled: isCatalogModelHidden(state.effective, m) };
+    const catalogFields = publicCatalogModelFields(state.catalog.status);
+    return jsonResponse(view.models.map(model => {
+      const namespaced = `${model.provider}/${model.id}`;
+      return {
+        ...model,
+        ...catalogFields,
+        namespaced,
+        supportStatus: publicModelSupportStatus(model.supportStatus),
+        disabled: isCatalogModelHidden(state.effective, model),
+      };
     }));
   }
 

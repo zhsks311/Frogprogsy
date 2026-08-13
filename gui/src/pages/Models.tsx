@@ -2,28 +2,126 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Switch, Notice } from "../ui";
 import { IconArrowDown, IconArrowUp, IconCheck, IconChevron, IconSearch } from "../icons";
-import { useT, Trans } from "../i18n";
+import { useT, Trans, type TFn } from "../i18n";
 import type { DeepLinkTarget } from "../navigation";
 
-interface ModelRow { provider: string; id: string; namespaced: string; disabled: boolean; authReady: boolean }
+export type ModelSupportStatus = "validated" | "discovered" | "unknown";
+interface ModelRow { provider: string; id: string; namespaced: string; disabled: boolean; authReady: boolean; supportStatus: ModelSupportStatus }
 interface FeaturedModelsResponse { available?: string[]; chosen?: string[] }
-interface ModelControlRow { provider: string | null; id: string; namespaced: string; disabled: boolean; canHide: boolean; authReady: boolean }
+interface ModelControlRow { provider: string | null; id: string; namespaced: string; disabled: boolean; canHide: boolean; authReady: boolean; supportStatus: ModelSupportStatus }
 interface ProviderVisibilitySummary { provider: string; visible: number; hidden: number }
+
+export interface ModelCatalogStatus {
+  source: "remote" | "cached" | "bundled";
+  catalogRevision: number;
+  sourceCommit: string;
+  refreshedAt?: string;
+  warningCount: number;
+}
+
+export function parseCatalogStatus(value: unknown): ModelCatalogStatus {
+  if (!value || typeof value !== "object") throw new Error("catalog status response must be an object");
+  if (!("source" in value) || (value.source !== "remote" && value.source !== "cached" && value.source !== "bundled")) {
+    throw new Error("invalid catalog source");
+  }
+  if (!("catalogRevision" in value) || typeof value.catalogRevision !== "number" || !Number.isInteger(value.catalogRevision) || value.catalogRevision < 0) {
+    throw new Error("invalid catalog revision");
+  }
+  if (!("sourceCommit" in value) || typeof value.sourceCommit !== "string" || !/^[0-9a-f]{40}$/.test(value.sourceCommit)) {
+    throw new Error("invalid catalog source commit");
+  }
+  if ("refreshedAt" in value && value.refreshedAt !== undefined && (typeof value.refreshedAt !== "string" || !Number.isFinite(Date.parse(value.refreshedAt)))) {
+    throw new Error("invalid catalog refresh time");
+  }
+  let warningCount = 0;
+  if (
+    "warnings" in value
+    && value.warnings
+    && typeof value.warnings === "object"
+    && "count" in value.warnings
+    && typeof value.warnings.count === "number"
+    && Number.isInteger(value.warnings.count)
+    && value.warnings.count >= 0
+  ) {
+    warningCount = value.warnings.count;
+  }
+  return {
+    source: value.source,
+    catalogRevision: value.catalogRevision,
+    sourceCommit: value.sourceCommit,
+    ...("refreshedAt" in value && typeof value.refreshedAt === "string" ? { refreshedAt: value.refreshedAt } : {}),
+    warningCount,
+  };
+}
+
+export function ModelSupportStatusBadge({ status, t }: { status: ModelSupportStatus; t: TFn }) {
+  const label = status === "validated"
+    ? t("models.support.validated")
+    : status === "discovered"
+      ? t("models.support.discovered")
+      : t("models.support.unknown");
+  const className = status === "validated" ? "badge-green" : status === "discovered" ? "badge-accent" : "badge-amber";
+  return <span className={`badge ${className}`}>{label}</span>;
+}
+
+export function ModelCatalogStatusSummary({
+  status,
+  t,
+  onRefresh,
+}: {
+  status: ModelCatalogStatus | null;
+  t: TFn;
+  onRefresh: () => void;
+}) {
+  const needsAttention = status === null || status.source !== "remote" || status.warningCount > 0;
+  const title = status === null
+    ? t("models.catalog.unavailable")
+    : status.source === "remote"
+      ? t("models.catalog.remote")
+      : status.source === "cached"
+        ? t("models.catalog.cached")
+        : t("models.catalog.bundled");
+  return (
+    <div className={`models-status-card${needsAttention ? " warn" : ""}`}>
+      <div className="models-status-label">{title}</div>
+      {status ? (
+        <>
+          <p>{t("models.catalog.details", {
+            revision: status.catalogRevision,
+            commit: status.sourceCommit.slice(0, 8),
+            refreshedAt: status.refreshedAt?.replace("T", " ").replace("Z", " UTC") ?? t("models.catalog.noRefresh"),
+          })}</p>
+          {status.warningCount > 0 && <p>{t("models.catalog.warnings", { n: status.warningCount })}</p>}
+        </>
+      ) : (
+        <p>{t("models.catalog.unavailableBody")}</p>
+      )}
+      <p>{t("models.catalog.nextCheck")}</p>
+      <button className="btn btn-ghost btn-sm" type="button" onClick={onRefresh}>{t("models.refreshDashboard")}</button>
+    </div>
+  );
+}
 
 function parseModelRows(value: unknown): ModelRow[] {
   if (!Array.isArray(value)) throw new Error("models response must be an array");
   return value.map(item => {
     if (!item || typeof item !== "object") throw new Error("invalid model row");
-    const row = item as Partial<ModelRow>;
-    if (typeof row.provider !== "string" || typeof row.id !== "string" || typeof row.namespaced !== "string") {
+    if (
+      !("provider" in item) || typeof item.provider !== "string"
+      || !("id" in item) || typeof item.id !== "string"
+      || !("namespaced" in item) || typeof item.namespaced !== "string"
+    ) {
       throw new Error("invalid model row");
     }
     return {
-      provider: row.provider,
-      id: row.id,
-      namespaced: row.namespaced,
-      disabled: row.disabled === true,
-      authReady: row.authReady !== false,
+      provider: item.provider,
+      id: item.id,
+      namespaced: item.namespaced,
+      disabled: "disabled" in item && item.disabled === true,
+      authReady: !("authReady" in item) || item.authReady !== false,
+      supportStatus: "supportStatus" in item && (item.supportStatus === "validated" || item.supportStatus === "discovered")
+        ? item.supportStatus
+        : "unknown",
     };
   });
 }
@@ -56,6 +154,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const [catalogStatus, setCatalogStatus] = useState<ModelCatalogStatus | null>(null);
 
   const [featuredAvailable, setFeaturedAvailable] = useState<string[]>([]);
   const [featuredChosen, setFeaturedChosen] = useState<string[]>([]);
@@ -95,11 +194,23 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
 
   const load = async () => {
     try {
-      const res = await fetch(`${apiBase}/api/models`);
-      if (!res.ok) throw new Error("models load failed");
-      const data = parseModelRows(await res.json());
+      const [modelsResponse, catalogResponse] = await Promise.all([
+        fetch(`${apiBase}/api/models`),
+        fetch(`${apiBase}/api/model-catalog/status`).catch(() => null),
+      ]);
+      if (!modelsResponse.ok) throw new Error("models load failed");
+      const data = parseModelRows(await modelsResponse.json());
       setModels(data);
       setDisabled(new Set(data.filter(m => m.disabled).map(m => m.namespaced)));
+      if (catalogResponse?.ok) {
+        try {
+          setCatalogStatus(parseCatalogStatus(await catalogResponse.json()));
+        } catch {
+          setCatalogStatus(null);
+        }
+      } else {
+        setCatalogStatus(null);
+      }
     } catch {
       setOk(false); setStatus(t("models.loadFail"));
     } finally {
@@ -154,7 +265,6 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     .join("; ");
   const hiddenCount = disabled.size;
   const authUnavailableCount = models.filter(model => !disabled.has(model.namespaced) && !model.authReady).length;
-  const requiresAttention = hiddenCount > 0 || authUnavailableCount > 0;
   const featuredSelected = useMemo(() => new Set(featuredChosen), [featuredChosen]);
 
   const controlRows = useMemo<ModelControlRow[]>(() => {
@@ -169,6 +279,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
         disabled: disabled.has(model.namespaced),
         canHide: true,
         authReady: model.authReady,
+        supportStatus: model.supportStatus,
       });
     }
     for (const model of featuredAvailable) {
@@ -181,6 +292,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
         disabled: false,
         canHide: false,
         authReady: true,
+        supportStatus: "unknown",
       });
     }
     return rows;
@@ -199,6 +311,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
         disabled: false,
         canHide: false,
         authReady: true,
+        supportStatus: "unknown",
       };
     });
   }, [controlRows, featuredChosen]);
@@ -399,13 +512,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
           <h2>{t("models.controlTitle")}</h2>
           <p>{t("models.subtitle")}</p>
         </div>
-        <div className={`models-status-card${requiresAttention ? " warn" : ""}`}>
-          <div className="models-status-label">{requiresAttention ? t("models.statusReview") : t("models.statusOk")}</div>
-          <p>{requiresAttention
-            ? t("models.statusAttention", { visible: activeCount, hidden: hiddenCount, unavailable: authUnavailableCount })
-            : t("models.statusReady", { n: activeCount })}</p>
-          <button className="btn btn-ghost btn-sm" type="button" onClick={refreshAll}>{t("models.refreshDashboard")}</button>
-        </div>
+        <ModelCatalogStatusSummary status={catalogStatus} t={t} onRefresh={refreshAll} />
       </div>
 
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
@@ -466,6 +573,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
                         <code className="mono text-anywhere">{row.id}</code>
                         {row.provider && <span className="model-provider-tag">{row.provider}</span>}
                         {!row.authReady && <span className="badge badge-amber">{t("models.authLoginRequired")}</span>}
+                        <ModelSupportStatusBadge status={row.supportStatus} t={t} />
                       </div>
                       <div className="model-control-meta">
                         {row.authReady
@@ -567,6 +675,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
                                 {row.provider && <span className="model-provider-tag">{row.provider}</span>}
                                 {!row.canHide && <span className="badge badge-muted">{t("models.builtinBadge")}</span>}
                                 {!row.authReady && <span className="badge badge-amber">{t("models.authLoginRequired")}</span>}
+                                <ModelSupportStatusBadge status={row.supportStatus} t={t} />
                               </div>
                               <div className="model-control-meta">
                                 {!row.authReady

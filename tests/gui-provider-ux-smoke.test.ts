@@ -3,6 +3,7 @@ import React from "../gui/node_modules/react/index.js";
 import { renderToStaticMarkup } from "../gui/node_modules/react-dom/server.bun.js";
 import { parseExtraApiKeys, sanitizeVisibleText } from "../gui/src/components/AddProviderModal";
 import { parseConfig, ProviderMetadataList, AnthropicAuthEditor } from "../gui/src/pages/Providers";
+import { ModelCatalogStatusSummary, ModelSupportStatusBadge, parseCatalogStatus } from "../gui/src/pages/Models";
 import {
   ClaudeGrantsCard,
   parseGrants,
@@ -15,9 +16,16 @@ import {
   type ClaudeGrantSummary,
 } from "../gui/src/pages/ClaudeProfiles";
 import { en } from "../gui/src/i18n/en";
+import { ko } from "../gui/src/i18n/ko";
 
 function t(key: keyof typeof en, vars?: Record<string, string | number>): string {
   let value = en[key];
+  for (const [name, replacement] of Object.entries(vars ?? {})) value = value.split(`{${name}}`).join(String(replacement));
+  return value;
+}
+
+function tKo(key: keyof typeof ko, vars?: Record<string, string | number>): string {
+  let value = ko[key];
   for (const [name, replacement] of Object.entries(vars ?? {})) value = value.split(`{${name}}`).join(String(replacement));
   return value;
 }
@@ -273,5 +281,38 @@ describe("Anthropic auth selector (Forward / API key / Claude grant)", () => {
   test("grant API failure disables verification without breaking the row", () => {
     const markup = render({ authMode: "claude-grant", claudeGrantId: "cg_ready01" }, { grants: [], grantsFailed: true });
     expect(markup).toContain("Claude grants are unavailable");
+  });
+});
+
+describe("model catalog status UX", () => {
+  test("shows freshness, next action, and model support badges without raw internal details", () => {
+    const rawPath = "/Users/private/.frogprogsy/cache/model-catalog-v1.json";
+    const rawUrl = "https://private.invalid/catalog?token=secret";
+    const status = parseCatalogStatus({
+      source: "remote",
+      catalogRevision: 42,
+      sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      refreshedAt: "2026-08-12T10:30:00.000Z",
+      warnings: { count: 0, causes: [] },
+      cachePath: rawPath,
+      remoteUrl: rawUrl,
+    });
+    const markup = renderToStaticMarkup(
+      React.createElement("div", null,
+        React.createElement(ModelCatalogStatusSummary, { status, t: tKo, onRefresh: () => undefined }),
+        React.createElement(ModelSupportStatusBadge, { status: "validated", t: tKo }),
+        React.createElement(ModelSupportStatusBadge, { status: "discovered", t: tKo }),
+        React.createElement(ModelSupportStatusBadge, { status: "unknown", t: tKo }),
+      ),
+    );
+
+    expect(markup).toContain("모델 자료가 최신입니다");
+    expect(markup).toContain("Frogprogsy를 다시 시작할 때");
+    expect(markup).toContain("검증됨");
+    expect(markup).toContain("발견됨");
+    expect(markup).toContain("확인 필요");
+    expect(markup).not.toContain(rawPath);
+    expect(markup).not.toContain(rawUrl);
+    expect(markup).not.toContain("token=secret");
   });
 });

@@ -809,7 +809,32 @@ async function handleStatus(flags: string[]) {
   renderHumanStatus(snapshot, humanColorEnabled());
 }
 
-function renderHumanModels(models: Record<string, unknown>[], paint: boolean): void {
+interface CliCatalogStatus {
+  source: "remote" | "cached" | "bundled";
+  catalogRevision: number;
+  sourceCommit: string;
+  refreshedAt?: string;
+}
+
+const MODEL_CATALOG_SOURCE_LABEL: Record<CliCatalogStatus["source"], string> = {
+  remote: "원격",
+  cached: "저장된 사본",
+  bundled: "기본 제공",
+};
+
+const MODEL_SUPPORT_STATUS_LABEL: Record<"validated" | "discovered" | "unknown", string> = {
+  validated: "검증됨",
+  discovered: "발견됨",
+  unknown: "확인 필요",
+};
+
+function renderHumanModels(models: Record<string, unknown>[], paint: boolean, catalogStatus?: CliCatalogStatus): void {
+  if (catalogStatus) {
+    const refreshedAt = catalogStatus.refreshedAt ?? "없음";
+    console.log(`모델 자료: ${MODEL_CATALOG_SOURCE_LABEL[catalogStatus.source]} · revision ${catalogStatus.catalogRevision} · ${catalogStatus.sourceCommit.slice(0, 8)} · 마지막 성공 ${refreshedAt}`);
+  } else {
+    console.log("모델 자료 상태를 확인하지 못했습니다 · 모델 목록은 계속 표시합니다.");
+  }
   if (models.length === 0) {
     console.log("No models reported by the proxy. Add a provider in the dashboard: frogp gui");
     return;
@@ -825,13 +850,15 @@ function renderHumanModels(models: Record<string, unknown>[], paint: boolean): v
     console.log(success(`${provider} (${rows.length})`, paint));
     for (const row of rows) {
       const id = typeof row.id === "string" ? row.id : String(row.id ?? "(unknown)");
-      const details: string[] = [];
+      const supportStatus = row.supportStatus === "validated" || row.supportStatus === "discovered"
+        ? row.supportStatus
+        : "unknown";
+      const details: string[] = [MODEL_SUPPORT_STATUS_LABEL[supportStatus]];
       if (row.disabled === true) details.push("disabled");
       if (typeof row.contextWindow === "number") details.push(`ctx ${row.contextWindow}`);
       if (Array.isArray(row.inputModalities) && row.inputModalities.length > 0) details.push(row.inputModalities.join("+"));
       if (Array.isArray(row.reasoningEfforts) && row.reasoningEfforts.length > 0) details.push(`effort ${row.reasoningEfforts.join("/")}`);
-      const suffix = details.length > 0 ? dim(`  (${details.join(", ")})`, paint) : "";
-      console.log(`  ${id}${suffix}`);
+      console.log(`  ${id}${dim(`  (${details.join(", ")})`, paint)}`);
     }
   }
 }
@@ -857,18 +884,26 @@ async function handleModels(flags: string[]) {
     console.error(`❌ Proxy is not answering on port ${port}. Check: frogp status, then recover with: frogp refresh (or frogp start)`);
     process.exit(1);
   }
-  let models: unknown;
-  try {
-    const res = await fetch(`http://${healthHost(config.hostname)}:${port}/api/models`, {
-      headers: sameMachineAccessHeaders(),
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    models = await res.json();
-  } catch (err) {
-    console.error(`❌ Could not fetch models from the running proxy (${err instanceof Error ? err.message : String(err)}). Check: frogp status, then recover with: frogp refresh`);
+  const apiBase = `http://${healthHost(config.hostname)}:${port}`;
+  const requestOptions = {
+    headers: sameMachineAccessHeaders(),
+    signal: AbortSignal.timeout(5_000),
+  };
+  const modelsRequest = fetch(`${apiBase}/api/models`, requestOptions).then(async response => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  });
+  const statusRequest = fetch(`${apiBase}/api/model-catalog/status`, requestOptions).then(async response => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  });
+  const [modelsResult, statusResult] = await Promise.allSettled([modelsRequest, statusRequest]);
+  if (modelsResult.status === "rejected") {
+    const reason = modelsResult.reason;
+    console.error(`❌ Could not fetch models from the running proxy (${reason instanceof Error ? reason.message : String(reason)}). Check: frogp status, then recover with: frogp refresh`);
     process.exit(1);
   }
+  const models = modelsResult.value;
   if (!Array.isArray(models)) {
     console.error("❌ Unexpected /api/models response shape (expected an array).");
     process.exit(1);
@@ -877,7 +912,23 @@ async function handleModels(flags: string[]) {
     printJson(models);
     return;
   }
-  renderHumanModels(models as Record<string, unknown>[], humanColorEnabled());
+  let catalogStatus: CliCatalogStatus | undefined;
+  if (statusResult.status === "fulfilled" && statusResult.value && typeof statusResult.value === "object") {
+    const candidate = statusResult.value as Partial<CliCatalogStatus>;
+    if (
+      (candidate.source === "remote" || candidate.source === "cached" || candidate.source === "bundled")
+      && typeof candidate.catalogRevision === "number"
+      && typeof candidate.sourceCommit === "string"
+    ) {
+      catalogStatus = {
+        source: candidate.source,
+        catalogRevision: candidate.catalogRevision,
+        sourceCommit: candidate.sourceCommit,
+        ...(typeof candidate.refreshedAt === "string" ? { refreshedAt: candidate.refreshedAt } : {}),
+      };
+    }
+  }
+  renderHumanModels(models as Record<string, unknown>[], humanColorEnabled(), catalogStatus);
 }
 async function fetchApiModelRowsForDoctor(config: ReturnType<typeof loadConfig>, port: number): Promise<ApiModelRow[]> {
   if (!readPid() || !(await proxyHealthy(port))) return [];

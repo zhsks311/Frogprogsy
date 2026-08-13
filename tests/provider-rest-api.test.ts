@@ -208,3 +208,100 @@ describe("provider REST persistence boundary", () => {
     expect(saved[0].providers["renamed-umans"].catalogProviderId).toBeUndefined();
   });
 });
+
+describe("model catalog management API", () => {
+  const selectedCatalog = {
+    document: {
+      schemaVersion: 1 as const,
+      catalogRevision: 42,
+      catalogDigest: "a".repeat(64),
+      sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      generatedAt: "2026-08-12T10:00:00.000Z",
+      minFrogprogsyVersion: "0.0.0",
+      providers: [],
+    },
+    status: {
+      source: "remote" as const,
+      catalogRevision: 42,
+      catalogDigest: "a".repeat(64),
+      sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      generatedAt: "2026-08-12T10:00:00.000Z",
+      refreshedAt: "2026-08-12T10:30:00.000Z",
+      skippedRecords: 2,
+      warnings: [
+        "Remote model catalog refresh failed; https://private.invalid/catalog?token=secret remains active.",
+        "Catalog digest validation failed. Authorization: Bearer secret",
+        "Provider future requires a newer Frogprogsy version at /Users/private/cache.json.",
+      ],
+    },
+  };
+
+  test("adds support and catalog provenance to every model row without changing the array shape", async () => {
+    const config: FrogConfig = {
+      ...baseConfig(),
+      providers: {
+        managed: {
+          adapter: "openai-chat",
+          baseUrl: "https://models.invalid/v1",
+          catalogProviderId: "managed",
+          models: ["validated-model", "discovered-model"],
+          userModels: ["discovered-model"],
+        },
+        fixed: {
+          adapter: "openai-chat",
+          baseUrl: "https://fixed.invalid/v1",
+          models: ["legacy-fixed"],
+          liveModels: false,
+        },
+      },
+    };
+    const response = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/models"),
+      new URL("http://localhost/api/models"),
+      config,
+      { effectiveConfig: config, catalog: selectedCatalog },
+    );
+
+    expect(response?.status).toBe(200);
+    const rows = await response!.json() as Array<Record<string, unknown>>;
+    expect(Array.isArray(rows)).toBe(true);
+    expect(rows.find(row => row.id === "validated-model")).toMatchObject({
+      supportStatus: "validated",
+      catalogSource: "remote",
+      catalogRevision: 42,
+      catalogSourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      catalogRefreshedAt: "2026-08-12T10:30:00.000Z",
+    });
+    expect(rows.find(row => row.id === "discovered-model")?.supportStatus).toBe("discovered");
+    expect(rows.find(row => row.id === "legacy-fixed")?.supportStatus).toBe("unknown");
+    expect(rows.every(row => ["remote", "cached", "bundled"].includes(String(row.catalogSource)))).toBe(true);
+  });
+
+  test("returns privacy-safe runtime status with generalized warning causes", async () => {
+    const response = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/model-catalog/status"),
+      new URL("http://localhost/api/model-catalog/status"),
+      baseConfig(),
+      { catalog: selectedCatalog },
+    );
+
+    expect(response?.status).toBe(200);
+    const status = await response!.json() as Record<string, unknown>;
+    expect(status).toMatchObject({
+      source: "remote",
+      catalogRevision: 42,
+      sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      refreshedAt: "2026-08-12T10:30:00.000Z",
+      skippedRecords: 2,
+      warnings: {
+        count: 3,
+        causes: ["refresh_failed", "validation_failed", "incompatible_records"],
+      },
+    });
+    const serialized = JSON.stringify(status);
+    expect(serialized).not.toContain("private.invalid");
+    expect(serialized).not.toContain("token=secret");
+    expect(serialized).not.toContain("Authorization");
+    expect(serialized).not.toContain("/Users/private");
+  });
+});
