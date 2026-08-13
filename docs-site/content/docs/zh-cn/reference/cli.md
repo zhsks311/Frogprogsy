@@ -91,7 +91,7 @@ Claude Code 持有 Claude 订阅登录。FrogProgsy 不保存、导入、刷新�
 
 ## Catalog and Claude Code cache
 
-Proxy 启动时，FrogProgsy 先选择经过验证的模型资料，再与 AI 服务的 `/models` 响应和用户明确设置合并。要检查并启用更新后的模型资料，请重启 proxy。检查失败时继续使用上次验证成功的副本或安装版本自带模型，不会替换 API key、已选默认模型、已隐藏模型或手动添加的模型。`frogp refresh` 还会重新同步生成的 Claude Code `provider/model` 列表，并清除所有已配置 Claude Code 目录的模型缓存。`frogp claude reload-models <profile-id>` 范围更窄：它不会自动启动 proxy，只重建一个目录的模型选择器资料。
+Proxy 启动时，FrogProgsy 先选择经过验证的模型资料，再与 AI 服务的 `/models` 响应和用户明确设置合并。要检查并启用更新后的模型资料，请重启 proxy。检查失败时，FrogProgsy 会比较上次验证后保存的副本与安装版本自带的模型资料，并使用 catalog revision 较高的一份；不会替换 API key、已选默认模型、已隐藏模型或手动添加的模型。`frogp refresh` 还会重新同步生成的 Claude Code `provider/model` 列表，并清除所有已配置 Claude Code 目录的模型缓存。`frogp claude reload-models <profile-id>` 范围更窄：它不会自动启动 proxy，只重建一个目录的模型选择器资料。
 `disabledModels` 会从 catalog 与 `/v1/models` 中排除，`subagentModels` 会优先放到 Claude Code subagent picker 前面的 slot。
 Claude Code 会在 session start 或 resume 时重新获取 `/v1/models`。重新打开已经打开的 `/model` 屏幕不会 hot reload picker；需要启动新的 Claude Code session 或 resume，让 models endpoint 再次被获取。Dashboard/API model list reload 与 Claude Code picker recovery 是分开的。
 

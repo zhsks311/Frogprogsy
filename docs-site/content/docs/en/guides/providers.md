@@ -24,7 +24,7 @@ After the dashboard flow, use [Model Routing](/frog-progsy/guides/model-routing/
 
 FrogProgsy checks for validated model updates once, before the proxy starts accepting requests. Restart the proxy to activate a newer model list. Opening the dashboard does not refresh a running proxy.
 
-If the update cannot be reached or does not pass validation, startup continues with the last valid copy. A new installation with no saved copy uses the complete model list bundled with its installed release. These updates never replace your API keys, chosen default, disabled models, or models you added yourself.
+If the update cannot be reached or does not pass validation, startup compares the last validated saved copy with the model data bundled in the installed release and uses the one with the higher catalog revision. A new installation with no saved copy uses the bundled data. These updates never replace your API keys, chosen default, disabled models, or models you added yourself.
 
 Use `frogp models` after a restart to confirm the active source and model support status.
 

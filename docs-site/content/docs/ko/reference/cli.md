@@ -93,7 +93,7 @@ Claude Code가 Claude 구독 로그인을 소유합니다. FrogProgsy는 Claude 
 
 ## Catalog and Claude Code cache
 
-Proxy를 시작할 때 FrogProgsy는 검증된 모델 자료를 선택한 다음, AI 서비스의 `/models` 응답과 사용자의 직접 설정을 합칩니다. 최신 모델 자료를 확인하고 적용하려면 proxy를 다시 시작하세요. 확인에 실패하면 마지막으로 검증된 사본이나 설치 버전에 포함된 모델을 사용하며, API 키, 사용자가 고른 기본 모델, 숨긴 모델, 직접 추가한 모델은 바꾸지 않습니다. `frogp refresh`는 이렇게 만든 Claude Code용 `provider/model` 목록도 다시 동기화하고 모든 Claude Code 홈의 모델 캐시를 비웁니다. `frogp claude reload-models <profile-id>`는 proxy를 자동 시작하지 않고 한 홈의 모델 선택기 자료만 다시 만드는 더 좁은 명령입니다.
+Proxy를 시작할 때 FrogProgsy는 검증된 모델 자료를 선택한 다음, AI 서비스의 `/models` 응답과 사용자의 직접 설정을 합칩니다. 최신 모델 자료를 확인하고 적용하려면 proxy를 다시 시작하세요. 확인에 실패하면 마지막으로 검증해 저장한 사본과 설치 버전의 기본 자료를 비교해 catalog revision이 더 높은 쪽을 사용하며, API 키, 사용자가 고른 기본 모델, 숨긴 모델, 직접 추가한 모델은 바꾸지 않습니다. `frogp refresh`는 이렇게 만든 Claude Code용 `provider/model` 목록도 다시 동기화하고 모든 Claude Code 홈의 모델 캐시를 비웁니다. `frogp claude reload-models <profile-id>`는 proxy를 자동 시작하지 않고 한 홈의 모델 선택기 자료만 다시 만드는 더 좁은 명령입니다.
 `disabledModels`는 catalog와 `/v1/models`에서 제외되고, `subagentModels`는 Claude Code subagent picker의 앞쪽 slot에 우선 배치됩니다.
 Claude Code는 session을 시작하거나 resume할 때 `/v1/models`를 다시 가져옵니다. 이미 열린 `/model` 화면을 다시 여는 동작은 picker를 hot reload하지 않으므로, 새 Claude Code session을 시작하거나 resume해서 models endpoint를 다시 가져오게 해야 합니다. Dashboard/API model list reload는 Claude Code picker 복구와 별개입니다.
 

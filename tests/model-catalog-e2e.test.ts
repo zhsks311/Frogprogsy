@@ -131,6 +131,43 @@ function claudeDisplayNames(payload: { data?: Array<{ display_name?: unknown }> 
   return (payload.data ?? []).flatMap(row => typeof row.display_name === "string" ? [row.display_name] : []);
 }
 
+interface PublicModelRow {
+  id: string;
+  namespaced: string;
+  disabled?: boolean;
+  authReady?: boolean;
+  supportStatus?: string;
+  catalogSource?: string;
+}
+
+function activeNamespacedModels(rows: PublicModelRow[]): string[] {
+  return rows
+    .filter(row => row.disabled !== true && row.authReady !== false)
+    .map(row => row.namespaced)
+    .sort();
+}
+
+async function assertMatchingModelSurfaces(
+  proxy: Awaited<ReturnType<typeof startProxy>>,
+  home: string,
+  expected: { source: string; present: string[]; absent: string[] },
+): Promise<PublicModelRow[]> {
+  const apiModels = await apiJson<PublicModelRow[]>(proxy, "/api/models");
+  const cli = await runModelsCli(home, true);
+  const claude = await apiJson<{ data: Array<{ display_name: string }> }>(proxy, "/v1/models");
+  expect(cli).toMatchObject({ status: 0, stderr: "" });
+  const cliModels = JSON.parse(cli.stdout) as PublicModelRow[];
+  const apiActive = activeNamespacedModels(apiModels);
+  const cliActive = activeNamespacedModels(cliModels);
+  const claudeActive = claudeDisplayNames(claude).sort();
+  expect(cliActive).toEqual(apiActive);
+  expect(claudeActive).toEqual(apiActive);
+  for (const model of expected.present) expect(apiActive, expected.source).toContain(model);
+  for (const model of expected.absent) expect(apiActive, expected.source).not.toContain(model);
+  expect(apiModels.every(model => model.catalogSource === expected.source)).toBe(true);
+  return apiModels;
+}
+
 afterEach(() => {
   for (const server of activeServers) server.stop(true);
   activeServers.clear();
@@ -166,20 +203,20 @@ describe("remote model catalog end to end", () => {
 
     let proxy = await startProxy(home, catalogUrl);
     try {
-      const apiModels = await apiJson<Array<{ id: string; supportStatus: string; catalogSource: string }>>(proxy, "/api/models");
+      const apiModels = await assertMatchingModelSurfaces(proxy, home, {
+        source: "remote",
+        present: [`anthropic/${remoteV1Id}`, "anthropic/user-kept-model"],
+        absent: [`anthropic/${remoteV2Id}`],
+      });
       const status = await apiJson<{ source: string; catalogRevision: number }>(proxy, "/api/model-catalog/status");
-      const claudeModels = await apiJson<{ data: Array<{ display_name: string }> }>(proxy, "/v1/models");
-      const cliJson = await runModelsCli(home, true);
       const cliHuman = await runModelsCli(home, false);
 
       expect(status).toMatchObject({ source: "remote", catalogRevision: remoteV1.catalogRevision });
       expect(apiModels).toContainEqual(expect.objectContaining({ id: remoteV1Id, supportStatus: "validated", catalogSource: "remote" }));
-      expect(JSON.parse(cliJson.stdout)).toEqual(apiModels);
-      expect(cliJson).toMatchObject({ status: 0, stderr: "" });
       expect(cliHuman.status).toBe(0);
       expect(cliHuman.stdout).toContain("모델 자료: 원격");
       expect(cliHuman.stdout).toContain("검증됨");
-      expect(claudeDisplayNames(claudeModels)).toContain(`anthropic/${remoteV1Id}`);
+      expect(activeNamespacedModels(apiModels)).toContain(`anthropic/${remoteV1Id}`);
       expect(readFileSync(join(home, "config.json"), "utf8")).toBe(configBytes);
       expect(catalogRequests).toBe(1);
 
@@ -194,11 +231,14 @@ describe("remote model catalog end to end", () => {
 
     proxy = await startProxy(home, catalogUrl);
     try {
-      const restartedModels = await apiJson<Array<{ id: string }>>(proxy, "/api/models");
+      const restartedModels = await assertMatchingModelSurfaces(proxy, home, {
+        source: "remote",
+        present: [`anthropic/${remoteV2Id}`, "anthropic/user-kept-model"],
+        absent: [`anthropic/${remoteV1Id}`],
+      });
       const restartedStatus = await apiJson<{ source: string }>(proxy, "/api/model-catalog/status");
       expect(restartedStatus.source).toBe("remote");
       expect(modelIds(restartedModels)).toContain(remoteV2Id);
-      expect(modelIds(restartedModels)).not.toContain(remoteV1Id);
       expect(readFileSync(join(home, "config.json"), "utf8")).toBe(configBytes);
       expect(catalogRequests).toBe(2);
     } finally {
@@ -208,7 +248,11 @@ describe("remote model catalog end to end", () => {
 
     proxy = await startProxy(home, catalogUrl);
     try {
-      const cachedModels = await apiJson<Array<{ id: string; catalogSource: string }>>(proxy, "/api/models");
+      const cachedModels = await assertMatchingModelSurfaces(proxy, home, {
+        source: "cached",
+        present: [`anthropic/${remoteV2Id}`, "anthropic/user-kept-model"],
+        absent: [`anthropic/${remoteV1Id}`],
+      });
       const cachedStatus = await apiJson<{ source: string }>(proxy, "/api/model-catalog/status");
       expect(cachedStatus.source).toBe("cached");
       expect(cachedModels).toContainEqual(expect.objectContaining({ id: remoteV2Id, catalogSource: "cached" }));
@@ -221,11 +265,14 @@ describe("remote model catalog end to end", () => {
     const freshConfigBytes = writeConfig(freshHome, configFor(catalogServer.url.toString().replace(/\/$/, "")));
     proxy = await startProxy(freshHome, catalogUrl);
     try {
-      const fallbackModels = await apiJson<Array<{ id: string; catalogSource: string }>>(proxy, "/api/models");
+      const fallbackModels = await assertMatchingModelSurfaces(proxy, freshHome, {
+        source: "bundled",
+        present: [`anthropic/${bundledModelId}`, "anthropic/user-kept-model"],
+        absent: [`anthropic/${remoteV1Id}`, `anthropic/${remoteV2Id}`],
+      });
       const fallbackStatus = await apiJson<{ source: string }>(proxy, "/api/model-catalog/status");
       expect(fallbackStatus.source).toBe("bundled");
       expect(fallbackModels).toContainEqual(expect.objectContaining({ id: bundledModelId, catalogSource: "bundled" }));
-      expect(modelIds(fallbackModels)).not.toContain(remoteV2Id);
       expect(readFileSync(join(freshHome, "config.json"), "utf8")).toBe(freshConfigBytes);
     } finally {
       stopServer(proxy);
