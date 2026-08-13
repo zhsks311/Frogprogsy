@@ -1996,10 +1996,14 @@ function observeLoggedStream(body: ReadableStream<Uint8Array>, ctx: RequestLogCo
   });
 }
 
-function managementTestState(config: FrogConfig, save: (config: FrogConfig) => void): RuntimeConfigState {
+function managementTestState(
+  config: FrogConfig,
+  save: (config: FrogConfig) => void,
+  effectiveConfig: FrogConfig = config,
+): RuntimeConfigState {
   const state: RuntimeConfigState = {
     persisted: config,
-    effective: structuredClone(config),
+    effective: structuredClone(effectiveConfig),
     catalog: {
       document: {
         schemaVersion: 1,
@@ -2046,7 +2050,7 @@ export const __requestLogTest = {
     config: FrogConfig,
     deps: ManagementAPIDeps = {},
   ) {
-    const state = managementTestState(config, deps.saveConfig ?? saveConfig);
+    const state = managementTestState(config, deps.saveConfig ?? saveConfig, deps.effectiveConfig);
     return handleManagementAPI(req, url, state, deps);
   },
   handleCountTokens,
@@ -2306,6 +2310,13 @@ interface ManagementAPIDeps {
   refreshClaudeCodeCatalog?: (config: FrogConfig, profile?: { claudeHome?: string; profileId?: string }) => Promise<void>;
   /** Peer address of the request socket. Omitted for in-process calls (tests, direct invocation). */
   clientAddress?: string;
+  /** Effective config fixture for management boundary tests. Production always uses RuntimeConfigState. */
+  effectiveConfig?: FrogConfig;
+  /** Profile refresh seam for asserting the effective config passed to Claude catalog generation. */
+  refreshProfileCatalog?: (
+    config: FrogConfig,
+    profile: { claudeHome: string; profileId: string },
+  ) => Promise<ClaudeCodeCatalogRefreshResult>;
 }
 
 // ── Branch-B claude-grant management API: metadata / lifecycle / provider binding (fail-closed) ──
@@ -3347,8 +3358,13 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       let catalogPath: string | null | undefined;
       let modelReload: ClaudeModelReloadMetadata | undefined;
       if (action === "refresh") {
-        const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
-        const refreshed = await refreshClaudeCodeModelCatalog(config, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
+        const refreshed = deps.refreshProfileCatalog
+          ? await deps.refreshProfileCatalog(state.effective, { claudeHome: profile.claudeHome, profileId: profile.id })
+          : await (await import("./claude-refresh")).refreshClaudeCodeModelCatalog(
+            state.effective,
+            undefined,
+            { claudeHome: profile.claudeHome, profileId: profile.id },
+          );
         catalogPath = refreshed.catalogExists ? refreshed.path : undefined;
         modelReload = claudeModelReloadMetadata(profile.id, {
           attempted: true,

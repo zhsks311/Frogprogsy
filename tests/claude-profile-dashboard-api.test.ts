@@ -958,6 +958,58 @@ describe("Claude Code home management API", () => {
   });
 
 
+  test("profile refresh uses effective catalog models instead of persisted provider fields", async () => {
+    const persisted = config();
+    persisted.providers.managed = {
+      adapter: "openai-responses",
+      baseUrl: "https://managed.test/v1",
+      catalogProviderId: "managed",
+      liveModels: true,
+    };
+    const effective = structuredClone(persisted);
+    effective.providers.managed.models = ["catalog-selected-model"];
+    const home = mkdtempSync(join(tmpdir(), "frog-profile-effective-refresh-"));
+    persisted.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")!.claudeHome = home;
+    effective.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")!.claudeHome = home;
+    const previous = process.env.FROGPROGSY_NO_CLAUDE_WRITES;
+    delete process.env.FROGPROGSY_NO_CLAUDE_WRITES;
+    let refreshedModels: string[] | undefined;
+
+    try {
+      const res = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles/cp_work/refresh", {
+          method: "POST",
+          headers: { Origin: "http://localhost:10100" },
+        }),
+        new URL("http://localhost/api/claude-profiles/cp_work/refresh"),
+        persisted,
+        {
+          effectiveConfig: effective,
+          saveConfig: () => {},
+          refreshProfileCatalog: async refreshConfig => {
+            refreshedModels = refreshConfig.providers.managed.models;
+            return {
+              added: 1,
+              path: join(home, "models.json"),
+              catalogExists: false,
+              cacheSynced: false,
+              gatewayCache: { status: "skipped" },
+              warnings: [],
+            };
+          },
+        },
+      );
+
+      expect(res?.status).toBe(200);
+      expect(persisted.providers.managed.models).toBeUndefined();
+      expect(refreshedModels).toEqual(["catalog-selected-model"]);
+    } finally {
+      if (previous === undefined) delete process.env.FROGPROGSY_NO_CLAUDE_WRITES;
+      else process.env.FROGPROGSY_NO_CLAUDE_WRITES = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("refresh returns success-compatible skipped model reload metadata when Claude writes are blocked", async () => {
     const cfg = config();
     const res = await __requestLogTest.handleManagementAPI(
