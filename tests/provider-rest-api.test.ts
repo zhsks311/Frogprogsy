@@ -156,6 +156,42 @@ describe("provider REST persistence boundary", () => {
     });
   });
 
+  test("switching catalog identity does not inherit credentials or overrides from the previous provider", async () => {
+    const config = baseConfig();
+    config.providers.gateway = {
+      adapter: "anthropic",
+      baseUrl: "https://api.code.umans.ai",
+      authMode: "key",
+      catalogProviderId: "umans",
+      apiKey: "umans-secret",
+      apiKeys: ["umans-secondary"],
+      headers: { "x-umans-auth": "keep-only-for-umans" },
+      defaultModel: "umans-private",
+      userModels: ["umans-private"],
+      liveModels: true,
+      contextWindow: 777_777,
+      noTemperatureModels: ["umans-private"],
+    };
+
+    const { response, saved } = await addProvider(config, {
+      name: "gateway",
+      catalogId: "openai-apikey",
+      provider: {
+        adapter: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(saved[0].providers.gateway).toEqual({
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      authMode: "key",
+      catalogProviderId: "openai-apikey",
+      defaultModel: "gpt-5.5",
+    });
+  });
+
   test("a renamed provider without catalogId remains custom", async () => {
     const config = baseConfig();
     const provider: FrogProviderConfig = {

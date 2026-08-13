@@ -307,7 +307,8 @@ export function sanitizeCatalogProviderForPersistence(
   current?: FrogProviderConfig,
 ): FrogProviderConfig {
   const seed = registryUserSeed(catalogProviderId);
-  const combined = current ? { ...current, ...submitted } : submitted;
+  const sameCatalogCurrent = current?.catalogProviderId === catalogProviderId ? current : undefined;
+  const combined = sameCatalogCurrent ? { ...sameCatalogCurrent, ...submitted } : submitted;
   if (combined.liveModels === false) {
     return structuredClone({
       ...combined,
@@ -319,7 +320,7 @@ export function sanitizeCatalogProviderForPersistence(
 
   const sanitized = { ...seed };
   for (const field of USER_OWNED_PROVIDER_FIELDS) {
-    const value = submitted[field] !== undefined ? submitted[field] : current?.[field];
+    const value = submitted[field] !== undefined ? submitted[field] : sameCatalogCurrent?.[field];
     if (value !== undefined) sanitized[field] = structuredClone(value) as never;
   }
   return sanitized;
