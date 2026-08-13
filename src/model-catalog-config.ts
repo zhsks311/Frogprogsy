@@ -5,7 +5,6 @@ import { supportsWireModelIds } from "./adapters/base";
 import type { SelectedModelCatalog } from "./model-catalog-runtime";
 import type { ModelCatalogDocumentV1, ModelCatalogProviderV1 } from "./model-catalog-schema";
 import { intersectReasoningEfforts, mergeReasoningEffortMap } from "./reasoning-effort";
-import { providerConfigSeed } from "./providers/derive";
 import {
   PROVIDER_REGISTRY,
   providerUserSeedFromRegistry as registryUserSeed,
@@ -189,19 +188,11 @@ function catalogProviderConfig(provider: ModelCatalogProviderV1): Partial<FrogPr
   };
 }
 
-function stripLegacyManagedMetadata(
-  provider: FrogProviderConfig,
-  catalogProvider: ModelCatalogProviderV1,
-  registryEntry: ProviderRegistryEntry,
-): void {
-  const catalogMetadata = catalogProviderConfig(catalogProvider);
-  const legacyRegistryMetadata = providerConfigSeed(registryEntry);
-  for (const field of MANAGED_METADATA_FIELDS) {
-    if (provider[field] === undefined) continue;
-    if (equalJson(provider[field], catalogMetadata[field]) || equalJson(provider[field], legacyRegistryMetadata[field])) {
-      delete provider[field];
-    }
-  }
+// Legacy releases persisted generated registry snapshots without provenance. For an exact managed
+// provider, no value-level comparison can distinguish an old generated constraint from a user edit,
+// so the one-time, backed-up migration hands every catalog-owned field back to the catalog.
+function stripLegacyManagedMetadata(provider: FrogProviderConfig): void {
+  for (const field of MANAGED_METADATA_FIELDS) delete provider[field];
 }
 
 export function migratePersistedCatalogConfig(
@@ -262,7 +253,7 @@ export function migratePersistedCatalogConfig(
     ]);
     if (provider.userModels.length === 0) delete provider.userModels;
     delete provider.models;
-    stripLegacyManagedMetadata(provider, catalogProvider, registryEntry);
+    stripLegacyManagedMetadata(provider);
   }
 
   migrated.modelCatalogConfigVersion = 1;

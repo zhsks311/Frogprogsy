@@ -260,34 +260,51 @@ if (command !== undefined && command !== "help" && hasHelpFlag(frogpArgs)) {
   process.exit(0);
 }
 
+interface RunningProfileRefreshResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+  modelReload?: {
+    attempted?: boolean;
+    writeBlocked?: boolean;
+    status?: "synced" | "partial" | "skipped" | "failed" | "unknown";
+    catalog?: {
+      path?: string;
+      added?: number;
+      exists?: boolean;
+      cacheSynced?: boolean;
+    };
+    gatewayCache?: {
+      status?: string;
+      modelCount?: number;
+    };
+    warnings?: string[];
+  };
+}
+
 async function syncModelsToClaudeCode(port?: number) {
-  const { createRuntimeConfigState } = await import("./runtime-config-state");
-  const state = await createRuntimeConfigState();
-  const config = state.persisted;
-  const effectiveConfig = state.effective;
+  let config = loadConfig();
   const p = port ?? config.port ?? DEFAULT_PORT;
   const profiles = managedClaudeProfiles(config);
-  const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
-  const { injectClaudeCodeConfig } = await import("./claude-inject");
-  // Top-level refresh applies to every configured Claude Code home. Per-home refresh is available via `frogp claude refresh <home>`.
   let ok = true;
   const messages: string[] = [];
   for (const profile of profiles) {
-    let catalogPath: string | null | undefined;
     try {
-      const cat = await refreshClaudeCodeModelCatalog(effectiveConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
-      catalogPath = cat.catalogExists ? cat.path : null;
-      if (cat.added > 0) {
-        console.log(`   + ${cat.added} models appended to Claude Code catalog for ${profile.name} (${cat.path})`);
+      const refreshed = await refreshClaudeProfileThroughRunningProxy(config, p, profile.id);
+      const added = refreshed.modelReload?.catalog?.added ?? 0;
+      const catalogPath = refreshed.modelReload?.catalog?.path;
+      if (added > 0 && catalogPath) {
+        console.log(`   + ${added} models appended to Claude Code catalog for ${profile.name} (${catalogPath})`);
       }
-    } catch (e) {
-      console.error(`catalog sync skipped for ${profile.name}:`, e instanceof Error ? e.message : String(e));
+      messages.push(`[${profile.name}] ${refreshed.message ?? "Claude Code model list refreshed."}`);
+    } catch (error) {
+      ok = false;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`model sync failed for ${profile.name}: ${message}`);
+      messages.push(`[${profile.name}] ${message}`);
     }
-    const result = await injectClaudeCodeConfig(p, config, { catalogPath, claudeHome: profile.claudeHome, profileId: profile.id });
-    ok = ok && result.success;
-    messages.push(`[${profile.name}] ${result.message}`);
-    if (result.success) markClaudeProfileInjected(config, profile.id, true);
   }
+  config = loadConfig();
   // Reapply every enrolled project's gateway routing on the same refresh path (uses the active port +
   // carrier; token-free migrates stale sentinel project settings). Failures are surfaced, not fatal.
   const projectReapply = reapplyEnrolledClaudeProjects(config, p);
@@ -338,6 +355,33 @@ async function proxyHealthy(port?: number): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function refreshClaudeProfileThroughRunningProxy(
+  config: FrogConfig,
+  port: number,
+  profileId: string,
+  includeAuthToken = false,
+): Promise<RunningProfileRefreshResponse> {
+  const response = await fetch(
+    `http://${healthHost(config.hostname)}:${port}/api/claude-profiles/${encodeURIComponent(profileId)}/refresh`,
+    {
+      method: "POST",
+      headers: { ...sameMachineAccessHeaders(), "content-type": "application/json" },
+      body: JSON.stringify(includeAuthToken ? { globalDiscoveryAuth: true } : {}),
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  let payload: RunningProfileRefreshResponse;
+  try {
+    payload = await response.json() as RunningProfileRefreshResponse;
+  } catch {
+    throw new Error(`running proxy returned HTTP ${response.status} with an invalid refresh response`);
+  }
+  if (!response.ok || payload.success !== true) {
+    throw new Error(payload.error ?? payload.message ?? `running proxy refresh failed with HTTP ${response.status}`);
+  }
+  return payload;
 }
 
 function printLauncherSync(result: ReturnType<typeof syncClaudeLauncherShims>): void {
@@ -519,8 +563,9 @@ async function handleStart(options: { block?: boolean } = {}) {
 
 async function handleRefresh() {
   let config = loadConfig();
-  if (await proxyHealthy(config.port)) {
-    await syncModelsToClaudeCode(config.port).catch(e => {
+  const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
+  if (await proxyHealthy(activePort)) {
+    await syncModelsToClaudeCode(activePort).catch(e => {
       console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
     });
     try {
@@ -529,7 +574,7 @@ async function handleRefresh() {
     } catch (e) {
       console.error(`⚠️  Cache invalidation skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
-    console.log(`✅ Proxy running on port ${config.port}`);
+    console.log(`✅ Proxy running on port ${activePort}`);
     return;
   }
 
@@ -1405,15 +1450,63 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
     case "reload-models": {
       const parsed = parseGlobalDiscoveryAuthFlag(values);
       const isReloadModels = sub === "reload-models";
-      const runtimeState = sub === "refresh" || isReloadModels
+      const shouldRefresh = sub === "refresh" || isReloadModels;
+      const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
+      const profile = resolveClaudeProfile(config, parsed.values.slice(1).join(" ") || undefined);
+      const running = shouldRefresh && await proxyHealthy(activePort);
+
+      if (running) {
+        let remoteRefresh: RunningProfileRefreshResponse;
+        try {
+          remoteRefresh = await refreshClaudeProfileThroughRunningProxy(
+            config,
+            activePort,
+            profile.id,
+            parsed.includeAuthToken,
+          );
+        } catch (error) {
+          console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
+          process.exit(1);
+        }
+        syncLaunchers(loadConfig());
+        if (!isReloadModels) {
+          console.log(remoteRefresh.message ?? "Claude Code model list refreshed.");
+          return;
+        }
+        const remoteCatalog = remoteRefresh.modelReload?.catalog;
+        const remoteGateway = remoteRefresh.modelReload?.gatewayCache;
+        const remoteReloadSummary = remoteRefresh.modelReload?.writeBlocked === true
+          || remoteRefresh.modelReload?.status === "skipped"
+          ? `Model reload skipped for ${profile.name} (${profile.id}).`
+          : remoteRefresh.modelReload?.status === "failed"
+            ? `Model reload failed for ${profile.name} (${profile.id}).`
+            : remoteRefresh.modelReload?.status === "partial"
+              ? `Model reload completed with warnings for ${profile.name} (${profile.id}).`
+              : remoteRefresh.modelReload?.status === "unknown"
+                ? `Model reload attempted for ${profile.name} (${profile.id}).`
+                : `Model reload prepared for ${profile.name} (${profile.id}).`;
+        console.log([
+          remoteRefresh.message ?? "Claude Code model list refreshed.",
+          remoteReloadSummary,
+          `Claude Code home: ${profile.claudeHome}`,
+          `Gateway cache: ${remoteGateway?.status ?? "unknown"}${remoteGateway?.modelCount !== undefined ? ` (${remoteGateway.modelCount} models)` : ""}`,
+          `Catalog cache: ${remoteCatalog?.cacheSynced ? "synced" : "not synced"}`,
+          ...((remoteRefresh.modelReload?.warnings ?? []).map(warning => `Warning: ${warning}`)),
+          `Proxy is answering on port ${activePort}.`,
+          "Start a new Claude Code session or resume so it refetches /v1/models; reopening an already-open /model screen is not a hot reload.",
+          "For ordinary raw `claude` in a repository, use `frogp claude project enroll [path]`; managed launchers are only for explicitly selecting a separate Claude home/account.",
+        ].join("\n"));
+        return;
+      }
+
+      const runtimeState = shouldRefresh
         ? await (await import("./runtime-config-state")).createRuntimeConfigState({ loadConfig: () => config })
         : undefined;
       const persistedConfig = runtimeState?.persisted ?? config;
       const effectiveConfig = runtimeState?.effective ?? config;
-      const profile = resolveClaudeProfile(persistedConfig, parsed.values.slice(1).join(" ") || undefined);
       let catalogPath: string | null | undefined;
       let refreshed: ClaudeCodeCatalogRefreshResult | undefined;
-      if (sub === "refresh" || isReloadModels) {
+      if (shouldRefresh) {
         const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
         refreshed = await refreshClaudeCodeModelCatalog(effectiveConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
         catalogPath = refreshed.catalogExists ? refreshed.path : null;

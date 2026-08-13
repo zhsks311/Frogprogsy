@@ -799,6 +799,148 @@ describe("CLI subcommand help", () => {
       rmSync(workClaudeHome, { recursive: true, force: true });
     }
   });
+  test("claude reload-models delegates to the running proxy snapshot", async () => {
+    const frogHome = mkdtempSync(join(tmpdir(), "frogp-running-reload-cli-"));
+    const claudeHome = mkdtempSync(join(tmpdir(), "frogp-running-reload-claude-"));
+    const refreshRequests: Array<{ path: string; body: unknown }> = [];
+    let writesBlocked = false;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url);
+        if (url.pathname === "/healthz") return Response.json({ status: "ok" });
+        if (url.pathname === "/api/claude-profiles/cp_work/refresh" && request.method === "POST") {
+          refreshRequests.push({ path: url.pathname, body: await request.json() });
+          if (writesBlocked) {
+            return Response.json({
+              success: true,
+              message: "Claude Code environment writes disabled; home refresh skipped.",
+              modelReload: {
+                attempted: false,
+                writeBlocked: true,
+                status: "skipped",
+                catalog: { exists: null, cacheSynced: false },
+                gatewayCache: { status: "skipped" },
+                warnings: ["Claude Code environment writes disabled; model reload skipped."],
+              },
+            });
+          }
+          return Response.json({
+            success: true,
+            message: "server snapshot refreshed",
+            profile: { id: "cp_work", name: "Work Home", claudeHome },
+            modelReload: {
+              attempted: true,
+              writeBlocked: false,
+              status: "synced",
+              catalog: { path: "/server/models.json", added: 2, exists: true, cacheSynced: true },
+              gatewayCache: { status: "written", modelCount: 2 },
+              warnings: [],
+            },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+    };
+    delete env.FROGPROGSY_NO_CLAUDE_WRITES;
+
+    try {
+      writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+        port: server.port,
+        defaultProvider: "codex",
+        modelCatalogConfigVersion: 1,
+        providers: {
+          codex: {
+            adapter: "openai-chat",
+            baseUrl: "https://models.test/v1",
+            catalogProviderId: "codex",
+            apiKey: "sk-test",
+            models: ["local-stale-model"],
+            liveModels: false,
+          },
+        },
+        claudeProfiles: {
+          schemaVersion: 1,
+          defaultProfileId: "cp_work",
+          profiles: [
+            { id: "cp_work", name: "Work Home", claudeHome, authState: "not_seen" },
+          ],
+        },
+      }, null, 2) + "\n");
+
+      const child = Bun.spawn(
+        [process.execPath, cliPath, "claude", "reload-models", "cp_work", "--global-discovery-auth"],
+        { cwd: repoRoot, env, stdout: "pipe", stderr: "pipe" },
+      );
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(refreshRequests).toEqual([{
+        path: "/api/claude-profiles/cp_work/refresh",
+        body: { globalDiscoveryAuth: true },
+      }]);
+      expect(stdout).toContain("server snapshot refreshed");
+      expect(stdout).toContain("Gateway cache: written (2 models)");
+      expect(stdout).toContain("Catalog cache: synced");
+      expect(existsSync(join(claudeHome, "cache", "gateway-models.json"))).toBe(false);
+
+      const topLevelChild = Bun.spawn(
+        [process.execPath, cliPath, "refresh"],
+        { cwd: repoRoot, env, stdout: "pipe", stderr: "pipe" },
+      );
+      const [topLevelStdout, topLevelStderr, topLevelExitCode] = await Promise.all([
+        new Response(topLevelChild.stdout).text(),
+        new Response(topLevelChild.stderr).text(),
+        topLevelChild.exited,
+      ]);
+
+      expect(topLevelExitCode).toBe(0);
+      expect(topLevelStderr).toBe("");
+      expect(topLevelStdout).toContain("server snapshot refreshed");
+      expect(refreshRequests).toEqual([
+        {
+          path: "/api/claude-profiles/cp_work/refresh",
+          body: { globalDiscoveryAuth: true },
+        },
+        {
+          path: "/api/claude-profiles/cp_work/refresh",
+          body: {},
+        },
+      ]);
+      expect(existsSync(join(claudeHome, "cache", "gateway-models.json"))).toBe(false);
+
+      writesBlocked = true;
+      const blockedChild = Bun.spawn(
+        [process.execPath, cliPath, "claude", "reload-models", "cp_work"],
+        { cwd: repoRoot, env, stdout: "pipe", stderr: "pipe" },
+      );
+      const [blockedStdout, blockedStderr, blockedExitCode] = await Promise.all([
+        new Response(blockedChild.stdout).text(),
+        new Response(blockedChild.stderr).text(),
+        blockedChild.exited,
+      ]);
+
+      expect(blockedExitCode).toBe(0);
+      expect(blockedStderr).toBe("");
+      expect(blockedStdout).toContain("Model reload skipped for Work Home (cp_work).");
+      expect(blockedStdout).not.toContain("Model reload prepared");
+    } finally {
+      server.stop(true);
+      rmSync(frogHome, { recursive: true, force: true });
+      rmSync(claudeHome, { recursive: true, force: true });
+    }
+  }, 15000);
   test("claude reload-models includes bundled models for a catalog-managed provider", () => {
     const frogHome = mkdtempSync(join(tmpdir(), "frogp-managed-reload-cli-"));
     const claudeHome = mkdtempSync(join(tmpdir(), "frogp-managed-reload-claude-"));

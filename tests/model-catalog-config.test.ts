@@ -126,6 +126,48 @@ describe("persisted model catalog config migration", () => {
     expect(backup).toBe(`${JSON.stringify(legacy, null, 2)}\n`);
   });
 
+  test("drops stale generated metadata for an exact managed provider during migration", () => {
+    const legacy = legacyConfig();
+    Object.assign(legacy.providers.umans, {
+      contextWindow: 1,
+      modelContextWindows: { "umans-glm-5.1": 1, "user-added": 2 },
+      modelCapabilities: { "umans-glm-5.1": { input: ["text"] } },
+      reasoningEfforts: ["low"],
+      modelReasoningEfforts: { "umans-glm-5.1": ["low"] },
+      reasoningEffortMap: { low: "low" },
+      modelReasoningEffortMap: { "umans-glm-5.1": { low: "low" } },
+      noReasoningModels: ["umans-glm-5.1"],
+      noTemperatureModels: ["umans-glm-5.1"],
+      noTopPModels: ["umans-glm-5.1"],
+      noPenaltyModels: ["umans-glm-5.1"],
+      autoToolChoiceOnlyModels: ["umans-glm-5.1"],
+      preserveReasoningContentModels: ["umans-glm-5.1"],
+      escapeBuiltinToolNames: true,
+    });
+
+    const migrated = migratePersistedCatalogConfig(legacy, bundledCatalog(), { writeBackup: () => {} });
+    const provider = migrated.config.providers.umans;
+
+    for (const field of [
+      "contextWindow",
+      "modelContextWindows",
+      "modelCapabilities",
+      "reasoningEfforts",
+      "modelReasoningEfforts",
+      "reasoningEffortMap",
+      "modelReasoningEffortMap",
+      "noReasoningModels",
+      "noTemperatureModels",
+      "noTopPModels",
+      "noPenaltyModels",
+      "autoToolChoiceOnlyModels",
+      "preserveReasoningContentModels",
+      "escapeBuiltinToolNames",
+    ] as const) {
+      expect(provider[field]).toBeUndefined();
+    }
+  });
+
   test("keeps renamed providers custom instead of guessing by adapter and URL", () => {
     const legacy = legacyConfig();
     legacy.defaultProvider = "my-umans";
