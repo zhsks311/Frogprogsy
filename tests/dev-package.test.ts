@@ -150,8 +150,7 @@ describe("Bun-only development package contract", () => {
     const repositoryRoot = fileURLToPath(root);
     const pkg = await Bun.file(new URL("package.json", root)).json() as { scripts?: Record<string, string> };
     const generateCommand = pkg.scripts?.["generate:model-catalog:git"] ?? "";
-    expect(generateCommand).not.toContain("--out src/generated/model-catalog-v1.json");
-    expect(generateCommand).toContain("git rev-parse --git-common-dir");
+    expect(generateCommand).toBe("bun run generate:model-catalog -- --git-derived");
 
     const tempRoot = mkdtempSync(join(tmpdir(), "frogprogsy-dirty-state-"));
     try {

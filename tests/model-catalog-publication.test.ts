@@ -43,8 +43,7 @@ describe("model catalog publication workflows", () => {
     expect(packageIndex).toBeGreaterThan(guiIndex);
     expect(workflow).toContain('SOURCE_COMMIT="$(git rev-parse HEAD)"');
     expect(workflow).toContain('GENERATED_AT="$(git show -s --format=%cI "$SOURCE_COMMIT")"');
-    expect(pkg.scripts?.["generate:model-catalog:git"]).toContain("git rev-parse HEAD");
-    expect(pkg.scripts?.["generate:model-catalog:git"]).toContain("git show -s --format=%cI HEAD");
+    expect(pkg.scripts?.["generate:model-catalog:git"]).toBe("bun run generate:model-catalog -- --git-derived");
     expect(pkg.scripts?.prepublishOnly?.indexOf("bun run generate:model-catalog:git")).toBe(0);
   });
 

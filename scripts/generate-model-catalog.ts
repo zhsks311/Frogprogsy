@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { generateModelCatalog } from "../src/model-catalog-generator";
 
 type CliOptions = {
@@ -7,6 +9,28 @@ type CliOptions = {
   outputPath: string;
   check: boolean;
 };
+
+function gitOutput(arguments_: string[]): string {
+  return execFileSync("git", arguments_, { encoding: "utf8" }).trim();
+}
+
+function resolveArguments(arguments_: string[]): string[] {
+  if (!arguments_.includes("--git-derived")) return arguments_;
+  if (arguments_.length !== 1) {
+    throw new Error("--git-derived cannot be combined with explicit catalog metadata.");
+  }
+  const sourceCommit = gitOutput(["rev-parse", "HEAD"]);
+  const generatedAt = gitOutput(["show", "-s", "--format=%cI", "HEAD"]);
+  const gitCommonDirectory = resolve(process.cwd(), gitOutput(["rev-parse", "--git-common-dir"]));
+  return [
+    "--source-commit",
+    sourceCommit,
+    "--generated-at",
+    generatedAt,
+    "--out",
+    join(gitCommonDirectory, "frogprogsy-prepublish-model-catalog-v1.json"),
+  ];
+}
 
 function parseArguments(arguments_: string[]): CliOptions {
   let sourceCommit: string | undefined;
@@ -52,7 +76,7 @@ function parseArguments(arguments_: string[]): CliOptions {
 }
 
 async function run(): Promise<void> {
-  const options = parseArguments(process.argv.slice(2));
+  const options = parseArguments(resolveArguments(process.argv.slice(2)));
   const document = generateModelCatalog({
     sourceCommit: options.sourceCommit,
     generatedAt: options.generatedAt,

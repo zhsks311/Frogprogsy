@@ -106,6 +106,11 @@ describe("server startup runtime config", () => {
             cachePath,
             runtimeVersion: "1.0.0",
             fetchTimeoutMs: 10,
+            fetchTimeoutSignal: () => {
+              const controller = new AbortController();
+              queueMicrotask(() => controller.abort(new Error("catalog fetch timed out")));
+              return controller.signal;
+            },
             fetch: (_input, init) => {
               const request = Promise.withResolvers<Response>();
               init?.signal?.addEventListener("abort", () => request.reject(init.signal?.reason), { once: true });

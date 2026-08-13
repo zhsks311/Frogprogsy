@@ -430,7 +430,7 @@ describe("model catalog revision and cache trust", () => {
     expect(result.status.catalogRevision).toBe(remote.catalogRevision);
     expect(result.status.refreshedAt).toBe(NOW.toISOString());
     expect(JSON.parse(readFileSync(deps.cachePath, "utf8"))).toEqual(remote);
-    expect(statSync(deps.cachePath).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(deps.cachePath).mode & 0o777).toBe(0o600);
   });
 
   test("a lower remote revision keeps the higher cached candidate and bytes", async () => {

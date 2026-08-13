@@ -27,7 +27,7 @@
     "capture:fixtures:live": "bun tools/capture-claude-code-fixtures.ts --capture",
     "generate:model-metadata": "bun scripts/generate-model-metadata.ts",
     "generate:model-catalog": "bun scripts/generate-model-catalog.ts",
-    "generate:model-catalog:git": "bun run generate:model-catalog -- --source-commit \"$(git rev-parse HEAD)\" --generated-at \"$(git show -s --format=%cI HEAD)\" --out \"$(git rev-parse --git-common-dir)/frogprogsy-prepublish-model-catalog-v1.json\"",
+    "generate:model-catalog:git": "bun run generate:model-catalog -- --git-derived",
     "sync:assets": "bun scripts/sync-brand-assets.ts",
     "sync:assets:check": "bun scripts/sync-brand-assets.ts --check",
     "build:gui": "cd gui && bun install --frozen-lockfile && bun run build",

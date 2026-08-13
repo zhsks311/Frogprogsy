@@ -28,8 +28,8 @@ export function writeCatalogConfigBackupOnce(configPath: string, bytes: string):
   const tempPath = `${backupPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     writeFileSync(tempPath, bytes, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    chmodSync(tempPath, 0o600);
-    const descriptor = openSync(tempPath, "r");
+    if (process.platform !== "win32") chmodSync(tempPath, 0o600);
+    const descriptor = openSync(tempPath, "r+");
     try {
       fsyncSync(descriptor);
     } finally {
@@ -45,7 +45,7 @@ export function writeCatalogConfigBackupOnce(configPath: string, bytes: string):
     if (readFileSync(backupPath, "utf8") !== bytes) {
       throw new Error(`Existing model catalog config backup at ${backupPath} does not match config.json bytes.`);
     }
-    if ((statSync(backupPath).mode & 0o777) !== 0o600) {
+    if (process.platform !== "win32" && (statSync(backupPath).mode & 0o777) !== 0o600) {
       throw new Error(`Existing model catalog config backup at ${backupPath} must have mode 0600.`);
     }
   } finally {

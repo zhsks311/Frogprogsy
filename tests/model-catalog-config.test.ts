@@ -262,7 +262,7 @@ describe("persisted model catalog config migration", () => {
 
       const backupPath = join(home, "config.pre-model-catalog-v1.json");
       expect(readFileSync(backupPath, "utf8")).toBe("{\"apiKey\":\"original\"}\n");
-      expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+      if (process.platform !== "win32") expect(statSync(backupPath).mode & 0o777).toBe(0o600);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -290,7 +290,7 @@ describe("persisted model catalog config migration", () => {
     }
   });
 
-  test("rejects an existing matching backup unless its mode is 0600", () => {
+  test.skipIf(process.platform === "win32")("rejects an existing matching backup unless its mode is 0600", () => {
     const home = mkdtempSync(join(tmpdir(), "frogp-catalog-backup-mode-"));
     try {
       const configPath = join(home, "config.json");
