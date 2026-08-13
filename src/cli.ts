@@ -24,11 +24,9 @@ import {
   writeActivePort,
   writeShutdownIntent,
 } from "./config";
-import { createRuntimeConfigState } from "./runtime-config-state";
 import { createConfigMutationLock } from "./config-mutation-lock";
 import { generateLocalAccessSecret, hashLocalAccessSecret, sameMachineAccessHeaders } from "./local-access";
 import { findAvailablePort } from "./ports";
-import { startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
 import { parseEnvFlag, resolveWatchdogEnabled } from "./watchdog";
 import { configureZshAccountShortcuts, maybeConfigureAccountShortcuts, removeZshAccountShortcuts, shellManualPathLine, zshAccountShortcutsSupported } from "./shell-shortcuts";
@@ -263,6 +261,7 @@ if (command !== undefined && command !== "help" && hasHelpFlag(frogpArgs)) {
 }
 
 async function syncModelsToClaudeCode(port?: number) {
+  const { createRuntimeConfigState } = await import("./runtime-config-state");
   const state = await createRuntimeConfigState();
   const config = state.persisted;
   const effectiveConfig = state.effective;
@@ -406,6 +405,7 @@ async function handleStart(options: { block?: boolean } = {}) {
 
       const port = await chooseListenPort(requestedPort);
       let effectiveConfig: FrogConfig | undefined;
+      const { startServer } = await import("./server");
       const server = await startServer(port, {
         onRuntimeConfigReady: config => { effectiveConfig = config; },
       });
@@ -800,9 +800,11 @@ function renderHumanStatus(snapshot: StatusSnapshot, paint: boolean): void {
   }
   const guiWarning = guiBuildWarning();
   if (guiWarning) console.log(warn(`⚠️  ${guiWarning}`, paint));
-  const rawClaude = resolveRawClaudeOnPath();
-  if (rawClaude.kind === "cmux_shim") {
-    console.log(warn("⚠️  Claude 모델 선택기에 GPT/codex가 없으면 진단 실행: frogp doctor claude", paint));
+  if (snapshot.running && snapshot.healthy) {
+    const rawClaude = resolveRawClaudeOnPath();
+    if (rawClaude.kind === "cmux_shim") {
+      console.log(warn("⚠️  Claude 모델 선택기에 GPT/codex가 없으면 진단 실행: frogp doctor claude", paint));
+    }
   }
 }
 
@@ -1404,7 +1406,7 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       const parsed = parseGlobalDiscoveryAuthFlag(values);
       const isReloadModels = sub === "reload-models";
       const runtimeState = sub === "refresh" || isReloadModels
-        ? await createRuntimeConfigState({ loadConfig: () => config })
+        ? await (await import("./runtime-config-state")).createRuntimeConfigState({ loadConfig: () => config })
         : undefined;
       const persistedConfig = runtimeState?.persisted ?? config;
       const effectiveConfig = runtimeState?.effective ?? config;

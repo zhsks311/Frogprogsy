@@ -78,6 +78,7 @@ export interface ModelCatalogRuntimeDeps {
   runtimeVersion?: string;
   bundled?: ModelCatalogDocumentV1;
   cachePath?: string;
+  fetchTimeoutMs?: number;
 }
 
 interface ValidCandidate {
@@ -400,10 +401,11 @@ async function readBodyWithLimit(response: Response): Promise<string | null> {
 async function fetchRemoteCatalog(
   fetchImpl: NonNullable<ModelCatalogRuntimeDeps["fetch"]>,
   remoteUrl: string | URL,
+  fetchTimeoutMs: number,
 ): Promise<{ raw: unknown; text: string } | null> {
   let response: Response;
   try {
-    response = await fetchImpl(remoteUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    response = await fetchImpl(remoteUrl, { signal: AbortSignal.timeout(fetchTimeoutMs) });
   } catch {
     return null;
   }
@@ -515,7 +517,11 @@ export async function refreshModelCatalog(
     }
   }
 
-  const remote = await fetchRemoteCatalog(deps.fetch ?? globalThis.fetch, deps.remoteUrl ?? MODEL_CATALOG_REMOTE_URL);
+  const remote = await fetchRemoteCatalog(
+    deps.fetch ?? globalThis.fetch,
+    deps.remoteUrl ?? MODEL_CATALOG_REMOTE_URL,
+    deps.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
+  );
   if (!remote) {
     warnings.push("Remote model catalog refresh failed; the existing catalog remains active.");
     return { document: selected.document, status: statusFor(source, selected, warnings) };

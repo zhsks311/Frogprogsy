@@ -105,6 +105,7 @@ describe("server startup runtime config", () => {
             bundled,
             cachePath,
             runtimeVersion: "1.0.0",
+            fetchTimeoutMs: 10,
             fetch: (_input, init) => {
               const request = Promise.withResolvers<Response>();
               init?.signal?.addEventListener("abort", () => request.reject(init.signal?.reason), { once: true });
