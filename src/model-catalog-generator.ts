@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import {
   listJawcodeModelMetadata,
   type JawcodeModelMetadata,
@@ -16,17 +15,7 @@ import {
   type ProviderRegistryEntry,
 } from "./providers/registry";
 
-const MIN_FROGPROGSY_VERSION = readPackageVersion();
-
-function readPackageVersion(): string {
-  const packageJson = JSON.parse(
-    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-  ) as { version?: unknown };
-  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
-    throw new Error("package.json must contain a non-empty version");
-  }
-  return packageJson.version;
-}
+const MIN_FROGPROGSY_VERSION = "0.0.2-preview.2";
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -69,6 +58,7 @@ function modelIdsForProvider(
   addModelIds(ids, Object.keys(provider.modelContextWindows ?? {}));
   addModelIds(ids, Object.keys(provider.modelCapabilities ?? {}));
   addModelIds(ids, Object.keys(provider.modelReasoningEfforts ?? {}));
+  addModelIds(ids, Object.keys(provider.modelMinFrogprogsyVersions ?? {}));
   addModelIds(ids, Object.keys(provider.modelReasoningEffortMap ?? {}));
   addModelIds(ids, provider.noReasoningModels);
   addModelIds(ids, provider.noTemperatureModels);
@@ -98,6 +88,7 @@ function modelFromSources(
   jawcodeModel: JawcodeModelMetadata | undefined,
 ): ModelCatalogModelV1 {
   const model: ModelCatalogModelV1 = { id: modelId };
+  const minFrogprogsyVersion = provider.modelMinFrogprogsyVersions?.[modelId];
   const contextWindow = provider.modelContextWindows?.[modelId]
     ?? provider.contextWindow
     ?? jawcodeModel?.contextWindow;
@@ -108,6 +99,9 @@ function modelFromSources(
   const reasoningEffortMap = provider.modelReasoningEffortMap?.[modelId]
     ?? provider.reasoningEffortMap;
 
+  if (minFrogprogsyVersion !== undefined) {
+    model.minFrogprogsyVersion = minFrogprogsyVersion;
+  }
   if (contextWindow !== undefined) {
     model.contextWindow = contextWindow;
   }
@@ -157,6 +151,12 @@ function providerFromRegistry(provider: ProviderRegistryEntry): ModelCatalogProv
     id: provider.id,
     models,
   };
+  if (provider.minFrogprogsyVersion !== undefined) {
+    catalogProvider.minFrogprogsyVersion = provider.minFrogprogsyVersion;
+  }
+  if (provider.retiredModels !== undefined) {
+    catalogProvider.retiredModels = [...provider.retiredModels].sort();
+  }
   if (provider.defaultModel !== undefined) {
     catalogProvider.defaultModel = provider.defaultModel;
   }

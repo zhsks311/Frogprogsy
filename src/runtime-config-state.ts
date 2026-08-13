@@ -80,8 +80,8 @@ export async function createRuntimeConfigState(
       });
       for (const warning of migration.warnings) warn(`[frogp] ${warning}`);
       if (migration.changed) {
+        savePersisted(migration.config);
         persisted = migration.config;
-        savePersisted(persisted);
       }
     } catch (error) {
       warn(`[frogp] model catalog config migration was skipped: ${error instanceof Error ? error.message : String(error)}`);

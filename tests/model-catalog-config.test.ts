@@ -8,6 +8,7 @@ import {
   providerUserSeedFromRegistry,
   writeCatalogConfigBackupOnce,
 } from "../src/model-catalog-config";
+import { createRuntimeConfigState } from "../src/runtime-config-state";
 import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
 import type { ModelCatalogDocumentV1 } from "../src/model-catalog-schema";
 import type { FrogConfig } from "../src/types";
@@ -214,6 +215,31 @@ describe("persisted model catalog config migration", () => {
     expect(migrated.warnings.join("\n")).toContain("disk full");
   });
 
+  test("backup 뒤 save가 실패하면 원본 persisted semantics를 메모리에 유지한다", async () => {
+    const legacy = legacyConfig();
+    const original = structuredClone(legacy);
+    let backupWritten = false;
+    const warnings: string[] = [];
+
+    const state = await createRuntimeConfigState({
+      loadConfig: () => legacy,
+      saveConfig: () => { throw new Error("save failed"); },
+      getConfigPath: () => "/tmp/frogp-config.json",
+      configExists: () => true,
+      readConfig: () => `${JSON.stringify(original, null, 2)}\n`,
+      bundledCatalog: bundledCatalog(),
+      writeBackup: () => { backupWritten = true; },
+      refreshCatalog: async () => selectedCatalog(),
+      warn: warning => warnings.push(warning),
+    });
+
+    expect(backupWritten).toBeTrue();
+    expect(state.persisted).toEqual(original);
+    expect(state.persisted.modelCatalogConfigVersion).toBeUndefined();
+    expect(state.effective.providers.umans.models).toEqual(original.providers.umans.models);
+    expect(warnings.join("\n")).toContain("save failed");
+  });
+
   test("does not back up or mutate an already migrated config", () => {
     const config = { ...legacyConfig(), modelCatalogConfigVersion: 1 as const };
     let backups = 0;
@@ -320,6 +346,73 @@ describe("effective model catalog config", () => {
     expect(persisted.providers.umans.models).toBeUndefined();
     expect(persisted.providers.umans.userModels).toEqual(["user-added", "umans-coder"]);
     expect(persisted.providers.umans.noTemperatureModels).toEqual([]);
+  });
+
+  test("retired managed default만 catalog default로 교체하고 사용자 default 경계를 보존한다", () => {
+    const document = bundledCatalog();
+    const managed = document.providers.find(provider => provider.id === "umans")!;
+    managed.retiredModels = ["umans-glm-5.1"];
+    const persisted = legacyConfig();
+    persisted.modelCatalogConfigVersion = 1;
+    persisted.providers.umans = {
+      adapter: "anthropic",
+      baseUrl: "https://api.code.umans.ai",
+      catalogProviderId: "umans",
+      defaultModel: "umans-glm-5.1",
+      userModels: ["user-added"],
+    };
+    persisted.providers.custom = {
+      adapter: "anthropic",
+      baseUrl: "https://custom.invalid",
+      defaultModel: "umans-glm-5.1",
+      models: ["umans-glm-5.1"],
+    };
+
+    const effective = buildEffectiveConfig(persisted, selectedCatalog(document));
+
+    expect(effective.providers.umans.defaultModel).toBe("umans-coder");
+    expect(effective.providers.umans.models).not.toContain("umans-glm-5.1");
+    expect(effective.providers.custom.defaultModel).toBe("umans-glm-5.1");
+
+    persisted.providers.umans.defaultModel = "user-added";
+    expect(buildEffectiveConfig(persisted, selectedCatalog(document)).providers.umans.defaultModel)
+      .toBe("user-added");
+  });
+
+  test("wire model mapping은 이를 지원하는 managed adapter에만 전달한다", () => {
+    const document = bundledCatalog();
+    document.providers.push({
+      id: "wire-provider",
+      defaultModel: "claude-opus-4-6[1m]",
+      models: [{
+        id: "claude-opus-4-6[1m]",
+        wireModelId: "claude-opus-4-6",
+      }],
+    });
+    const persisted: FrogConfig = {
+      port: 3764,
+      defaultProvider: "supported",
+      modelCatalogConfigVersion: 1,
+      providers: {
+        supported: {
+          adapter: "anthropic",
+          baseUrl: "https://api.anthropic.com",
+          catalogProviderId: "wire-provider",
+        },
+        unsupported: {
+          adapter: "openai-chat",
+          baseUrl: "https://example.invalid/v1",
+          catalogProviderId: "wire-provider",
+        },
+      },
+    };
+
+    const effective = buildEffectiveConfig(persisted, selectedCatalog(document));
+
+    expect(effective.providers.supported.modelWireIds).toEqual({
+      "claude-opus-4-6[1m]": "claude-opus-4-6",
+    });
+    expect(effective.providers.unsupported.modelWireIds).toBeUndefined();
   });
 
   test("leaves custom and fixed-allowlist providers unchanged in the effective clone", () => {

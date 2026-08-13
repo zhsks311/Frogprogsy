@@ -4212,6 +4212,7 @@ export function buildAnthropicModelsList(
 export interface ServerStartDeps {
   createRuntimeConfigState?: () => Promise<RuntimeConfigState>;
   serve?: typeof Bun.serve;
+  onRuntimeConfigReady?: (effectiveConfig: FrogConfig) => void;
 }
 
 export async function startServer(
@@ -4233,6 +4234,7 @@ export async function startServer(
   }
   if (persistedChanged) state.persist();
   const startupConfig = state.effective;
+  deps.onRuntimeConfigReady?.(structuredClone(startupConfig));
   // Auto-mode classifier: never back-fill or guess. Invalid configured targets and opted-in homes
   // without a usable target fail before the proxy begins listening. Static provider catalogs are
   // also validated; live-catalog providers were validated when saved and cannot be refreshed here.

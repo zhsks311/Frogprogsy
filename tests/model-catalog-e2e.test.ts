@@ -5,6 +5,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { catalogDataDigest } from "../src/model-catalog-generator";
 import { refreshModelCatalog } from "../src/model-catalog-runtime";
+import { refreshClaudeCodeModelCatalog } from "../src/claude-refresh";
+import {
+  claudeCatalogPath,
+  claudeGatewayModelsCachePath,
+  claudeModelsCachePath,
+} from "../src/claude-paths";
 import {
   modelCatalogDocumentV1Schema,
   type ModelCatalogDocumentV1,
@@ -16,6 +22,7 @@ import type { FrogConfig } from "../src/types";
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
 const originalHome = process.env.FROGPROGSY_HOME;
+const originalClaudeHome = process.env.CLAUDE_HOME;
 const tempDirs: string[] = [];
 const activeServers = new Set<{ stop(closeActiveConnections?: boolean): void }>();
 
@@ -89,10 +96,31 @@ function writeConfig(home: string, config: FrogConfig): string {
 
 async function startProxy(home: string, catalogUrl: string) {
   process.env.FROGPROGSY_HOME = home;
+  const claudeHome = join(home, "claude");
+  process.env.CLAUDE_HOME = claudeHome;
+  mkdirSync(claudeHome, { recursive: true });
+  const catalogPath = claudeCatalogPath(claudeHome);
+  if (!Bun.file(catalogPath).size) {
+    writeFileSync(catalogPath, `${JSON.stringify({
+      models: [{
+        slug: "gpt-5.5",
+        display_name: "gpt-5.5",
+        priority: 1,
+        base_instructions: "Native model fixture",
+      }],
+    }, null, 2)}\n`, { mode: 0o600 });
+  }
+  let effectiveConfig: FrogConfig | undefined;
   const server = await startServer(0, {
     createRuntimeConfigState: () => createRuntimeConfigState({
       refreshCatalog: () => refreshModelCatalog({ remoteUrl: catalogUrl }),
     }),
+    onRuntimeConfigReady: config => { effectiveConfig = config; },
+  });
+  if (!effectiveConfig) throw new Error("server did not hand off effective startup config");
+  await refreshClaudeCodeModelCatalog(effectiveConfig, undefined, {
+    claudeHome,
+    profileId: "cp_e2e",
   });
   writeFileSync(join(home, "frogp.pid"), String(process.pid), "utf8");
   writeFileSync(join(home, "frogp.port"), String(server.port), "utf8");
@@ -173,6 +201,8 @@ afterEach(() => {
   activeServers.clear();
   if (originalHome === undefined) delete process.env.FROGPROGSY_HOME;
   else process.env.FROGPROGSY_HOME = originalHome;
+  if (originalClaudeHome === undefined) delete process.env.CLAUDE_HOME;
+  else process.env.CLAUDE_HOME = originalClaudeHome;
   for (const path of tempDirs.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -218,6 +248,13 @@ describe("remote model catalog end to end", () => {
       expect(cliHuman.stdout).toContain("검증됨");
       expect(activeNamespacedModels(apiModels)).toContain(`anthropic/${remoteV1Id}`);
       expect(readFileSync(join(home, "config.json"), "utf8")).toBe(configBytes);
+      for (const path of [
+        claudeCatalogPath(join(home, "claude")),
+        claudeModelsCachePath(join(home, "claude")),
+        claudeGatewayModelsCachePath(join(home, "claude")),
+      ]) {
+        expect(readFileSync(path, "utf8"), path).toContain(remoteV1Id);
+      }
       expect(catalogRequests).toBe(1);
 
       catalogBody = remoteV2;

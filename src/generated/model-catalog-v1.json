@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "catalogRevision": 1,
-  "catalogDigest": "4074d3ea85f07d27e8b07ccc3cda9e3e452e6a8be4730c155e88917c3cd91554",
-  "sourceCommit": "2b40ba47c6d3f18626e6cc8de759f5016a65fcd6",
-  "generatedAt": "2026-08-13T06:54:03+09:00",
+  "catalogRevision": 2,
+  "catalogDigest": "f256684912b14fa7748d3a7b9379450ea885246932b7d0e3d8cfced8020066d2",
+  "sourceCommit": "68fe2b7e2b75fbc30c9970736e4462142b4eefa6",
+  "generatedAt": "2026-08-13T12:27:54+09:00",
   "minFrogprogsyVersion": "0.0.2-preview.2",
   "providers": [
     {
@@ -332,6 +332,10 @@
     {
       "id": "deepseek",
       "defaultModel": "deepseek-v4-pro",
+      "retiredModels": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
       "models": [
         {
           "id": "deepseek-v4-flash",
@@ -1000,6 +1004,14 @@
     {
       "id": "neuralwatt",
       "defaultModel": "glm-5.2",
+      "retiredModels": [
+        "kimi-k2.5-fast",
+        "kimi-k2.6",
+        "kimi-k2.6-fast",
+        "moonshotai/Kimi-K2.5",
+        "qwen3.5-397b",
+        "qwen3.5-397b-fast"
+      ],
       "models": [
         {
           "id": "deepseek-v4-flash",
@@ -4261,6 +4273,11 @@
     {
       "id": "umans",
       "defaultModel": "umans-coder",
+      "retiredModels": [
+        "umans-glm-5.1",
+        "umans-kimi-k2.6",
+        "umans-qwen3.6-35b-a3b"
+      ],
       "escapeBuiltinToolNames": true,
       "models": [
         {

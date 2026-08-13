@@ -73,7 +73,7 @@ import {
   removeClaudeGrant,
   resolveClaudeGrant,
 } from "./claude-grants";
-import type { ClaudeGrantRecord } from "./types";
+import type { ClaudeGrantRecord, FrogConfig } from "./types";
 import { deleteClaudeGrantCredential, inspectClaudeGrantStatus, type ClaudeGrantStatusState } from "./claude-grant-auth";
 import { ClaudeGrantProbeError, runClaudeGrantLiveProbe } from "./claude-grant-probe";
 import { assertAllowedClaudeGrantTarget } from "./provider-auth";
@@ -401,7 +401,14 @@ async function handleStart(options: { block?: boolean } = {}) {
       if (existingPid) return { runningPid: existingPid };
 
       const port = await chooseListenPort(requestedPort);
-      const server = await startServer(port);
+      let effectiveConfig: FrogConfig | undefined;
+      const server = await startServer(port, {
+        onRuntimeConfigReady: config => { effectiveConfig = config; },
+      });
+      if (effectiveConfig === undefined) {
+        server.stop(true);
+        throw new Error("Server startup did not provide the effective runtime config.");
+      }
       let pidPublished = false;
       let activePortPublished = false;
       try {
@@ -409,7 +416,7 @@ async function handleStart(options: { block?: boolean } = {}) {
         pidPublished = true;
         writeActivePort(port);
         activePortPublished = true;
-        return { server, port };
+        return { server, port, effectiveConfig };
       } catch (error) {
         server.stop(true);
         if (activePortPublished) removeActivePort();
@@ -425,7 +432,7 @@ async function handleStart(options: { block?: boolean } = {}) {
     console.error(`⚠️  Proxy already running (PID ${startup.runningPid}). Use 'frogp stop' first.`);
     process.exit(1);
   }
-  const { server, port } = startup;
+  const { server, port, effectiveConfig: effectiveStartConfig } = startup;
 
   clearShutdownIntent();
   // Clear any stale watchdog give-up status so 'frogp status' doesn't show
@@ -482,7 +489,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
   for (const profile of startProfiles) {
     try {
-      const cat = await refreshClaudeCodeModelCatalog(startConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
+      const cat = await refreshClaudeCodeModelCatalog(effectiveStartConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
       if (cat.added > 0) console.log(`   + ${cat.added} models appended to Claude Code catalog for ${profile.name} (${cat.path})`);
     } catch (e) {
       console.error(`catalog sync skipped for ${profile.name}:`, e instanceof Error ? e.message : String(e));

@@ -1,6 +1,7 @@
 import { closeSync, chmodSync, linkSync, openSync, readFileSync, fsyncSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import { supportsWireModelIds } from "./adapters/base";
 import type { SelectedModelCatalog } from "./model-catalog-runtime";
 import type { ModelCatalogDocumentV1, ModelCatalogProviderV1 } from "./model-catalog-schema";
 import { intersectReasoningEfforts, mergeReasoningEffortMap } from "./reasoning-effort";
@@ -73,20 +74,6 @@ const MANAGED_METADATA_FIELDS = [
   "escapeBuiltinToolNames",
 ] as const satisfies readonly (keyof FrogProviderConfig)[];
 
-
-const LEGACY_RETIRED_MODELS_BY_PROVIDER: Record<string, readonly string[]> = {
-  umans: ["umans-kimi-k2.6", "umans-glm-5.1", "umans-qwen3.6-35b-a3b"],
-  neuralwatt: [
-    "moonshotai/Kimi-K2.5",
-    "kimi-k2.5-fast",
-    "kimi-k2.6",
-    "kimi-k2.6-fast",
-    "qwen3.5-397b",
-    "qwen3.5-397b-fast",
-  ],
-  deepseek: ["deepseek-chat", "deepseek-reasoner"],
-};
-
 const USER_OWNED_PROVIDER_FIELDS = [
   "apiKey",
   "apiKeys",
@@ -143,6 +130,7 @@ function catalogProviderConfig(provider: ModelCatalogProviderV1): Partial<FrogPr
   const modelContextWindows: Record<string, number> = {};
   const modelCapabilities: NonNullable<FrogProviderConfig["modelCapabilities"]> = {};
   const modelReasoningEfforts: Record<string, string[]> = {};
+  const modelWireIds: Record<string, string> = {};
   const modelReasoningEffortMap: Record<string, Record<string, string>> = {};
   const noReasoningModels: string[] = [];
   const noTemperatureModels: string[] = [];
@@ -156,6 +144,7 @@ function catalogProviderConfig(provider: ModelCatalogProviderV1): Partial<FrogPr
     if (model.inputModalities !== undefined) modelCapabilities[model.id] = { input: [...model.inputModalities] };
     if (model.reasoningEfforts !== undefined) modelReasoningEfforts[model.id] = [...model.reasoningEfforts];
     if (model.reasoningEffortMap !== undefined) modelReasoningEffortMap[model.id] = { ...model.reasoningEffortMap };
+    if (model.wireModelId !== undefined) modelWireIds[model.id] = model.wireModelId;
     if (model.noReasoning) noReasoningModels.push(model.id);
     if (model.noTemperature) noTemperatureModels.push(model.id);
     if (model.noTopP) noTopPModels.push(model.id);
@@ -171,6 +160,7 @@ function catalogProviderConfig(provider: ModelCatalogProviderV1): Partial<FrogPr
     ...(Object.keys(modelCapabilities).length > 0 ? { modelCapabilities } : {}),
     ...(Object.keys(modelReasoningEfforts).length > 0 ? { modelReasoningEfforts } : {}),
     ...(Object.keys(modelReasoningEffortMap).length > 0 ? { modelReasoningEffortMap } : {}),
+    ...(Object.keys(modelWireIds).length > 0 ? { modelWireIds } : {}),
     ...(noReasoningModels.length > 0 ? { noReasoningModels } : {}),
     ...(noTemperatureModels.length > 0 ? { noTemperatureModels } : {}),
     ...(noTopPModels.length > 0 ? { noTopPModels } : {}),
@@ -247,7 +237,7 @@ export function migratePersistedCatalogConfig(
       ...catalogProvider.models.map(model => model.id),
       ...(catalogProvider.retiredModels ?? []),
       ...(registryEntry.models ?? []),
-      ...(LEGACY_RETIRED_MODELS_BY_PROVIDER[registryEntry.id] ?? []),
+      ...(registryEntry.retiredModels ?? []),
     ]);
     const legacyModels = Array.isArray(provider.models) ? provider.models : [];
     provider.userModels = uniqueStrings([
@@ -354,7 +344,9 @@ function mergeManagedProvider(
   const managed = catalogProviderConfig(catalogProvider);
   const effective = { ...managed, ...persisted } as FrogProviderConfig;
   const managedModelIds = new Set(managed.models ?? []);
-  const persistedUserModels = uniqueStrings(persisted.userModels ?? []);
+  const retiredModelIds = new Set(catalogProvider.retiredModels ?? []);
+  const persistedUserModels = uniqueStrings(persisted.userModels ?? [])
+    .filter(model => !retiredModelIds.has(model));
   effective.models = uniqueStrings([
     ...(managed.models ?? []),
     ...persistedUserModels,
@@ -362,6 +354,17 @@ function mergeManagedProvider(
   const effectiveUserModels = persistedUserModels.filter(model => !managedModelIds.has(model));
   if (effectiveUserModels.length > 0) effective.userModels = effectiveUserModels;
   else delete effective.userModels;
+
+  if (persisted.defaultModel !== undefined && retiredModelIds.has(persisted.defaultModel)) {
+    if (managed.defaultModel !== undefined) effective.defaultModel = managed.defaultModel;
+    else delete effective.defaultModel;
+  }
+
+  if (supportsWireModelIds(persisted.adapter) && managed.modelWireIds !== undefined) {
+    effective.modelWireIds = managed.modelWireIds;
+  } else {
+    delete effective.modelWireIds;
+  }
 
   const contextWindow = minimumPositive(managed.contextWindow, persisted.contextWindow);
   if (contextWindow !== undefined) effective.contextWindow = contextWindow;

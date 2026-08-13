@@ -7,6 +7,7 @@ import {
   generateModelCatalog,
 } from "../src/model-catalog-generator";
 import { modelCatalogDocumentV1Schema } from "../src/model-catalog-schema";
+import { validateCatalogCandidate } from "../src/model-catalog-runtime";
 
 const input = {
   sourceCommit: "a".repeat(40),
@@ -64,6 +65,35 @@ describe("model catalog generator", () => {
   test("생성한 문서는 엄격한 v1 스키마를 통과한다", () => {
     expect(modelCatalogDocumentV1Schema.parse(generateModelCatalog(input)))
       .toEqual(generateModelCatalog(input));
+  });
+
+  test("v1 문서 최소 reader 버전을 최초 지원 버전으로 유지한다", () => {
+    const current = generateModelCatalog(input);
+    const nextRelease = generateModelCatalog({
+      ...input,
+      sourceCommit: "c".repeat(40),
+      generatedAt: "2026-08-13T00:00:00.000Z",
+    });
+
+    expect(nextRelease.minFrogprogsyVersion).toBe("0.0.2-preview.2");
+    expect(validateCatalogCandidate(
+      nextRelease,
+      current,
+      "0.0.2",
+      new Date("2026-08-13T00:00:01.000Z"),
+    ).ok).toBeTrue();
+  });
+
+  test("registry의 retired model을 provider artifact에 직렬화한다", () => {
+    const providers = new Map(generateModelCatalog(input).providers.map(provider => [provider.id, provider]));
+
+    expect(providers.get("umans")?.retiredModels).toEqual([
+      "umans-glm-5.1",
+      "umans-kimi-k2.6",
+      "umans-qwen3.6-35b-a3b",
+    ]);
+    expect(providers.get("neuralwatt")?.retiredModels).toContain("kimi-k2.5-fast");
+    expect(providers.get("deepseek")?.retiredModels).toEqual(["deepseek-chat", "deepseek-reasoner"]);
   });
 
   test("중복 provider ID를 거부한다", () => {
@@ -206,7 +236,10 @@ describe("model catalog generator CLI", () => {
       expect(await writeProcess.exited).toBe(0);
       const generatedBytes = await Bun.file(outputPath).text();
       expect(generatedBytes.endsWith("\n")).toBeTrue();
-      expect(JSON.parse(generatedBytes)).toEqual(generateModelCatalog(input));
+      expect(JSON.parse(generatedBytes)).toEqual(generateModelCatalog({
+        sourceCommit: input.sourceCommit,
+        generatedAt: input.generatedAt,
+      }));
 
       const checkProcess = Bun.spawn([...command, "--check"], { stdout: "pipe", stderr: "pipe" });
       expect(await checkProcess.exited).toBe(0);

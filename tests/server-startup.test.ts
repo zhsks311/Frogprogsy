@@ -122,6 +122,23 @@ describe("server startup runtime config", () => {
     expect(serveCalls).toBe(1);
   }, 4_000);
 
+  test("post-start sync에 selected catalog가 반영된 effective config를 전달한다", async () => {
+    let handedOff: FrogConfig | undefined;
+
+    await startServer(0, {
+      createRuntimeConfigState: () => createRuntimeConfigState({
+        loadConfig: persistedConfig,
+        configExists: () => false,
+        refreshCatalog: async () => selected(catalog(["remote-only-model"]), "remote"),
+      }),
+      serve: fakeServe(() => {}),
+      onRuntimeConfigReady: config => { handedOff = config; },
+    });
+
+    expect(handedOff?.providers.gateway.models).toEqual(["remote-only-model"]);
+    expect(handedOff?.providers.gateway.catalogProviderId).toBe("managed");
+  });
+
   test("persist saves only persisted values and rebuilds effective from the startup catalog snapshot", async () => {
     const saved: FrogConfig[] = [];
     let refreshCalls = 0;

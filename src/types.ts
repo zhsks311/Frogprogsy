@@ -614,6 +614,8 @@ export interface FrogProviderConfig {
   reasoningEffortMap?: Record<string, string>;
   /** Model-specific mapping from Claude Code effort labels to upstream `reasoning_effort` values. */
   modelReasoningEffortMap?: Record<string, Record<string, string>>;
+  /** Managed logical model ids translated only at the supported adapter's outgoing request boundary. */
+  modelWireIds?: Record<string, string>;
   /**
    * Model ids that do NOT support a reasoning/thinking parameter. The openai-chat adapter drops
    * reasoning_effort for these even when Claude Code selects a reasoning level (e.g. xAI grok-build-0.1).

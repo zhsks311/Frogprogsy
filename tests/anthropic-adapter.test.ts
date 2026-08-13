@@ -6,6 +6,7 @@ import { buildEffectiveConfig } from "../src/model-catalog-config";
 import type { ModelCatalogProviderV1 } from "../src/model-catalog-schema";
 import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
 import type { FrogProviderConfig } from "../src/types";
+import { resolveAdapter } from "../src/server";
 import type { AdapterEvent } from "../src/types";
 
 /**
@@ -204,6 +205,43 @@ describe("effective managed Anthropic request settings", () => {
 
     expect(effectiveProvider.escapeBuiltinToolNames).toBe(true);
     expect(tools[0]?.name).toBe("frogp_get_weather");
+  });
+});
+
+describe("managed wire model IDs", () => {
+  test("logical 1m model ID는 선택 상태에 남고 Anthropic outgoing body에서만 base slug로 바뀐다", () => {
+    const logicalModelId = "claude-opus-4-6[1m]";
+    const effectiveProvider = effectiveManagedProvider(keyProvider, {
+      id: "managed",
+      defaultModel: logicalModelId,
+      models: [{
+        id: logicalModelId,
+        wireModelId: "claude-opus-4-6",
+      }],
+    });
+    const parsed = parsedRequest({ model: logicalModelId });
+
+    const request = resolveAdapter(effectiveProvider).buildRequest(parsed);
+    const outgoing = JSON.parse(request.body) as { model: string };
+
+    expect(effectiveProvider.defaultModel).toBe(logicalModelId);
+    expect(parsed.modelId).toBe(logicalModelId);
+    expect(outgoing.model).toBe("claude-opus-4-6");
+  });
+
+  test("wire mapping을 지원하지 않는 adapter는 mapping이 있어도 logical ID를 보낸다", () => {
+    const logicalModelId = "claude-opus-4-6[1m]";
+    const provider = {
+      adapter: "openai-chat",
+      baseUrl: "https://example.test/v1",
+      apiKey: STATIC_KEY,
+      modelWireIds: { [logicalModelId]: "claude-opus-4-6" },
+    } as FrogProviderConfig;
+
+    const request = resolveAdapter(provider).buildRequest(parsedRequest({ model: logicalModelId }));
+    const outgoing = JSON.parse(request.body) as { model: string };
+
+    expect(outgoing.model).toBe(logicalModelId);
   });
 });
 
