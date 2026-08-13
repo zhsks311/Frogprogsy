@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { buildCatalogEntries } from "../src/claude-catalog";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { parseMessagesRequest } from "../src/messages/parser";
+import { parseRequest } from "../src/responses/parser";
 import { buildEffectiveConfig } from "../src/model-catalog-config";
 import type { ModelCatalogProviderV1 } from "../src/model-catalog-schema";
 import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
@@ -148,6 +150,49 @@ describe("provider-specific reasoning effort mapping", () => {
 
     expect(provider.modelReasoningEfforts?.reasoner).toEqual([]);
     expect(buildBody(provider, "reasoner", { reasoning: "high" })).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("Responses minimal reasoning keeps the exact managed wire value", () => {
+    const provider: FrogProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://managed.test/v1",
+      modelReasoningEfforts: { reasoner: ["low", "medium", "high", "xhigh"] },
+      modelReasoningEffortMap: {
+        reasoner: { minimal: "none", low: "high", medium: "high", high: "high", xhigh: "max" },
+      },
+    };
+    const parsed = parseRequest({
+      model: "reasoner",
+      input: "solve",
+      reasoning: { effort: "minimal" },
+    });
+    const request = createOpenAIChatAdapter(provider).buildRequest(parsed);
+    const body = JSON.parse(request.body as string) as Record<string, unknown>;
+
+    expect(parsed.options.reasoning).toBe("minimal");
+    expect(body.reasoning_effort).toBe("none");
+  });
+
+  test("Messages minimal reasoning keeps the exact managed wire value", () => {
+    const provider: FrogProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://managed.test/v1",
+      modelReasoningEfforts: { reasoner: ["low", "medium", "high", "xhigh"] },
+      modelReasoningEffortMap: {
+        reasoner: { minimal: "none", low: "high", medium: "high", high: "high", xhigh: "max" },
+      },
+    };
+    const parsed = parseMessagesRequest({
+      model: "reasoner",
+      messages: [{ role: "user", content: "solve" }],
+      thinking: { type: "enabled", budget_tokens: 1_024 },
+      max_tokens: 4_096,
+    });
+    const request = createOpenAIChatAdapter(provider).buildRequest(parsed);
+    const body = JSON.parse(request.body as string) as Record<string, unknown>;
+
+    expect(parsed.options.reasoning).toBe("minimal");
+    expect(body.reasoning_effort).toBe("none");
   });
 
   test("Z.AI GLM-5.2 maps Claude Code xhigh to the upstream max effort", () => {
