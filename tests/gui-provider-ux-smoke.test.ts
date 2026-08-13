@@ -293,6 +293,7 @@ describe("model catalog status UX", () => {
       catalogRevision: 42,
       sourceCommit: "1234567890abcdef1234567890abcdef12345678",
       refreshedAt: "2026-08-12T10:30:00.000Z",
+      skippedRecords: 0,
       warnings: { count: 0, causes: [] },
       cachePath: rawPath,
       remoteUrl: rawUrl,
@@ -314,5 +315,45 @@ describe("model catalog status UX", () => {
     expect(markup).not.toContain(rawPath);
     expect(markup).not.toContain(rawUrl);
     expect(markup).not.toContain("token=secret");
+  });
+
+  test("uses skippedRecords for excluded-item attention even when there are no warnings", () => {
+    const status = parseCatalogStatus({
+      source: "remote",
+      catalogRevision: 43,
+      sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      refreshedAt: "2026-08-12T11:30:00.000Z",
+      skippedRecords: 5,
+      warnings: { count: 0, causes: [] },
+    });
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelCatalogStatusSummary, { status, t: tKo, onRefresh: () => undefined }),
+    );
+
+    expect(status.skippedRecords).toBe(5);
+    expect(status.warningCount).toBe(0);
+    expect(markup).toContain("모델 자료 일부를 확인해야 합니다");
+    expect(markup).toContain("호환되지 않는 5개 항목을 제외");
+    expect(markup).not.toContain("5건의 문제");
+  });
+
+  test("keeps warning-only attention separate from excluded-item counts", () => {
+    const status = parseCatalogStatus({
+      source: "remote",
+      catalogRevision: 44,
+      sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      refreshedAt: "2026-08-12T12:30:00.000Z",
+      skippedRecords: 0,
+      warnings: { count: 1, causes: ["refresh_failed"] },
+    });
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelCatalogStatusSummary, { status, t: tKo, onRefresh: () => undefined }),
+    );
+
+    expect(status.skippedRecords).toBe(0);
+    expect(status.warningCount).toBe(1);
+    expect(markup).toContain("모델 자료 일부를 확인해야 합니다");
+    expect(markup).toContain("1건의 문제가 발생");
+    expect(markup).not.toContain("1개 항목을 제외");
   });
 });

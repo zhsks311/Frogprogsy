@@ -16,6 +16,7 @@ export interface ModelCatalogStatus {
   catalogRevision: number;
   sourceCommit: string;
   refreshedAt?: string;
+  skippedRecords: number;
   warningCount: number;
 }
 
@@ -32,6 +33,9 @@ export function parseCatalogStatus(value: unknown): ModelCatalogStatus {
   }
   if ("refreshedAt" in value && value.refreshedAt !== undefined && (typeof value.refreshedAt !== "string" || !Number.isFinite(Date.parse(value.refreshedAt)))) {
     throw new Error("invalid catalog refresh time");
+  }
+  if (!("skippedRecords" in value) || typeof value.skippedRecords !== "number" || !Number.isInteger(value.skippedRecords) || value.skippedRecords < 0) {
+    throw new Error("invalid skipped record count");
   }
   let warningCount = 0;
   if (
@@ -50,6 +54,7 @@ export function parseCatalogStatus(value: unknown): ModelCatalogStatus {
     catalogRevision: value.catalogRevision,
     sourceCommit: value.sourceCommit,
     ...("refreshedAt" in value && typeof value.refreshedAt === "string" ? { refreshedAt: value.refreshedAt } : {}),
+    skippedRecords: value.skippedRecords,
     warningCount,
   };
 }
@@ -73,14 +78,19 @@ export function ModelCatalogStatusSummary({
   t: TFn;
   onRefresh: () => void;
 }) {
-  const needsAttention = status === null || status.source !== "remote" || status.warningCount > 0;
+  const needsAttention = status === null
+    || status.source !== "remote"
+    || status.skippedRecords > 0
+    || status.warningCount > 0;
   const title = status === null
     ? t("models.catalog.unavailable")
-    : status.source === "remote"
-      ? t("models.catalog.remote")
-      : status.source === "cached"
-        ? t("models.catalog.cached")
-        : t("models.catalog.bundled");
+    : status.source === "cached"
+      ? t("models.catalog.cached")
+      : status.source === "bundled"
+        ? t("models.catalog.bundled")
+        : needsAttention
+          ? t("models.catalog.review")
+          : t("models.catalog.remote");
   return (
     <div className={`models-status-card${needsAttention ? " warn" : ""}`}>
       <div className="models-status-label">{title}</div>
@@ -91,6 +101,7 @@ export function ModelCatalogStatusSummary({
             commit: status.sourceCommit.slice(0, 8),
             refreshedAt: status.refreshedAt?.replace("T", " ").replace("Z", " UTC") ?? t("models.catalog.noRefresh"),
           })}</p>
+          {status.skippedRecords > 0 && <p>{t("models.catalog.skipped", { n: status.skippedRecords })}</p>}
           {status.warningCount > 0 && <p>{t("models.catalog.warnings", { n: status.warningCount })}</p>}
         </>
       ) : (
