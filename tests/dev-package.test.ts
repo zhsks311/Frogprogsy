@@ -9,6 +9,7 @@ import {
   classifyDevInstall,
   isDevBuildManifest,
   recordLatest,
+  trackedSourceDirty,
   verifyNoOwnedPlainClaude,
   verifyPackagedModelCatalog,
   type DevBuildManifest,
@@ -143,6 +144,45 @@ describe("Bun-only development package contract", () => {
     expect(source).not.toContain("getConfigDir");
     expect(source).not.toMatch(/spawnSync\(["']npm["']/);
     expect(source).not.toMatch(/run\(["']npm["']/);
+  });
+
+  test("prepublish catalog generation does not change clean or dirty source classification", async () => {
+    const repositoryRoot = fileURLToPath(root);
+    const pkg = await Bun.file(new URL("package.json", root)).json() as { scripts?: Record<string, string> };
+    const generateCommand = pkg.scripts?.["generate:model-catalog:git"] ?? "";
+    expect(generateCommand).not.toContain("--out src/generated/model-catalog-v1.json");
+    expect(generateCommand).toContain("git rev-parse --git-common-dir");
+
+    const tempRoot = mkdtempSync(join(tmpdir(), "frogprogsy-dirty-state-"));
+    try {
+      expect(spawnSync("git", ["init"], { cwd: tempRoot }).status).toBe(0);
+      expect(spawnSync("git", ["config", "user.email", "test@example.invalid"], { cwd: tempRoot }).status).toBe(0);
+      expect(spawnSync("git", ["config", "user.name", "Test"], { cwd: tempRoot }).status).toBe(0);
+      writeFileSync(join(tempRoot, "package.json"), JSON.stringify({
+        scripts: {
+          "generate:model-catalog": `bun ${join(repositoryRoot, "scripts", "generate-model-catalog.ts")}`,
+          "generate:model-catalog:git": generateCommand,
+        },
+      }), "utf8");
+      writeFileSync(join(tempRoot, "tracked.txt"), "clean\n", "utf8");
+      expect(spawnSync("git", ["add", "package.json", "tracked.txt"], { cwd: tempRoot }).status).toBe(0);
+      expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: tempRoot }).status).toBe(0);
+
+      expect(trackedSourceDirty(tempRoot)).toBe(false);
+      const generated = spawnSync("bun", ["run", "generate:model-catalog:git"], { cwd: tempRoot });
+      expect(generated.status).toBe(0);
+      expect(trackedSourceDirty(tempRoot)).toBe(false);
+
+      const catalogOutsideWorktree = join(tempRoot, ".git", "frogprogsy-prepublish-model-catalog-v1.json");
+      expect(readFileSync(catalogOutsideWorktree, "utf8")).toContain(`"sourceCommit":`);
+      writeFileSync(join(tempRoot, "tracked.txt"), "dirty\n", "utf8");
+      expect(trackedSourceDirty(tempRoot)).toBe(true);
+      const dirtyGenerated = spawnSync("bun", ["run", "generate:model-catalog:git"], { cwd: tempRoot });
+      expect(dirtyGenerated.status).toBe(0);
+      expect(trackedSourceDirty(tempRoot)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   test("build generates an exact tracked-SHA catalog before GUI build and validates it after packing", async () => {

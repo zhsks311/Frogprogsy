@@ -70,6 +70,10 @@ function commandResult(command: string, args: string[], cwd = REPO_ROOT): string
   return result.stdout.trim();
 }
 
+export function trackedSourceDirty(cwd = REPO_ROOT): boolean {
+  return commandResult("git", ["status", "--porcelain", "--untracked-files=no"], cwd).length > 0;
+}
+
 function run(command: string, args: string[], cwd = REPO_ROOT): void {
   console.log(`$ ${command} ${args.join(" ")}`);
   const result = spawnSync(command, args, {
@@ -285,7 +289,7 @@ async function buildPackage(skipGates: boolean): Promise<DevBuildManifest> {
   const sourceCommit = commandResult("git", ["rev-parse", "HEAD"]);
   const generatedAt = commandResult("git", ["show", "-s", "--format=%cI", sourceCommit]);
   const branch = commandResult("git", ["branch", "--show-current"]) || "detached";
-  const dirty = commandResult("git", ["status", "--porcelain", "--untracked-files=no"]).length > 0;
+  const dirty = trackedSourceDirty();
   const staging = join(root, "staging", `${process.pid}-${randomUUID()}`);
   const generatedCatalog = join(staging, "model-catalog-v1.json");
   const stagedTarball = join(staging, `${PACKAGE_NAME}-${version}.tgz`);

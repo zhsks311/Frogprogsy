@@ -67,7 +67,7 @@ jobs:
           bun run generate:model-catalog -- \
             --source-commit "$SOURCE_COMMIT" \
             --generated-at "$GENERATED_AT" \
-            --out src/generated/model-catalog-v1.json
+            --out "$RUNNER_TEMP/model-catalog-v1.json"
 
       - name: GUI build
         run: bun run build:gui
