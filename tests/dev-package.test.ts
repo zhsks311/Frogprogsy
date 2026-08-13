@@ -171,8 +171,10 @@ describe("Bun-only development package contract", () => {
       expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: tempRoot }).status).toBe(0);
 
       expect(trackedSourceDirty(tempRoot)).toBe(false);
-      const generated = spawnSync("bun", ["run", "generate:model-catalog:git"], { cwd: tempRoot });
-      expect(generated.status).toBe(0);
+      const generated = spawnSync("bun", ["run", "generate:model-catalog:git"], { cwd: tempRoot, encoding: "utf8" });
+      if (generated.status !== 0) {
+        throw new Error(`catalog generation failed:\n${generated.stderr || generated.stdout}`);
+      }
       expect(trackedSourceDirty(tempRoot)).toBe(false);
 
       const catalogOutsideWorktree = join(tempRoot, ".git", "frogprogsy-prepublish-model-catalog-v1.json");
