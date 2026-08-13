@@ -1,4 +1,5 @@
-import { chmodSync, writeFileSync } from "node:fs";
+import { closeSync, chmodSync, linkSync, openSync, readFileSync, fsyncSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { SelectedModelCatalog } from "./model-catalog-runtime";
 import type { ModelCatalogDocumentV1, ModelCatalogProviderV1 } from "./model-catalog-schema";
@@ -22,12 +23,35 @@ export interface CatalogConfigMigrationDeps {
 
 export function writeCatalogConfigBackupOnce(configPath: string, bytes: string): void {
   const backupPath = join(dirname(configPath), "config.pre-model-catalog-v1.json");
+  const tempPath = `${backupPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(backupPath, bytes, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    chmodSync(backupPath, 0o600);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
-    throw error;
+    writeFileSync(tempPath, bytes, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    chmodSync(tempPath, 0o600);
+    const descriptor = openSync(tempPath, "r");
+    try {
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+    try {
+      linkSync(tempPath, backupPath);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+
+    if (readFileSync(backupPath, "utf8") !== bytes) {
+      throw new Error(`Existing model catalog config backup at ${backupPath} does not match config.json bytes.`);
+    }
+    if ((statSync(backupPath).mode & 0o777) !== 0o600) {
+      throw new Error(`Existing model catalog config backup at ${backupPath} must have mode 0600.`);
+    }
+  } finally {
+    try {
+      unlinkSync(tempPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
 }
 
@@ -68,6 +92,31 @@ const LEGACY_RETIRED_MODELS_BY_PROVIDER: Record<string, readonly string[]> = {
   ],
   deepseek: ["deepseek-chat", "deepseek-reasoner"],
 };
+
+const USER_OWNED_PROVIDER_FIELDS = [
+  "apiKey",
+  "apiKeys",
+  "defaultModel",
+  "userModels",
+  "liveModels",
+  "contextWindow",
+  "modelContextWindows",
+  "modelCapabilities",
+  "headers",
+  "authMode",
+  "claudeGrantId",
+  "reasoningEfforts",
+  "modelReasoningEfforts",
+  "reasoningEffortMap",
+  "modelReasoningEffortMap",
+  "noReasoningModels",
+  "noTemperatureModels",
+  "noTopPModels",
+  "noPenaltyModels",
+  "autoToolChoiceOnlyModels",
+  "preserveReasoningContentModels",
+  "escapeBuiltinToolNames",
+] as const satisfies readonly (keyof FrogProviderConfig)[];
 
 function normalizedBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
@@ -203,6 +252,7 @@ export function migratePersistedCatalogConfig(
     const managedModels = new Set([
       ...catalogProvider.models.map(model => model.id),
       ...(catalogProvider.retiredModels ?? []),
+      ...(registryEntry.models ?? []),
       ...(LEGACY_RETIRED_MODELS_BY_PROVIDER[registryEntry.id] ?? []),
     ]);
     const legacyModels = Array.isArray(provider.models) ? provider.models : [];
@@ -249,6 +299,30 @@ export function buildEffectiveConfig(persisted: FrogConfig, selected: SelectedMo
     return [name, catalogProvider ? mergeManagedProvider(provider, catalogProvider) : provider];
   }));
   return effective;
+}
+
+export function sanitizeCatalogProviderForPersistence(
+  catalogProviderId: string,
+  submitted: FrogProviderConfig,
+  current?: FrogProviderConfig,
+): FrogProviderConfig {
+  const seed = registryUserSeed(catalogProviderId);
+  const combined = current ? { ...current, ...submitted } : submitted;
+  if (combined.liveModels === false) {
+    return structuredClone({
+      ...combined,
+      adapter: seed.adapter,
+      baseUrl: seed.baseUrl,
+      catalogProviderId,
+    });
+  }
+
+  const sanitized = { ...seed };
+  for (const field of USER_OWNED_PROVIDER_FIELDS) {
+    const value = submitted[field] !== undefined ? submitted[field] : current?.[field];
+    if (value !== undefined) sanitized[field] = structuredClone(value) as never;
+  }
+  return sanitized;
 }
 
 export function providerUserSeedFromRegistry(catalogProviderId: string): FrogProviderConfig {

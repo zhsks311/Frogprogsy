@@ -53,6 +53,7 @@ describe("provider REST persistence boundary", () => {
         authMode: "key",
         defaultModel: "user-selected",
         userModels: ["private-preview"],
+        liveModels: true,
         models: ["gpt-5.5", "private-preview"],
         contextWindow: 999_999,
         modelCapabilities: { "gpt-5.5": { input: ["text"] } },
@@ -70,6 +71,10 @@ describe("provider REST persistence boundary", () => {
       catalogProviderId: "openai-apikey",
       defaultModel: "user-selected",
       userModels: ["private-preview"],
+      liveModels: true,
+      contextWindow: 999_999,
+      modelCapabilities: { "gpt-5.5": { input: ["text"] } },
+      noTemperatureModels: ["gpt-5.5"],
       ...credentials,
     });
   });
@@ -98,6 +103,57 @@ describe("provider REST persistence boundary", () => {
     const { catalogProviderId, ...stored } = saved[0].providers["fixed-umans"];
     expect(catalogProviderId).toBe("umans");
     expect(JSON.stringify(stored)).toBe(beforeBytes);
+  });
+
+  test("catalog provider round-trip preserves omitted user settings and credentials", async () => {
+    const config = baseConfig();
+    config.disabledModels = ["work-openai/user-disabled"];
+    config.providers["work-openai"] = {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      authMode: "key",
+      catalogProviderId: "openai-apikey",
+      apiKey: "primary-secret",
+      apiKeys: ["secondary-secret"],
+      headers: { "x-user-auth": "credential-value" },
+      defaultModel: "private-default",
+      userModels: ["private-default"],
+      liveModels: true,
+      contextWindow: 777_777,
+      modelContextWindows: { "private-default": 555_555 },
+      modelCapabilities: { "private-default": { input: ["text", "image"] } },
+      reasoningEfforts: ["high"],
+      modelReasoningEfforts: { "private-default": ["xhigh"] },
+      reasoningEffortMap: { xhigh: "max" },
+      modelReasoningEffortMap: { "private-default": { xhigh: "max" } },
+      noReasoningModels: ["no-reasoning"],
+      noTemperatureModels: ["no-temperature"],
+      noTopPModels: ["no-top-p"],
+      noPenaltyModels: ["no-penalty"],
+      autoToolChoiceOnlyModels: ["auto-only"],
+      preserveReasoningContentModels: ["private-default"],
+      escapeBuiltinToolNames: true,
+    };
+    const before = structuredClone(config.providers["work-openai"]);
+
+    const { response, saved } = await addProvider(config, {
+      name: "work-openai",
+      catalogId: "openai-apikey",
+      provider: {
+        adapter: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+        modelCapabilities: { "private-default": { input: ["text"] } },
+        noTemperatureModels: [],
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(saved[0].disabledModels).toEqual(["work-openai/user-disabled"]);
+    expect(saved[0].providers["work-openai"]).toEqual({
+      ...before,
+      modelCapabilities: { "private-default": { input: ["text"] } },
+      noTemperatureModels: [],
+    });
   });
 
   test("a renamed provider without catalogId remains custom", async () => {

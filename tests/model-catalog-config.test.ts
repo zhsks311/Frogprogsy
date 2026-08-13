@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -42,6 +42,14 @@ function bundledCatalog(): ModelCatalogDocumentV1 {
       },
       {
         id: "ollama",
+        models: [],
+      },
+      {
+        id: "moonshot",
+        models: [],
+      },
+      {
+        id: "neuralwatt",
         models: [],
       },
     ],
@@ -167,6 +175,30 @@ describe("persisted model catalog config migration", () => {
     expect(JSON.stringify(persistedFields)).toBe(beforeProviderBytes);
   });
 
+  test("does not reclassify current or retired registry models as user additions", () => {
+    const legacy: FrogConfig = {
+      port: 3764,
+      defaultProvider: "moonshot",
+      providers: {
+        moonshot: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.moonshot.ai/v1",
+          models: ["kimi-k2-0905-preview", "moonshot-private"],
+        },
+        neuralwatt: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.neuralwatt.com/v1",
+          models: ["kimi-k2.5-fast", "glm-5.2-fast", "qwen3.5-397b-fast", "neural-private"],
+        },
+      },
+    };
+
+    const migrated = migratePersistedCatalogConfig(legacy, bundledCatalog(), { writeBackup: () => {} });
+
+    expect(migrated.config.providers.moonshot.userModels).toEqual(["moonshot-private"]);
+    expect(migrated.config.providers.neuralwatt.userModels).toEqual(["neural-private"]);
+  });
+
   test("leaves the input and version marker untouched when backup fails", () => {
     const legacy = legacyConfig();
     const before = JSON.stringify(legacy);
@@ -200,11 +232,48 @@ describe("persisted model catalog config migration", () => {
     try {
       const configPath = join(home, "config.json");
       writeCatalogConfigBackupOnce(configPath, "{\"apiKey\":\"original\"}\n");
-      writeCatalogConfigBackupOnce(configPath, "{\"apiKey\":\"replacement\"}\n");
+      writeCatalogConfigBackupOnce(configPath, "{\"apiKey\":\"original\"}\n");
 
       const backupPath = join(home, "config.pre-model-catalog-v1.json");
       expect(readFileSync(backupPath, "utf8")).toBe("{\"apiKey\":\"original\"}\n");
       expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects an incomplete pre-existing backup on the next startup without mutating config", () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-catalog-partial-backup-"));
+    try {
+      const configPath = join(home, "config.json");
+      const backupPath = join(home, "config.pre-model-catalog-v1.json");
+      const legacy = legacyConfig();
+      writeFileSync(backupPath, "{\"partial\":", { mode: 0o600 });
+
+      const migrated = migratePersistedCatalogConfig(legacy, bundledCatalog(), {
+        writeBackup: bytes => writeCatalogConfigBackupOnce(configPath, bytes),
+      });
+
+      expect(migrated.changed).toBe(false);
+      expect(migrated.config).toBe(legacy);
+      expect(migrated.config.modelCatalogConfigVersion).toBeUndefined();
+      expect(migrated.warnings.join("\n")).toContain("does not match");
+      expect(readFileSync(backupPath, "utf8")).toBe("{\"partial\":");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects an existing matching backup unless its mode is 0600", () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-catalog-backup-mode-"));
+    try {
+      const configPath = join(home, "config.json");
+      const backupPath = join(home, "config.pre-model-catalog-v1.json");
+      const bytes = `${JSON.stringify(legacyConfig(), null, 2)}\n`;
+      writeFileSync(backupPath, bytes, { mode: 0o600 });
+      chmodSync(backupPath, 0o644);
+
+      expect(() => writeCatalogConfigBackupOnce(configPath, bytes)).toThrow("mode");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

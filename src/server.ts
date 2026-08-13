@@ -41,8 +41,7 @@ import { decideImageFallback, describeImagesInPlace } from "./image-fallback";
 import { removeCredential } from "./oauth/store";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
-import { providerUserSeedFromRegistry } from "./providers/registry";
-import { migratePersistedCatalogConfig, writeCatalogConfigBackupOnce } from "./model-catalog-config";
+import { migratePersistedCatalogConfig, sanitizeCatalogProviderForPersistence, writeCatalogConfigBackupOnce } from "./model-catalog-config";
 import type { ModelCatalogDocumentV1 } from "./model-catalog-schema";
 import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
@@ -3816,25 +3815,14 @@ async function handleManagementAPI(req: Request, url: URL, config: FrogConfig, d
       : prov.catalogProviderId?.trim() ?? "";
     let persistedProvider = prov;
     if (requestedCatalogId) {
-      let seed: FrogProviderConfig;
       try {
-        seed = providerUserSeedFromRegistry(requestedCatalogId);
+        persistedProvider = sanitizeCatalogProviderForPersistence(
+          requestedCatalogId,
+          prov,
+          config.providers[name],
+        );
       } catch {
         return jsonResponse({ error: `unknown catalog provider: ${requestedCatalogId}` }, 400);
-      }
-      if (prov.liveModels === false) {
-        persistedProvider = { ...prov, catalogProviderId: requestedCatalogId };
-      } else {
-        persistedProvider = {
-          ...seed,
-          ...(prov.authMode !== undefined ? { authMode: prov.authMode } : {}),
-          ...(prov.defaultModel !== undefined ? { defaultModel: prov.defaultModel } : {}),
-          ...(prov.userModels !== undefined ? { userModels: [...prov.userModels] } : {}),
-          ...(prov.apiKey !== undefined ? { apiKey: prov.apiKey } : {}),
-          ...(prov.apiKeys !== undefined ? { apiKeys: [...prov.apiKeys] } : {}),
-          ...(prov.headers !== undefined ? { headers: { ...prov.headers } } : {}),
-          ...(prov.claudeGrantId !== undefined ? { claudeGrantId: prov.claudeGrantId } : {}),
-        };
       }
     }
     // Hard-validate claude-grant bindings before persisting: unknown/missing id or a non-Anthropic
