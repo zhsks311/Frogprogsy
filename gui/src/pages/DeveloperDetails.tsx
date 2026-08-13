@@ -11,7 +11,7 @@ interface FallbackProviderOption { name: string; models: string[]; defaultModel?
 interface FallbackData { providers: FallbackProviderOption[]; webSearchProviders?: FallbackProviderOption[]; imageProviders?: FallbackProviderOption[]; webSearch: { enabled: boolean; provider: string; model: string; reasoning: string }; image: { enabled: boolean; provider: string; model: string } }
 interface ClassifierProviderOption { name: string; models: string[] }
 interface ClassifierTarget { provider: string; model: string }
-interface ClassifierData { providers: ClassifierProviderOption[]; autoModeClassifier: ClassifierTarget }
+interface ClassifierData { providers: ClassifierProviderOption[]; autoModeClassifierEnabled: boolean; autoModeClassifier: ClassifierTarget }
 type GitProtectionState = "tracked" | "ignored" | "excluded" | "untracked" | "not_git" | "unwritable" | "unknown";
 
 interface ClaudeProjectDiagnostics {
@@ -104,6 +104,7 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
   const [imageModelDraft, setImageModelDraft] = useState("");
   const [classifierProviderDraft, setClassifierProviderDraft] = useState("");
   const [classifierModelDraft, setClassifierModelDraft] = useState("");
+  const [classifierEnabledDraft, setClassifierEnabledDraft] = useState(false);
   const [copiedCommand, setCopiedCommand] = useState("");
   const recoveryRef = useRef<HTMLElement | null>(null);
   const debuggingRef = useRef<HTMLElement | null>(null);
@@ -183,9 +184,10 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
   }, [fallback?.webSearch.model, fallback?.image.model]);
   useEffect(() => {
     if (!classifier) return;
+    setClassifierEnabledDraft(classifier.autoModeClassifierEnabled);
     setClassifierProviderDraft(classifier.autoModeClassifier.provider);
     setClassifierModelDraft(classifier.autoModeClassifier.model);
-  }, [classifier?.autoModeClassifier.provider, classifier?.autoModeClassifier.model]);
+  }, [classifier?.autoModeClassifierEnabled, classifier?.autoModeClassifier.provider, classifier?.autoModeClassifier.model]);
   const webSearchFallbackProviders = fallback?.webSearchProviders ?? fallback?.providers ?? [];
   const imageFallbackProviders = fallback?.imageProviders ?? fallback?.providers ?? [];
 
@@ -230,21 +232,28 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
     }
   };
 
-  const saveClassifier = async (target: ClassifierTarget | null) => {
+  const saveClassifier = async (enabled: boolean, target: ClassifierTarget | null) => {
     if (!classifier || classifierSaving) return;
+    const previous = classifier;
     setClassifierSaving(true);
     try {
       const res = await fetch(`${apiBase}/api/classifier-settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ autoModeClassifier: target }),
+        body: JSON.stringify({
+          autoModeClassifierEnabled: enabled,
+          autoModeClassifier: target,
+        }),
       });
       const data = await res.json().catch(() => ({})) as ClassifierData & { error?: string };
       if (!res.ok) throw new Error(data.error || "save failed");
-      setClassifier({ providers: data.providers, autoModeClassifier: data.autoModeClassifier });
+      setClassifier(data);
+      setClassifierEnabledDraft(data.autoModeClassifierEnabled);
       setClassifierError(null);
       setClassifierErrorDetail("");
     } catch (err) {
+      setClassifier(previous);
+      setClassifierEnabledDraft(previous.autoModeClassifierEnabled);
       setClassifierError("save");
       setClassifierErrorDetail(err instanceof Error ? err.message : String(err));
     } finally {
@@ -434,49 +443,64 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
               <div className="muted" style={{ fontSize: 13 }}>{t("dash.classifierTargetHint")}</div>
             </div>
             <div className="fallback-controls">
-              <select
-                className="select-sm"
-                value={classifierProviderDraft}
-                disabled={!classifier || classifierSaving}
-                onChange={event => {
-                  const provider = event.target.value;
-                  const models = classifier?.providers.find(candidate => candidate.name === provider)?.models ?? [];
-                  setClassifierProviderDraft(provider);
-                  setClassifierModelDraft(models.includes(classifierModelDraft) ? classifierModelDraft : (models[0] ?? ""));
-                }}
-                aria-label={t("dash.classifierTargetProvider")}
-              >
-                <option value="">{t("dash.classifierTargetNone")}</option>
-                {(classifier?.providers ?? []).map(provider => <option key={provider.name} value={provider.name}>{provider.name}</option>)}
-              </select>
-              <select
-                className="select-sm"
-                value={classifierModelDraft}
-                disabled={!classifier || classifierSaving || !classifierProviderDraft}
-                onChange={event => setClassifierModelDraft(event.target.value)}
-                aria-label={t("dash.classifierTargetModel")}
-              >
-                <option value="">{t("dash.classifierTargetModelPlaceholder")}</option>
-                {classifierModelOptions.map(model => <option key={model} value={model}>{model}</option>)}
-              </select>
-              <button
-                className="btn btn-primary btn-sm"
-                type="button"
-                disabled={!classifier || classifierSaving || !classifierProviderDraft || !classifierModelDraft}
-                onClick={() => saveClassifier({ provider: classifierProviderDraft, model: classifierModelDraft })}
-              >
-                {t("common.save")}
-              </button>
-              <button
-                className="btn btn-ghost btn-sm"
-                type="button"
-                disabled={!classifier || classifierSaving || !classifier.autoModeClassifier.provider}
-                onClick={() => saveClassifier(null)}
-              >
-                {t("dash.classifierTargetClear")}
-              </button>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={classifierEnabledDraft}
+                  disabled={!classifier || classifierSaving}
+                  onChange={event => {
+                    const enabled = event.target.checked;
+                    setClassifierEnabledDraft(enabled);
+                    if (!enabled && classifier) void saveClassifier(false, classifier.autoModeClassifier);
+                  }}
+                />
+                <span>{t("dash.classifierEnabled")}</span>
+              </label>
             </div>
           </div>
+          {classifierEnabledDraft && (
+            <div className="fallback-row">
+              <div>
+                <div style={{ fontWeight: 650 }}>{t("dash.classifierTargetModelLabel")}</div>
+                <div className="muted" style={{ fontSize: 13 }}>{t("dash.classifierTargetModelHint")}</div>
+              </div>
+              <div className="fallback-controls">
+                <select
+                  className="select-sm"
+                  value={classifierProviderDraft}
+                  disabled={!classifier || classifierSaving}
+                  onChange={event => {
+                    const provider = event.target.value;
+                    const models = classifier?.providers.find(candidate => candidate.name === provider)?.models ?? [];
+                    setClassifierProviderDraft(provider);
+                    setClassifierModelDraft(models.includes(classifierModelDraft) ? classifierModelDraft : (models[0] ?? ""));
+                  }}
+                  aria-label={t("dash.classifierTargetProvider")}
+                >
+                  <option value="">{t("dash.classifierTargetNone")}</option>
+                  {(classifier?.providers ?? []).map(provider => <option key={provider.name} value={provider.name}>{provider.name}</option>)}
+                </select>
+                <select
+                  className="select-sm"
+                  value={classifierModelDraft}
+                  disabled={!classifier || classifierSaving || !classifierProviderDraft}
+                  onChange={event => setClassifierModelDraft(event.target.value)}
+                  aria-label={t("dash.classifierTargetModel")}
+                >
+                  <option value="">{t("dash.classifierTargetModelPlaceholder")}</option>
+                  {classifierModelOptions.map(model => <option key={model} value={model}>{model}</option>)}
+                </select>
+                <button
+                  className="btn btn-primary btn-sm"
+                  type="button"
+                  disabled={!classifier || classifierSaving || !classifierProviderDraft || !classifierModelDraft}
+                  onClick={() => saveClassifier(true, { provider: classifierProviderDraft, model: classifierModelDraft })}
+                >
+                  {t("common.save")}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 

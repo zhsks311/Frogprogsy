@@ -39,6 +39,7 @@ describe("explicit auto-mode classifier routing", () => {
     return {
       port: 10100,
       defaultProvider: "codex",
+      autoModeClassifierEnabled: true,
       autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" },
       providers: {
         codex: {

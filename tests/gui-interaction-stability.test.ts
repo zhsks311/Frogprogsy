@@ -262,14 +262,25 @@ describe("GUI interaction stability", () => {
       expect(messages["claudeProfiles.shortcutRenameHint"].trim()).not.toBe("");
     }
   });
+  test("auto-mode review is a global checkbox and only reveals model controls when checked", () => {
+    const developer = read("gui/src/pages/DeveloperDetails.tsx");
+    const profiles = read("gui/src/pages/ClaudeProfiles.tsx");
 
-  test("Claude profile Sonnet command UI is opt-in, local-only, and clipboard-safe", () => {
+    expect(developer).toContain("classifierEnabledDraft");
+    expect(developer).toContain("autoModeClassifierEnabled: enabled");
+    expect(developer).toContain("{classifierEnabledDraft && (");
+    expect(profiles).not.toContain("routeAutoModeClassifier");
+    expect(profiles).toContain("autoModeClassifierEnabled");
+  });
+
+
+  test("Claude profile Sonnet command UI follows the global route and stays local and clipboard-safe", () => {
     const profiles = read("gui/src/pages/ClaudeProfiles.tsx");
     const copyStart = profiles.indexOf("const copySonnetCommand");
     const copyEnd = profiles.indexOf("\n  };", copyStart);
     const copyHandler = profiles.slice(copyStart, copyEnd);
-    const sonnetUiStart = profiles.indexOf("{selected.routeAutoModeClassifier === true && (");
-    const sonnetUiEnd = profiles.indexOf("\n            )}", sonnetUiStart);
+    const sonnetUiStart = profiles.indexOf("{autoModeClassifierEnabled && (");
+    const sonnetUiEnd = profiles.indexOf("\n          )}", sonnetUiStart);
     const sonnetUi = profiles.slice(sonnetUiStart, sonnetUiEnd);
     // Region-scoped (not exact-format) so reformatting the effect cannot fail a test that guards
     // behavior: switching Claude homes must drop the previous home's models and Sonnet selection.
@@ -285,13 +296,6 @@ describe("GUI interaction stability", () => {
     expect(switchEffect).toContain('setSelectedSonnet("")');
     expect(switchEffect).toContain('setSonnetCopyState("idle")');
     expect(switchEffect).toContain("loadProfileDetails(selected)");
-    // Turning routing off and on again must not resurrect the previous command's copy result.
-    const toggleEnd = profiles.indexOf("routeAutoModeClassifier: !selected.routeAutoModeClassifier");
-    const toggleStart = profiles.lastIndexOf("onClick={() => {", toggleEnd);
-    const toggleHandler = profiles.slice(toggleStart, toggleEnd);
-    expect(toggleStart).toBeGreaterThan(-1);
-    expect(toggleHandler).toContain('setSelectedSonnet("")');
-    expect(toggleHandler).toContain('setSonnetCopyState("idle")');
     expect(profiles).toContain("const requestId = ++modelRequestId.current");
     expect(profiles).toContain("if (requestId !== modelRequestId.current) return");
     expect(profiles).not.toContain("setSelectedSonnet(sonnetCandidates[0]");

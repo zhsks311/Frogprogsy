@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { buildClaudeCodeEnv, injectClaudeCodeSettings, injectClaudeProjectSettings, mergeClaudeCodeSettings, mergeClaudeProjectSettings, readClaudeGatewayState, readClaudeProjectGatewayState, removeOrphanedFrogProgsySettings, restoreClaudeCodeSettings, restoreClaudeCodeSettingsFromBackup, restoreClaudeProjectSettings } from "../src/claude-settings";
 import { ensureClaudeProjectSettingsExcluded, getClaudeProjectGitProtection } from "../src/claude-projects";
 import { AUTO_MODE_CLASSIFIER_ALIAS } from "../src/classifier-settings";
-import { buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv, resolveClaudeProfileClassifierFlag } from "../src/claude-profiles";
-import type { ClaudeProfileRecord, FrogConfig } from "../src/types";
+import { buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv } from "../src/claude-profiles";
+import type { ClaudeProfileRecord } from "../src/types";
 
 describe("Claude Code settings injection", () => {
   test("builds token-free native OAuth gateway discovery env by default", () => {
@@ -689,37 +689,18 @@ describe("Claude Code settings injection", () => {
     }
   });
 
-  test("run env injects the reserved alias on opt-in; native env strips it while keeping user Sonnet defaults", () => {
-    const optIn = { id: "cp_work", name: "Work", claudeHome: "/tmp/home", routeAutoModeClassifier: true } as ClaudeProfileRecord;
-    const optOut = { id: "cp_home", name: "Home", claudeHome: "/tmp/home2" } as ClaudeProfileRecord;
+  test("run env injects the reserved alias from the global switch; native env strips it while keeping user Sonnet defaults", () => {
+    const profile = { id: "cp_work", name: "Work", claudeHome: "/tmp/home" } as ClaudeProfileRecord;
 
-    expect(buildClaudeProfileRunEnv(optIn, 10100, "token-free", {}).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
-    // opt-out run env strips a stale frog alias from baseEnv but preserves a user's own default
-    expect(buildClaudeProfileRunEnv(optOut, 10100, "token-free", { ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
-    expect(buildClaudeProfileRunEnv(optOut, 10100, "token-free", { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5" }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-4-5");
+    expect(buildClaudeProfileRunEnv(profile, 10100, "token-free", {}, undefined, true).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
+    expect(buildClaudeProfileRunEnv(profile, 10100, "token-free", { ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+    expect(buildClaudeProfileRunEnv(profile, 10100, "token-free", { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5" }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-4-5");
 
-    // native env always strips our reserved alias, never a user's own default
-    expect(buildClaudeProfileNativeEnv(optIn, { ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
-    expect(buildClaudeProfileNativeEnv(optIn, { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5" }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-4-5");
+    // Native launches always strip FrogProgsy's reserved alias, never a user's own default.
+    expect(buildClaudeProfileNativeEnv(profile, { ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+    expect(buildClaudeProfileNativeEnv(profile, { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5" }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-4-5");
   });
 
-  test("resolveClaudeProfileClassifierFlag reads the opt-in only for a known profile", () => {
-    const config = {
-      claudeProfiles: {
-        schemaVersion: 1 as const,
-        defaultProfileId: "cp_work",
-        profiles: [
-          { id: "cp_work", name: "Work", claudeHome: "/tmp/a", routeAutoModeClassifier: true },
-          { id: "cp_home", name: "Home", claudeHome: "/tmp/b" },
-        ],
-      },
-    } as unknown as FrogConfig;
-    expect(resolveClaudeProfileClassifierFlag(config, "cp_work")).toBe(true);
-    expect(resolveClaudeProfileClassifierFlag(config, "cp_home")).toBe(false);
-    expect(resolveClaudeProfileClassifierFlag(config, "cp_unknown")).toBe(false);
-    expect(resolveClaudeProfileClassifierFlag(config, undefined)).toBe(false);
-    expect(resolveClaudeProfileClassifierFlag({} as FrogConfig, "cp_work")).toBe(false);
-  });
 
   test("static guard: the local discovery sentinel token is injected only inside an explicit sentinel branch", () => {
     const source = readFileSync(new URL("../src/claude-settings.ts", import.meta.url), "utf8");

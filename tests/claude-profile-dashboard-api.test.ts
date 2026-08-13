@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { __requestLogTest } from "../src/server";
@@ -848,7 +848,7 @@ describe("Claude Code home management API", () => {
     }, null, 2));
     const cfg = configWithProject(projectRoot);
     cfg.autoModeClassifier = { provider: "test", model: "alpha" };
-    cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")!.routeAutoModeClassifier = true;
+    cfg.autoModeClassifierEnabled = true;
     const defaultHome = mkdtempSync(join(tmpdir(), "frog-project-profile-default-home-"));
     const workHome = mkdtempSync(join(tmpdir(), "frog-project-profile-work-home-"));
     const frogHome = mkdtempSync(join(tmpdir(), "frog-project-profile-frog-home-"));
@@ -877,7 +877,7 @@ describe("Claude Code home management API", () => {
       expect(cfg.claudeProjects?.projects[0]?.routingProfileId).toBeUndefined();
       const settings = JSON.parse(readFileSync(join(projectRoot, ".claude", "settings.local.json"), "utf8"));
       expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toBe("X-Other: keep");
-      expect(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+      expect(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
     } finally {
       if (blockedWrites === undefined) delete process.env.FROGPROGSY_NO_CLAUDE_WRITES;
       else process.env.FROGPROGSY_NO_CLAUDE_WRITES = blockedWrites;
@@ -1452,10 +1452,10 @@ describe("GET /api/claude-grants re-auth command (server-built; non-default FROG
   });
 });
 
-describe("auto-mode classifier routing profile PATCH", () => {
-  test("refuses routeAutoModeClassifier:true when no usable classifier target is configured", async () => {
-    const cfg = config(); // no autoModeClassifier target
-    const res = await __requestLogTest.handleManagementAPI(
+describe("global auto-mode classifier profile API", () => {
+  test("rejects the retired per-profile route field", async () => {
+    const cfg = config();
+    const response = await __requestLogTest.handleManagementAPI(
       new Request("http://localhost/api/claude-profiles/cp_work", {
         method: "PATCH",
         headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
@@ -1465,147 +1465,97 @@ describe("auto-mode classifier routing profile PATCH", () => {
       cfg,
       { saveConfig: () => {} },
     );
-    expect(res?.status).toBe(409);
-    expect(cfg.claudeProfiles!.profiles.find(p => p.id === "cp_work")!.routeAutoModeClassifier).not.toBe(true);
+
+    expect(response?.status).toBe(400);
+    expect(await json(response!)).toMatchObject({
+      error: expect.stringContaining("/api/classifier-settings"),
+    });
   });
 
-  test("enabling then disabling reinjects an applied home's reserved Sonnet alias (no stale alias)", async () => {
+  test("reports one global switch instead of per-profile flags", async () => {
     const cfg = config();
-    cfg.autoModeClassifier = { provider: "test", model: "alpha" };
-    const home = mkdtempSync(join(tmpdir(), "frog-classifier-home-"));
-    const frogHome = mkdtempSync(join(tmpdir(), "frog-classifier-config-"));
-    const profile = cfg.claudeProfiles!.profiles.find(p => p.id === "cp_work")!;
-    profile.claudeHome = home;
-    profile.injected = true;
-    const prevWrites = process.env.FROGPROGSY_NO_CLAUDE_WRITES;
-    const prevHome = process.env.FROGPROGSY_HOME;
-    process.env.FROGPROGSY_HOME = frogHome;
-    delete process.env.FROGPROGSY_NO_CLAUDE_WRITES;
-    try {
-      const on = await __requestLogTest.handleManagementAPI(
-        new Request("http://localhost/api/claude-profiles/cp_work", {
-          method: "PATCH",
-          headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
-          body: JSON.stringify({ routeAutoModeClassifier: true }),
-        }),
-        new URL("http://localhost/api/claude-profiles/cp_work"),
-        cfg,
-        { saveConfig: () => {} },
-      );
-      expect(on?.status).toBe(200);
-      expect(profile.routeAutoModeClassifier).toBe(true);
-      const enabled = JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
-      expect(enabled.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
-
-      const off = await __requestLogTest.handleManagementAPI(
-        new Request("http://localhost/api/claude-profiles/cp_work", {
-          method: "PATCH",
-          headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
-          body: JSON.stringify({ routeAutoModeClassifier: false }),
-        }),
-        new URL("http://localhost/api/claude-profiles/cp_work"),
-        cfg,
-        { saveConfig: () => {} },
-      );
-      expect(off?.status).toBe(200);
-      expect(profile.routeAutoModeClassifier).toBe(false);
-      const disabled = JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
-      expect(disabled.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
-    } finally {
-      if (prevWrites === undefined) delete process.env.FROGPROGSY_NO_CLAUDE_WRITES;
-      else process.env.FROGPROGSY_NO_CLAUDE_WRITES = prevWrites;
-      if (prevHome === undefined) delete process.env.FROGPROGSY_HOME;
-      else process.env.FROGPROGSY_HOME = prevHome;
-      rmSync(home, { recursive: true, force: true });
-      rmSync(frogHome, { recursive: true, force: true });
-    }
-  });
-
-  test("enabling routeAutoModeClassifier reapplies enrolled projects that reference the home", async () => {
-    const projectRoot = mkdtempSync(join(tmpdir(), "frog-classifier-project-"));
-    const home = mkdtempSync(join(tmpdir(), "frog-classifier-project-home-"));
-    const frogHome = mkdtempSync(join(tmpdir(), "frog-classifier-project-config-"));
-    const cfg = configWithProject(projectRoot); // project routes via cp_work, enrolled
-    cfg.autoModeClassifier = { provider: "test", model: "alpha" };
-    const profile = cfg.claudeProfiles!.profiles.find(p => p.id === "cp_work")!;
-    profile.claudeHome = home;
-    profile.injected = true;
-    const prevWrites = process.env.FROGPROGSY_NO_CLAUDE_WRITES;
-    const prevHome = process.env.FROGPROGSY_HOME;
-    process.env.FROGPROGSY_HOME = frogHome;
-    delete process.env.FROGPROGSY_NO_CLAUDE_WRITES;
-    try {
-      const on = await __requestLogTest.handleManagementAPI(
-        new Request("http://localhost/api/claude-profiles/cp_work", {
-          method: "PATCH",
-          headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
-          body: JSON.stringify({ routeAutoModeClassifier: true }),
-        }),
-        new URL("http://localhost/api/claude-profiles/cp_work"),
-        cfg,
-        { saveConfig: () => {} },
-      );
-      expect(on?.status).toBe(200);
-      const projectSettings = JSON.parse(readFileSync(join(projectRoot, ".claude", "settings.local.json"), "utf8"));
-      expect(projectSettings.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
-    } finally {
-      if (prevWrites === undefined) delete process.env.FROGPROGSY_NO_CLAUDE_WRITES;
-      else process.env.FROGPROGSY_NO_CLAUDE_WRITES = prevWrites;
-      if (prevHome === undefined) delete process.env.FROGPROGSY_HOME;
-      else process.env.FROGPROGSY_HOME = prevHome;
-      rmSync(projectRoot, { recursive: true, force: true });
-      rmSync(home, { recursive: true, force: true });
-      rmSync(frogHome, { recursive: true, force: true });
-    }
-  });
-
-  test.skipIf(process.platform === "win32")("reports rollback failures when a project update and its rollback both fail", async () => {
-    const validProject = mkdtempSync(join(tmpdir(), "frog-classifier-rollback-valid-"));
-    const badProject = mkdtempSync(join(tmpdir(), "frog-classifier-rollback-bad-"));
-    chmodSync(badProject, 0o500);
-    const frogHome = mkdtempSync(join(tmpdir(), "frog-classifier-rollback-config-"));
-    const workHome = mkdtempSync(join(tmpdir(), "frog-classifier-rollback-home-"));
-    const cfg = config();
-    cfg.autoModeClassifier = { provider: "test", model: "alpha" };
-    cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")!.claudeHome = workHome;
-    cfg.claudeProjects = {
-      schemaVersion: 1,
-      projects: [
-        { id: "cproj_valid", name: "valid", projectPath: validProject, routingProfileId: "cp_work", enrolled: true },
-        { id: "cproj_bad", name: "bad", projectPath: badProject, routingProfileId: "cp_work", enrolled: true },
-      ],
-    };
-    const previousWrites = process.env.FROGPROGSY_NO_CLAUDE_WRITES;
-    const previousHome = process.env.FROGPROGSY_HOME;
-    process.env.FROGPROGSY_HOME = frogHome;
-    delete process.env.FROGPROGSY_NO_CLAUDE_WRITES;
+    const homes = cfg.claudeProfiles!.profiles.map(profile => {
+      const home = mkdtempSync(join(tmpdir(), "frog-profile-global-"));
+      profile.claudeHome = home;
+      return home;
+    });
+    cfg.autoModeClassifierEnabled = true;
     try {
       const response = await __requestLogTest.handleManagementAPI(
-        new Request("http://localhost/api/claude-profiles/cp_work", {
-          method: "PATCH",
-          headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
-          body: JSON.stringify({ routeAutoModeClassifier: true }),
-        }),
-        new URL("http://localhost/api/claude-profiles/cp_work"),
+        new Request("http://localhost/api/claude-profiles"),
+        new URL("http://localhost/api/claude-profiles"),
         cfg,
         { saveConfig: () => {} },
       );
-      expect(response?.status).toBe(500);
+
+      expect(response?.status).toBe(200);
       const body = await json(response!);
-      expect(body.error).toContain("rollback incomplete");
-      expect(body.rollbackErrors).toEqual([expect.stringContaining("cproj_bad")]);
-      expect(cfg.claudeProfiles!.profiles.find(profile => profile.id === "cp_work")!.routeAutoModeClassifier)
-        .toBe(false);
+      expect(body.autoModeClassifierEnabled).toBe(true);
+      expect(body.profiles.every((profile: Record<string, unknown>) => !("routeAutoModeClassifier" in profile))).toBe(true);
     } finally {
-      if (previousWrites === undefined) delete process.env.FROGPROGSY_NO_CLAUDE_WRITES;
-      else process.env.FROGPROGSY_NO_CLAUDE_WRITES = previousWrites;
-      if (previousHome === undefined) delete process.env.FROGPROGSY_HOME;
-      else process.env.FROGPROGSY_HOME = previousHome;
-      rmSync(validProject, { recursive: true, force: true });
-      chmodSync(badProject, 0o700);
-      rmSync(badProject, { recursive: true, force: true });
-      rmSync(frogHome, { recursive: true, force: true });
-      rmSync(workHome, { recursive: true, force: true });
+      for (const home of homes) rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("applies the global route when a new managed account is created", async () => {
+    const cfg = config();
+    cfg.autoModeClassifierEnabled = true;
+    cfg.autoModeClassifier = { provider: "test", model: "alpha" };
+    const homeRoot = mkdtempSync(join(tmpdir(), "frog-profile-global-add-"));
+    const frogHome = join(homeRoot, "frog");
+    const previousFrogHome = process.env.FROGPROGSY_HOME;
+    delete process.env.FROGPROGSY_NO_CLAUDE_WRITES;
+    process.env.FROGPROGSY_HOME = frogHome;
+    try {
+      const response = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles", {
+          method: "POST",
+          headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
+          body: JSON.stringify({ name: "review" }),
+        }),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        {
+          homeDir: homeRoot,
+          saveConfig: () => {},
+          syncClaudeLaunchers: () => ({ success: true }),
+        },
+      );
+
+      expect(response?.status).toBe(201);
+      const settings = JSON.parse(readFileSync(join(homeRoot, ".claude-review", "settings.json"), "utf8"));
+      expect(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
+    } finally {
+      process.env.FROGPROGSY_NO_CLAUDE_WRITES = "1";
+      if (previousFrogHome === undefined) delete process.env.FROGPROGSY_HOME;
+      else process.env.FROGPROGSY_HOME = previousFrogHome;
+      rmSync(homeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("does not create a managed account when global routing writes are blocked", async () => {
+    const cfg = config();
+    cfg.autoModeClassifierEnabled = true;
+    cfg.autoModeClassifier = { provider: "test", model: "alpha" };
+    const homeRoot = mkdtempSync(join(tmpdir(), "frog-profile-global-blocked-"));
+    const profileCount = cfg.claudeProfiles!.profiles.length;
+    try {
+      const response = await __requestLogTest.handleManagementAPI(
+        new Request("http://localhost/api/claude-profiles", {
+          method: "POST",
+          headers: { Origin: "http://localhost:10100", "content-type": "application/json" },
+          body: JSON.stringify({ name: "blocked" }),
+        }),
+        new URL("http://localhost/api/claude-profiles"),
+        cfg,
+        { homeDir: homeRoot, saveConfig: () => {} },
+      );
+
+      expect(response?.status).toBe(409);
+      expect(cfg.claudeProfiles!.profiles).toHaveLength(profileCount);
+      expect(existsSync(join(homeRoot, ".claude-blocked"))).toBe(false);
+    } finally {
+      rmSync(homeRoot, { recursive: true, force: true });
     }
   });
 });

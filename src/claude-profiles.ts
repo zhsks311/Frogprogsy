@@ -190,17 +190,6 @@ export function managedClaudeProfiles(config: FrogConfig): ClaudeProfileRecord[]
   return ensureClaudeProfiles(config).profiles;
 }
 
-/**
- * Non-throwing lookup of a profile's auto-mode classifier opt-in. Returns false for an absent/unknown
- * profileId (e.g. a standalone id not present in config), so callers never inject the reserved alias
- * for a profile that did not opt in.
- */
-export function resolveClaudeProfileClassifierFlag(config: FrogConfig, profileId: string | undefined): boolean {
-  if (!profileId) return false;
-  const profiles = config.claudeProfiles?.profiles;
-  if (!Array.isArray(profiles)) return false;
-  return profiles.find(profile => profile.id === profileId)?.routeAutoModeClassifier === true;
-}
 
 
 function mergeClaudeCustomHeader(existing: string | undefined, name: string, value: string): string {
@@ -246,6 +235,7 @@ export function buildClaudeProfileRunEnv(
   carrier: GatewayAuthCarrier = "token-free",
   baseEnv: NodeJS.ProcessEnv = process.env,
   localAccessToken?: string,
+  routeAutoModeClassifier = false,
 ): NodeJS.ProcessEnv {
   let customHeaders = mergeClaudeProfileHeader(baseEnv.ANTHROPIC_CUSTOM_HEADERS, profile.id);
   if (localAccessToken?.trim()) {
@@ -265,9 +255,7 @@ export function buildClaudeProfileRunEnv(
   // ANTHROPIC_AUTH_TOKEN is preserved), mirroring buildClaudeProfileNativeEnv's cleanup.
   if (carrier === "sentinel") env.ANTHROPIC_AUTH_TOKEN = LOCAL_CLAUDE_AUTH_TOKEN;
   else if (env.ANTHROPIC_AUTH_TOKEN === LOCAL_CLAUDE_AUTH_TOKEN) delete env.ANTHROPIC_AUTH_TOKEN;
-  // The reserved auto-mode classifier alias is injected only when the profile opts in; otherwise any
-  // stale frogprogsy alias inherited from baseEnv is stripped while a user's own Sonnet default survives.
-  if (profile.routeAutoModeClassifier === true) env.ANTHROPIC_DEFAULT_SONNET_MODEL = AUTO_MODE_CLASSIFIER_ALIAS;
+  if (routeAutoModeClassifier) env.ANTHROPIC_DEFAULT_SONNET_MODEL = AUTO_MODE_CLASSIFIER_ALIAS;
   else if (env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS) delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
   return env;
 }

@@ -48,6 +48,7 @@ function coreConfig(): FrogConfig {
       },
     },
     autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" },
+    autoModeClassifierEnabled: true,
   };
 }
 
@@ -118,6 +119,12 @@ describe("reserved alias → explicit autoModeClassifier target", () => {
 // Group 2 — Missing / incomplete / unknown-provider / disabled target fails CLOSED
 // ─────────────────────────────────────────────────────────────────────────────
 describe("unusable target fails closed (throws, never drifts to a heavy model)", () => {
+  test("configured target remains inactive until the global switch is enabled", () => {
+    const cfg = coreConfig();
+    delete cfg.autoModeClassifierEnabled;
+    expect(() => routeModel(cfg, AUTO_MODE_CLASSIFIER_ALIAS)).toThrow(/not enabled/i);
+  });
+
   test("unset autoModeClassifier → throws", () => {
     const cfg = coreConfig();
     delete cfg.autoModeClassifier;

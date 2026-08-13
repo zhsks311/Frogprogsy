@@ -256,6 +256,9 @@ function defaultProviderRoute(config: FrogConfig, modelId: string, useDefaultMod
 }
 
 function autoModeClassifierRoute(config: FrogConfig): RouteResult {
+  if (config.autoModeClassifierEnabled !== true) {
+    throw new Error(`Reserved auto-mode classifier alias "${AUTO_MODE_CLASSIFIER_ALIAS}" is not usable: auto-mode classifier routing is not enabled.`);
+  }
   const resolved = resolveAutoModeClassifierTarget(config);
   if (!resolved.ok) {
     throw new Error(`Reserved auto-mode classifier alias "${AUTO_MODE_CLASSIFIER_ALIAS}" is not usable: ${resolved.message}`);

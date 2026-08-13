@@ -39,12 +39,13 @@ import { runSearchApi, type SearchApiOutcome } from "./web-search-fallback/searc
 import { runNoKeySearch, type PublicDnsLookup } from "./web-search-fallback/no-key";
 import { decideImageFallback, describeImagesInPlace } from "./image-fallback";
 import { removeCredential } from "./oauth/store";
+import { injectClaudeCodeConfig } from "./claude-inject";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
 import { buildEffectiveConfig, sanitizeCatalogProviderForPersistence } from "./model-catalog-config";
 import { createRuntimeConfigState, type RuntimeConfigState } from "./runtime-config-state";
 import type { CatalogRuntimeStatus, SelectedModelCatalog } from "./model-catalog-runtime";
-import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
+import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, ClaudeProjectRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
@@ -59,6 +60,7 @@ import {
   injectClaudeProjectSettings,
   readClaudeGatewayState,
   readClaudeProjectGatewayState,
+  restoreClaudeCodeSettings,
   restoreClaudeProjectSettings,
 } from "./claude-settings";
 import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, setCached } from "./model-cache";
@@ -72,7 +74,6 @@ import {
   removeClaudeProfile,
   renameClaudeProfile,
   resolveClaudeProfile,
-  resolveClaudeProfileClassifierFlag,
   updateClaudeProfileAuthState,
 } from "./claude-profiles";
 import {
@@ -3086,7 +3087,7 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
         projectPath: project.projectPath,
         routingProfileId: project.routingProfileId,
         gatewayAuthCarrier: config.gatewayAuthCarrier,
-        routeAutoModeClassifier: resolveClaudeProfileClassifierFlag(config, project.routingProfileId),
+        routeAutoModeClassifier: config.autoModeClassifierEnabled === true,
       });
       if (!result.success) return jsonResponse({ success: false, error: result.message }, 409);
       markClaudeProjectEnrolled(config, project.id, true);
@@ -3141,7 +3142,10 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       const path = join(claudeLauncherBinDir(), claudeLauncherFileName(launcher.name));
       return { ...profile, injected: gateway.injected, gateway, shortcut: { command: launcher.name, installed: isManagedClaudeProfileLauncher(path, profile.id), native: false } };
     });
-    return jsonResponse({ profiles });
+    return jsonResponse({
+      profiles,
+      autoModeClassifierEnabled: config.autoModeClassifierEnabled === true,
+    });
   }
 
   if (url.pathname === "/api/claude-profiles" && req.method === "POST") {
@@ -3155,6 +3159,15 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       : typeof body.home === "string" && body.home.trim()
         ? body.home.trim()
         : undefined;
+    if (
+      config.autoModeClassifierEnabled === true
+      && claudeWritesBlocked("Claude Code home auto-mode classifier apply")
+    ) {
+      return jsonResponse({
+        code: "claude_writes_blocked",
+        error: "Claude Code writes are blocked; the account was not created.",
+      }, 409);
+    }
     let claudeHome: string;
     if (explicitHome) {
       claudeHome = expandHomePath(explicitHome);
@@ -3181,9 +3194,49 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     let profile: ClaudeProfileRecord;
     try {
       profile = addClaudeProfile(config, { name, claudeHome });
-      state.persist();
     } catch (error) {
       return jsonResponse({ code: "registration_failed", error: error instanceof Error ? error.message : String(error) }, 409);
+    }
+
+    let classifierSettingsUpdated = false;
+    if (config.autoModeClassifierEnabled === true) {
+      const result = await injectClaudeCodeConfig(config.port ?? DEFAULT_PORT, config, {
+        claudeHome: profile.claudeHome,
+        profileId: profile.id,
+      });
+      if (!result.success) {
+        removeClaudeProfile(config, profile.id);
+        const rollback = result.mayHaveMutated
+          ? restoreClaudeCodeSettings({
+            claudeHome: profile.claudeHome,
+            profileId: profile.id,
+          })
+          : { success: true, message: "" };
+        return jsonResponse({
+          code: "classifier_apply_failed",
+          error: "The account was not saved because the global auto-mode review route could not be applied.",
+          details: result.message,
+          ...(!rollback.success ? { rollbackError: rollback.message } : {}),
+        }, rollback.success ? 409 : 500);
+      }
+      classifierSettingsUpdated = true;
+    }
+
+    try {
+      state.persist();
+    } catch (error) {
+      removeClaudeProfile(config, profile.id);
+      const rollback = classifierSettingsUpdated
+        ? restoreClaudeCodeSettings({
+          claudeHome: profile.claudeHome,
+          profileId: profile.id,
+        })
+        : { success: true, message: "" };
+      return jsonResponse({
+        code: "registration_failed",
+        error: error instanceof Error ? error.message : String(error),
+        ...(!rollback.success ? { rollbackError: rollback.message } : {}),
+      }, rollback.success ? 409 : 500);
     }
     const launcher = plannedClaudeLaunchers(config).launchers.find(entry => entry.profileId === profile.id);
     if (!launcher) {
@@ -3253,9 +3306,9 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       if (typeof parsedBody !== "object" || parsedBody === null || Array.isArray(parsedBody)) {
         return jsonResponse({ error: "profile patch must be an object" }, 400);
       }
-      const body = parsedBody as { name?: unknown; routeAutoModeClassifier?: unknown };
-      if ("routeAutoModeClassifier" in body && typeof body.routeAutoModeClassifier !== "boolean") {
-        return jsonResponse({ error: "routeAutoModeClassifier must be a boolean" }, 400);
+      const body = parsedBody as { name?: unknown };
+      if ("routeAutoModeClassifier" in parsedBody) {
+        return jsonResponse({ error: "routeAutoModeClassifier is global; use /api/classifier-settings" }, 400);
       }
       const renamed = typeof body.name === "string";
       if (renamed && config.claudeProfiles?.defaultProfileId !== profile.id) {
@@ -3274,69 +3327,6 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
             code: "shortcut_conflict",
             error: "The account was not renamed because its shortcut name belongs to another account. Choose a distinct account name.",
           }, 409);
-        }
-      }
-      if (typeof body.routeAutoModeClassifier === "boolean") {
-        const previousFlag = profile.routeAutoModeClassifier === true;
-        const nextFlag = body.routeAutoModeClassifier;
-        if (nextFlag !== previousFlag) {
-          if (nextFlag) {
-            const view = await effectiveModelView(state.effective, {
-              profileId: profile.id,
-              headers: req.headers,
-              includeConfiguredForwardModels: true,
-            });
-            const effectiveModels = view.models.map(({ provider, id }) => ({ provider, id }));
-            const issue = classifierTargetIssue(state.effective, effectiveModels);
-            if (issue) return jsonResponse({ error: `cannot enable auto-mode classifier routing: ${issue.message}`, reason: issue.reason }, 409);
-          }
-
-          const appliedHome = profile.injected === true || profileGatewayApplied(config, profile);
-          const affectedProjects = findClaudeProjectsForRoutingProfile(config, profile.id).filter(project => project.enrolled === true);
-          if ((appliedHome || affectedProjects.length > 0) && claudeWritesBlocked("Claude Code auto-mode classifier update")) {
-            return jsonResponse({ error: "Claude Code writes are blocked; routing settings were not changed" }, 409);
-          }
-
-          profile.routeAutoModeClassifier = nextFlag;
-          if (appliedHome || affectedProjects.length > 0) {
-            const classifierPort = config.port ?? DEFAULT_PORT;
-            const { injectClaudeCodeConfig } = await import("./claude-inject");
-            const reinjectHome = () => injectClaudeCodeConfig(classifierPort, config, { claudeHome: profile.claudeHome, profileId: profile.id });
-            const reinjectProjects = (flag: boolean) => affectedProjects.map(project => injectClaudeProjectSettings(classifierPort, {
-              projectPath: project.projectPath,
-              routingProfileId: project.routingProfileId,
-              gatewayAuthCarrier: config.gatewayAuthCarrier,
-              routeAutoModeClassifier: flag,
-            }));
-
-            const homeResult = appliedHome ? await reinjectHome() : { success: true, message: "" };
-            const projectResults = homeResult.success ? reinjectProjects(nextFlag) : [];
-            const failedProject = projectResults.find(result => !result.success);
-            if (!homeResult.success || failedProject) {
-              profile.routeAutoModeClassifier = previousFlag;
-              const rollbackErrors: string[] = [];
-              if (appliedHome) {
-                try {
-                  const rollbackHome = await reinjectHome();
-                  if (!rollbackHome.success) rollbackErrors.push(`home: ${rollbackHome.message}`);
-                } catch (err) {
-                  rollbackErrors.push(`home: ${err instanceof Error ? err.message : String(err)}`);
-                }
-              }
-              for (const [index, result] of reinjectProjects(previousFlag).entries()) {
-                if (!result.success) {
-                  rollbackErrors.push(`project ${affectedProjects[index]?.id ?? index}: ${result.message}`);
-                }
-              }
-              const failure = !homeResult.success
-                ? `auto-mode classifier update failed for ${profile.claudeHome}: ${homeResult.message}`
-                : `auto-mode classifier update failed for an enrolled project of home ${profile.id}: ${failedProject!.message}`;
-              const message = rollbackErrors.length > 0
-                ? `${failure}; rollback incomplete: ${rollbackErrors.join("; ")}`
-                : failure;
-              return jsonResponse({ success: false, error: message, rollbackErrors }, 500);
-            }
-          }
         }
       }
       if (renamed) profile = renameClaudeProfile(config, profile.id, body.name as string);
@@ -3770,14 +3760,25 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     let body: unknown;
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
-      return jsonResponse({ error: "body must be { autoModeClassifier: { provider, model } | null }" }, 400);
+      return jsonResponse({ error: "body must contain autoModeClassifierEnabled and autoModeClassifier" }, 400);
     }
     const bodyKeys = Object.keys(body);
-    if (bodyKeys.length !== 1 || bodyKeys[0] !== "autoModeClassifier") {
-      return jsonResponse({ error: "body must contain only autoModeClassifier" }, 400);
+    if (
+      bodyKeys.length !== 2
+      || !bodyKeys.includes("autoModeClassifierEnabled")
+      || !bodyKeys.includes("autoModeClassifier")
+    ) {
+      return jsonResponse({ error: "body must contain only autoModeClassifierEnabled and autoModeClassifier" }, 400);
     }
 
-    const target = (body as { autoModeClassifier: unknown }).autoModeClassifier;
+    if (!("autoModeClassifierEnabled" in body) || typeof body.autoModeClassifierEnabled !== "boolean") {
+      return jsonResponse({ error: "autoModeClassifierEnabled must be a boolean" }, 400);
+    }
+    if (!("autoModeClassifier" in body)) {
+      return jsonResponse({ error: "autoModeClassifier is required" }, 400);
+    }
+    const enabled = body.autoModeClassifierEnabled;
+    const target = body.autoModeClassifier;
     const profileId = url.searchParams.get("profileId") ?? undefined;
     const view = await effectiveModelView(state.effective, {
       profileId,
@@ -3786,35 +3787,179 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     });
     const effectiveModels = view.models.map(({ provider, id }) => ({ provider, id }));
 
+    let clearTarget = false;
+    let nextTarget: { provider: string; model: string };
     if (target === null) {
-      const dependent = (config.claudeProfiles?.profiles ?? []).filter(entry => entry.routeAutoModeClassifier === true);
-      if (dependent.length > 0) {
-        return jsonResponse({ error: `cannot clear the auto-mode classifier target while ${dependent.length} Claude Code home(s) route to it; disable routeAutoModeClassifier first`, profiles: dependent.map(entry => entry.id) }, 409);
+      if (enabled) {
+        return jsonResponse({ error: "autoModeClassifier is required when autoModeClassifierEnabled is true" }, 400);
       }
-      delete config.autoModeClassifier;
+      if (!config.autoModeClassifier) {
+        return jsonResponse(classifierSettingsSnapshot(state.effective, effectiveModels));
+      }
+      clearTarget = true;
+      nextTarget = { ...config.autoModeClassifier };
+    } else {
+      if (typeof target !== "object" || Array.isArray(target)) {
+        return jsonResponse({ error: "autoModeClassifier must be an object { provider, model } or null" }, 400);
+      }
+      const targetKeys = Object.keys(target);
+      if (targetKeys.length !== 2 || !targetKeys.includes("provider") || !targetKeys.includes("model")) {
+        return jsonResponse({ error: "autoModeClassifier must contain only provider and model" }, 400);
+      }
+      const providerInput = "provider" in target ? target.provider : undefined;
+      const modelInput = "model" in target ? target.model : undefined;
+      const provider = typeof providerInput === "string" ? providerInput.trim() : "";
+      const model = typeof modelInput === "string" ? modelInput.trim() : "";
+      nextTarget = { provider, model };
+      const targetUnchanged = config.autoModeClassifier?.provider === provider
+        && config.autoModeClassifier.model === model;
+      if (enabled || !targetUnchanged) {
+        const issue = classifierTargetIssue({
+          ...state.effective,
+          autoModeClassifierEnabled: true,
+          autoModeClassifier: nextTarget,
+        }, effectiveModels);
+        if (issue) {
+          return jsonResponse({ error: issue.message, reason: issue.reason }, 400);
+        }
+      }
+    }
+    const previousEnabled = config.autoModeClassifierEnabled === true;
+    const previousTarget = config.autoModeClassifier
+      ? { ...config.autoModeClassifier }
+      : undefined;
+    const nextConfig: FrogConfig = {
+      ...state.effective,
+      autoModeClassifierEnabled: enabled,
+      autoModeClassifier: nextTarget,
+    };
+    const previousConfig: FrogConfig = {
+      ...state.effective,
+      autoModeClassifierEnabled: previousEnabled,
+    };
+    if (previousTarget) previousConfig.autoModeClassifier = previousTarget;
+    else delete previousConfig.autoModeClassifier;
+
+    const classifierPort = config.port ?? DEFAULT_PORT;
+    const updatedProfiles: Array<{ profile: ClaudeProfileRecord; wasApplied: boolean }> = [];
+    const updatedProjects: Array<{ project: ClaudeProjectRecord; wasApplied: boolean }> = [];
+    const rollbackRoutingChanges = async (): Promise<string[]> => {
+      const rollbackErrors: string[] = [];
+      for (const { project, wasApplied } of [...updatedProjects].reverse()) {
+        const result = wasApplied
+          ? injectClaudeProjectSettings(classifierPort, {
+            projectPath: project.projectPath,
+            routingProfileId: project.routingProfileId,
+            gatewayAuthCarrier: config.gatewayAuthCarrier,
+            routeAutoModeClassifier: previousEnabled,
+          })
+          : restoreClaudeProjectSettings(project.projectPath);
+        if (!result.success) rollbackErrors.push(`[${project.id}] ${result.message}`);
+      }
+      for (const { profile, wasApplied } of [...updatedProfiles].reverse()) {
+        const result = wasApplied
+          ? await injectClaudeCodeConfig(classifierPort, previousConfig, {
+            claudeHome: profile.claudeHome,
+            profileId: profile.id,
+          })
+          : restoreClaudeCodeSettings({
+            claudeHome: profile.claudeHome,
+            profileId: profile.id,
+          });
+        if (!result.success) rollbackErrors.push(`[${profile.id}] ${result.message}`);
+      }
+      return rollbackErrors;
+    };
+
+    if (enabled !== previousEnabled) {
+      const managedProfiles = ensureClaudeProfiles(config).profiles;
+      const enrolledProjects = (config.claudeProjects?.projects ?? [])
+        .filter(project => project.enrolled === true);
+      if (
+        (managedProfiles.length > 0 || enrolledProjects.length > 0)
+        && claudeWritesBlocked("Claude Code auto-mode classifier update")
+      ) {
+        return jsonResponse({ error: "Claude Code writes are blocked; routing settings were not changed" }, 409);
+      }
+      const errors: string[] = [];
+      for (const profile of managedProfiles) {
+        try {
+          const gatewayState = readClaudeGatewayState(classifierPort, {
+            claudeHome: profile.claudeHome,
+            profileId: profile.id,
+          });
+          const wasApplied = gatewayState.applied || gatewayState.autoModeClassifierApplied;
+          if (!enabled && !wasApplied) continue;
+          const result = await injectClaudeCodeConfig(classifierPort, nextConfig, {
+            claudeHome: profile.claudeHome,
+            profileId: profile.id,
+          });
+          if (result.success || result.mayHaveMutated) updatedProfiles.push({ profile, wasApplied });
+          if (!result.success) errors.push(`[${profile.id}] ${result.message}`);
+        } catch (error) {
+          errors.push(`[${profile.id}] ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      for (const project of enrolledProjects) {
+        try {
+          if (!existsSync(project.projectPath)) {
+            errors.push(`[${project.id}] Project path is missing; routing settings were not changed`);
+            continue;
+          }
+          const gatewayState = readClaudeProjectGatewayState(classifierPort, {
+            projectPath: project.projectPath,
+            routingProfileId: project.routingProfileId,
+          });
+          const wasApplied = gatewayState.applied || gatewayState.autoModeClassifierApplied;
+          if (!enabled && !wasApplied) continue;
+          const result = injectClaudeProjectSettings(classifierPort, {
+            projectPath: project.projectPath,
+            routingProfileId: project.routingProfileId,
+            gatewayAuthCarrier: config.gatewayAuthCarrier,
+            routeAutoModeClassifier: enabled,
+          });
+          if (result.success || result.mayHaveMutated) updatedProjects.push({ project, wasApplied });
+          if (!result.success) errors.push(`[${project.id}] ${result.message}`);
+        } catch (error) {
+          errors.push(`[${project.id}] ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (errors.length > 0) {
+        const rollbackErrors = await rollbackRoutingChanges();
+        return jsonResponse({
+          error: rollbackErrors.length > 0
+            ? "auto-mode classifier update failed and rollback was incomplete"
+            : "auto-mode classifier update failed; previous state restored",
+          errors,
+          ...(rollbackErrors.length > 0 ? { rollbackErrors } : {}),
+        }, rollbackErrors.length > 0 ? 500 : 409);
+      }
+    }
+
+    config.autoModeClassifierEnabled = enabled;
+    if (clearTarget) delete config.autoModeClassifier;
+    else config.autoModeClassifier = nextTarget;
+    try {
       state.persist();
-      return jsonResponse(classifierSettingsSnapshot(state.effective, effectiveModels));
+    } catch (error) {
+      config.autoModeClassifierEnabled = previousEnabled;
+      if (previousTarget) config.autoModeClassifier = previousTarget;
+      else delete config.autoModeClassifier;
+      const rollbackErrors = await rollbackRoutingChanges();
+      try {
+        state.persist();
+      } catch (rollbackError) {
+        state.rebuild();
+        rollbackErrors.push(`[config] ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+      }
+      return jsonResponse({
+        error: rollbackErrors.length > 0
+          ? "auto-mode classifier config save failed and rollback was incomplete"
+          : "auto-mode classifier config save failed; previous state restored",
+        errors: [`[config] ${error instanceof Error ? error.message : String(error)}`],
+        ...(rollbackErrors.length > 0 ? { rollbackErrors } : {}),
+      }, 500);
     }
-    if (typeof target !== "object" || target === null || Array.isArray(target)) {
-      return jsonResponse({ error: "autoModeClassifier must be an object { provider, model } or null" }, 400);
-    }
-    const targetKeys = Object.keys(target);
-    if (targetKeys.length !== 2 || !targetKeys.includes("provider") || !targetKeys.includes("model")) {
-      return jsonResponse({ error: "autoModeClassifier must contain only provider and model" }, 400);
-    }
-    const providerInput = (target as { provider?: unknown }).provider;
-    const modelInput = (target as { model?: unknown }).model;
-    const provider = typeof providerInput === "string" ? providerInput.trim() : "";
-    const model = typeof modelInput === "string" ? modelInput.trim() : "";
-    const previousTarget = config.autoModeClassifier;
-    config.autoModeClassifier = { provider, model };
-    const issue = classifierTargetIssue({ ...state.effective, autoModeClassifier: config.autoModeClassifier }, effectiveModels);
-    if (issue) {
-      if (previousTarget === undefined) delete config.autoModeClassifier;
-      else config.autoModeClassifier = previousTarget;
-      return jsonResponse({ error: issue.message, reason: issue.reason }, 400);
-    }
-    state.persist();
     return jsonResponse(classifierSettingsSnapshot(state.effective, effectiveModels));
   }
 
@@ -4049,13 +4194,9 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     const disabled = Array.isArray(body.models) ? body.models.filter((m): m is string => typeof m === "string") : [];
     const classifierWithDisabled = resolveAutoModeClassifierTarget({ ...config, disabledModels: disabled });
     if (!classifierWithDisabled.ok && classifierWithDisabled.reason === "disabled") {
-      const dependentProfiles = (config.claudeProfiles?.profiles ?? [])
-        .filter(profile => profile.routeAutoModeClassifier === true)
-        .map(profile => profile.id);
       return jsonResponse({
-        error: "cannot disable the configured auto-mode classifier target; disable dependent homes and clear the target first",
+        error: "cannot disable the saved auto-mode classifier target; choose or clear the target first",
         reason: classifierWithDisabled.reason,
-        profiles: dependentProfiles,
       }, 409);
     }
     config.disabledModels = disabled;
@@ -4247,28 +4388,31 @@ export async function startServer(
     persistedConfig.subagentModels = [...DEFAULT_SUBAGENT_MODELS];
     persistedChanged = true;
   }
+  for (const profile of persistedConfig.claudeProfiles?.profiles ?? []) {
+    if ("routeAutoModeClassifier" in profile) {
+      delete profile.routeAutoModeClassifier;
+      persistedChanged = true;
+    }
+  }
   if (persistedChanged) state.persist();
   const startupConfig = state.effective;
   deps.onRuntimeConfigReady?.(structuredClone(startupConfig));
-  // Auto-mode classifier: never back-fill or guess. Invalid configured targets and opted-in homes
-  // without a usable target fail before the proxy begins listening. Static provider catalogs are
-  // also validated; live-catalog providers were validated when saved and cannot be refreshed here.
+  // Auto-mode classifier: validate the saved target independently, then enforce it only when the
+  // global switch is on. Disabled configurations may retain their last valid target for later reuse.
   const classifierResolution = resolveAutoModeClassifierTarget(startupConfig);
-  const classifierRoutedHomes = (startupConfig.claudeProfiles?.profiles ?? []).filter(entry => entry.routeAutoModeClassifier === true);
   const classifierUnknownModel = classifierResolution.ok
     && startupConfig.providers[classifierResolution.provider]?.liveModels !== true
     ? validateClassifierModel(startupConfig, classifierResolution.provider, classifierResolution.model)
     : null;
   if (
-    (!classifierResolution.ok && (startupConfig.autoModeClassifier !== undefined || classifierRoutedHomes.length > 0))
-    || classifierUnknownModel
+    startupConfig.autoModeClassifierEnabled === true
+    && (!classifierResolution.ok || classifierUnknownModel)
   ) {
     const detail = classifierResolution.ok
       ? `unknown_model: ${classifierUnknownModel}`
       : `${classifierResolution.reason}: ${classifierResolution.message}`;
     throw new Error(
-      `Invalid autoModeClassifier (${detail}). ` +
-      `Disable routeAutoModeClassifier or fix ${getConfigPath()}.`,
+      `Invalid autoModeClassifier (${detail}). Disable autoModeClassifierEnabled or fix ${getConfigPath()}.`,
     );
   }
   const listenPort = port ?? startupConfig.port ?? DEFAULT_PORT;

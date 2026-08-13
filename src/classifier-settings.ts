@@ -15,6 +15,7 @@ export interface ClassifierProviderOption {
 
 export interface ClassifierSettingsSnapshot {
   providers: ClassifierProviderOption[];
+  autoModeClassifierEnabled: boolean;
   autoModeClassifier: { provider: string; model: string };
 }
 
@@ -148,6 +149,7 @@ export function classifierSettingsSnapshot(
     models: effectiveProviderModels(config, name, effectiveModels),
   }));
   return {
+    autoModeClassifierEnabled: config.autoModeClassifierEnabled === true,
     providers,
     autoModeClassifier: {
       provider: config.autoModeClassifier?.provider ?? "",

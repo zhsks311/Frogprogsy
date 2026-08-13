@@ -3,7 +3,6 @@ import { atomicWriteFile, websocketsEnabled } from "./config";
 import { restoreClaudeCodeCatalog } from "./claude-catalog";
 import { assertSafeClaudeHomeWrite, claudeCatalogPath, claudeConfigTomlPath, claudeLegacyProfilePath, parseTomlString, readRootTomlString, resolveClaudeCodeConfigPath, resolveClaudeCodeHome, tomlString } from "./claude-paths";
 import { claudeSettingsFilePath, injectClaudeCodeSettings, restoreClaudeCodeSettings } from "./claude-settings";
-import { resolveClaudeProfileClassifierFlag } from "./claude-profiles";
 import { invalidateClaudeCodeGatewayModelsCache } from "./claude-refresh";
 import type { FrogConfig } from "./types";
 
@@ -221,9 +220,13 @@ export function chooseCatalogPathForInjection(content: string, requested?: strin
   return existsSync(defaultCatalogPath) ? defaultCatalogPath : null;
 }
 
-export async function injectClaudeCodeConfig(port: number, config?: FrogConfig, options: InjectClaudeCodeOptions = {}): Promise<{ success: boolean; message: string }> {
+export async function injectClaudeCodeConfig(port: number, config?: FrogConfig, options: InjectClaudeCodeOptions = {}): Promise<{
+  success: boolean;
+  message: string;
+  mayHaveMutated?: boolean;
+}> {
   const sentinelCarrier = options.includeAuthToken === true || config?.gatewayAuthCarrier === "sentinel";
-  const routeAutoModeClassifier = config ? resolveClaudeProfileClassifierFlag(config, options.profileId) : false;
+  const routeAutoModeClassifier = config?.autoModeClassifierEnabled === true;
   const injected = injectClaudeCodeSettings(port, {
     claudeHome: options.claudeHome,
     profileId: options.profileId,

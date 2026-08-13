@@ -58,7 +58,7 @@ explicit `provider/model`, provider model lists, or the configured `defaultProvi
 - Routed model slugs use `provider/model`.
 - Claude Code `spawn_agent` visibility depends on the first five featured catalog entries.
 - `frogp stop`, `frogp restore`, and service stop/uninstall must leave native Claude Code usable.
-- Auto-mode review routing is profile opt-in and version-gated: only the exact reserved alias routes to one explicit `autoModeClassifier` target, without model-name guessing or generic provider fallback.
+- Auto-mode review routing is one global, version-gated switch: only the exact reserved alias routes to one explicit `autoModeClassifier` target, without model-name guessing or generic provider fallback.
 - Provider request authentication funnels through `resolveProviderAuth`; `forward` clears stored keys, and `claude-grant` is accepted only for the official Anthropic API endpoint.
 - Isolated grants are opt-in and separate from native Claude homes. Deletion must remove the exact scoped credential before deleting its in-root directory and config record.
 
