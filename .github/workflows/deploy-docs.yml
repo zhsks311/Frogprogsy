@@ -1,13 +1,8 @@
 name: Deploy Docs to GitHub Pages
 
 on:
-  # Rebuild when the docs site or this workflow changes on main.
   push:
     branches: [main]
-    paths:
-      - "docs-site/**"
-      - ".github/workflows/deploy-docs.yml"
-  # Allow manual runs from the Actions tab.
   workflow_dispatch:
 
 # Least-privilege token needed to publish to GitHub Pages.
@@ -16,7 +11,8 @@ permissions:
   pages: write
   id-token: write
 
-# Never run two Pages deploys at once; let an in-flight deploy finish.
+# Serialize Pages deploys. A queued stale SHA fails the current-main guard
+# instead of overwriting a newer catalog.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -27,18 +23,86 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Verify current main and generate catalog
+        env:
+          PAGES_CATALOG_URL: https://zhsks311.github.io/frog-progsy/catalog/v1/model-catalog.json
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main" || {
+            echo "::error::Pages deploy must run from main; got ${GITHUB_REF}"
+            exit 1
+          }
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
+            echo "::error::Refusing stale Pages deploy: HEAD is not current origin/main"
+            exit 1
+          }
+
+          SOURCE_COMMIT="$GITHUB_SHA"
+          GENERATED_AT="$(git show -s --format=%cI "$GITHUB_SHA")"
+          bun run generate:model-catalog -- \
+            --source-commit "$SOURCE_COMMIT" \
+            --generated-at "$GENERATED_AT" \
+            --out src/generated/model-catalog-v1.json
+
+          existing_catalog="$(mktemp)"
+          http_code="$(
+            curl --silent --show-error --location \
+              --output "$existing_catalog" \
+              --write-out '%{http_code}' \
+              "$PAGES_CATALOG_URL"
+          )"
+          case "$http_code" in
+            200)
+              EXISTING_CATALOG="$existing_catalog" CANDIDATE_CATALOG=src/generated/model-catalog-v1.json bun -e '
+                import { catalogDataDigest } from "./src/model-catalog-generator";
+                import { modelCatalogDocumentV1Schema } from "./src/model-catalog-schema";
+                const existing = modelCatalogDocumentV1Schema.parse(await Bun.file(process.env.EXISTING_CATALOG).json());
+                const candidate = modelCatalogDocumentV1Schema.parse(await Bun.file(process.env.CANDIDATE_CATALOG).json());
+                for (const catalog of [existing, candidate]) {
+                  if (catalog.catalogDigest !== catalogDataDigest({ providers: catalog.providers })) {
+                    throw new Error(`Invalid catalog digest for revision ${catalog.catalogRevision}`);
+                  }
+                }
+                if (
+                  existing.catalogDigest !== candidate.catalogDigest
+                  && candidate.catalogRevision <= existing.catalogRevision
+                ) {
+                  throw new Error(
+                    `Catalog data changed without a revision increase (${existing.catalogRevision} -> ${candidate.catalogRevision})`,
+                  );
+                }
+              '
+              ;;
+            404)
+              echo "::notice::No deployed catalog exists yet; publishing the initial revision"
+              ;;
+            *)
+              echo "::error::Unable to read deployed catalog: HTTP ${http_code}"
+              exit 1
+              ;;
+          esac
+          rm -f "$existing_catalog"
+      - name: Install docs dependencies
         working-directory: ./docs-site
         run: bun install --frozen-lockfile
       - name: Build with Fumadocs
         working-directory: ./docs-site
         run: bun run build
+      - name: Add catalog to Pages artifact
+        run: |
+          mkdir -p docs-site/out/catalog/v1
+          cp src/generated/model-catalog-v1.json docs-site/out/catalog/v1/model-catalog.json
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

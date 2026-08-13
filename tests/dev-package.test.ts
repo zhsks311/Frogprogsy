@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   chooseLatestBuild,
   classifyDevInstall,
   isDevBuildManifest,
   recordLatest,
   verifyNoOwnedPlainClaude,
+  verifyPackagedModelCatalog,
   type DevBuildManifest,
   type InstalledDevBuildManifest,
 } from "../scripts/dev-package";
@@ -140,6 +143,63 @@ describe("Bun-only development package contract", () => {
     expect(source).not.toContain("getConfigDir");
     expect(source).not.toMatch(/spawnSync\(["']npm["']/);
     expect(source).not.toMatch(/run\(["']npm["']/);
+  });
+
+  test("build generates an exact tracked-SHA catalog before GUI build and validates it after packing", async () => {
+    const source = await Bun.file(new URL("scripts/dev-package.ts", root)).text();
+    const generator = source.indexOf('"generate:model-catalog"');
+    const gui = source.indexOf('run("bun", ["run", "build:gui"])');
+    const pack = source.indexOf('"pm", "pack"');
+    const tarballValidation = source.indexOf("verifyPackagedModelCatalog(stagedTarball)");
+
+    expect(source).toContain('commandResult("git", ["rev-parse", "HEAD"])');
+    expect(source).toContain('commandResult("git", ["show", "-s", "--format=%cI", sourceCommit])');
+    expect(generator).toBeGreaterThan(-1);
+    expect(gui).toBeGreaterThan(generator);
+    expect(pack).toBeGreaterThan(gui);
+    expect(tarballValidation).toBeGreaterThan(pack);
+  });
+
+  test("packed catalog validation extracts the real tarball member and enforces the strict schema", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "frogprogsy-catalog-tarball-"));
+    const packageRoot = join(tempRoot, "package");
+    const generatedDir = join(packageRoot, "src", "generated");
+    const catalogPath = join(generatedDir, "model-catalog-v1.json");
+    const tarball = join(tempRoot, "frogprogsy.tgz");
+    const repositoryRoot = fileURLToPath(root);
+    const sourceCommit = "a".repeat(40);
+    const generatedAt = "2026-08-13T00:00:00Z";
+
+    mkdirSync(generatedDir, { recursive: true });
+    try {
+      const generated = spawnSync(
+        "bun",
+        [
+          "scripts/generate-model-catalog.ts",
+          "--source-commit",
+          sourceCommit,
+          "--generated-at",
+          generatedAt,
+          "--out",
+          catalogPath,
+        ],
+        { cwd: repositoryRoot, encoding: "utf8" },
+      );
+      expect(generated.status).toBe(0);
+
+      const packed = spawnSync("tar", ["-czf", tarball, "-C", tempRoot, "package"], { encoding: "utf8" });
+      expect(packed.status).toBe(0);
+      expect(verifyPackagedModelCatalog(tarball)).toMatchObject({ sourceCommit, generatedAt });
+
+      const catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as Record<string, unknown>;
+      catalog.unexpected = true;
+      writeFileSync(catalogPath, JSON.stringify(catalog), "utf8");
+      const repacked = spawnSync("tar", ["-czf", tarball, "-C", tempRoot, "package"], { encoding: "utf8" });
+      expect(repacked.status).toBe(0);
+      expect(() => verifyPackagedModelCatalog(tarball)).toThrow();
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   test("install preflights before replacement and retains rollback", async () => {

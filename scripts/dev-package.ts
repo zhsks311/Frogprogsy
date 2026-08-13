@@ -1,10 +1,16 @@
 #!/usr/bin/env bun
+import { catalogDataDigest } from "../src/model-catalog-generator";
+import {
+  modelCatalogDocumentV1Schema,
+  type ModelCatalogDocumentV1,
+} from "../src/model-catalog-schema";
 import { randomUUID } from "node:crypto";
 import {
   cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -13,6 +19,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -179,6 +186,21 @@ async function sha256(path: string): Promise<string> {
   return hasher.digest("hex");
 }
 
+export function verifyPackagedModelCatalog(tarball: string): ModelCatalogDocumentV1 {
+  const extractionRoot = mkdtempSync(join(tmpdir(), "frogprogsy-catalog-"));
+  const catalogMember = "package/src/generated/model-catalog-v1.json";
+  try {
+    run("tar", ["-xzf", tarball, "-C", extractionRoot, catalogMember]);
+    const document = modelCatalogDocumentV1Schema.parse(readJson<unknown>(join(extractionRoot, catalogMember)));
+    if (document.catalogDigest !== catalogDataDigest({ providers: document.providers })) {
+      throw new Error("Packaged model catalog digest does not match its provider data");
+    }
+    return document;
+  } finally {
+    rmSync(extractionRoot, { recursive: true, force: true });
+  }
+}
+
 
 async function acquireLatestLock(root: string): Promise<{ path: string; token: string }> {
   mkdirSync(root, { recursive: true });
@@ -233,7 +255,7 @@ function resolveBuild(root: string, selector?: string): DevBuildManifest {
   return manifest;
 }
 
-function stagePackageTree(staging: string): string {
+function stagePackageTree(staging: string, generatedCatalog: string): string {
   const packageRoot = join(staging, "package-root");
   mkdirSync(packageRoot, { recursive: true });
 
@@ -243,6 +265,7 @@ function stagePackageTree(staging: string): string {
     cpSync(source, join(packageRoot, file));
   }
   cpSync(join(REPO_ROOT, "src"), join(packageRoot, "src"), { recursive: true });
+  cpSync(generatedCatalog, join(packageRoot, "src", "generated", "model-catalog-v1.json"));
 
   const guiDist = join(REPO_ROOT, "gui", "dist");
   if (!existsSync(join(guiDist, "index.html")) || !existsSync(join(guiDist, "build-meta.json"))) {
@@ -257,29 +280,45 @@ function compactTimestamp(date: Date): string {
 }
 
 async function buildPackage(skipGates: boolean): Promise<DevBuildManifest> {
-  if (!skipGates) {
-    run("bun", ["install", "--frozen-lockfile"]);
-    run("bun", ["run", "typecheck"]);
-    run("bun", ["run", "test"]);
-    run("bun", ["run", "build:gui"]);
-  }
-
   const root = gitCommonDir();
   const version = packageVersion();
+  const sourceCommit = commandResult("git", ["rev-parse", "HEAD"]);
+  const generatedAt = commandResult("git", ["show", "-s", "--format=%cI", sourceCommit]);
+  const branch = commandResult("git", ["branch", "--show-current"]) || "detached";
+  const dirty = commandResult("git", ["status", "--porcelain", "--untracked-files=no"]).length > 0;
   const staging = join(root, "staging", `${process.pid}-${randomUUID()}`);
-  mkdirSync(staging, { recursive: true });
-  const packageRoot = stagePackageTree(staging);
+  const generatedCatalog = join(staging, "model-catalog-v1.json");
   const stagedTarball = join(staging, `${PACKAGE_NAME}-${version}.tgz`);
+  mkdirSync(staging, { recursive: true });
 
   try {
+    run("bun", [
+      "run",
+      "generate:model-catalog",
+      "--",
+      "--source-commit",
+      sourceCommit,
+      "--generated-at",
+      generatedAt,
+      "--out",
+      generatedCatalog,
+    ]);
+
+    if (!skipGates) {
+      run("bun", ["install", "--frozen-lockfile"]);
+      run("bun", ["run", "typecheck"]);
+      run("bun", ["run", "test"]);
+      run("bun", ["run", "build:gui"]);
+    }
+
+    const packageRoot = stagePackageTree(staging, generatedCatalog);
     run("bun", ["pm", "pack", "--destination", staging, "--quiet"], packageRoot);
     if (!existsSync(stagedTarball)) throw new Error(`bun pm pack completed without creating ${PACKAGE_NAME}-${version}.tgz`);
+    verifyPackagedModelCatalog(stagedTarball);
 
     const completedAt = new Date().toISOString();
     const digest = await sha256(stagedTarball);
-    const commit = commandResult("git", ["rev-parse", "--short=12", "HEAD"]);
-    const branch = commandResult("git", ["branch", "--show-current"]) || "detached";
-    const dirty = commandResult("git", ["status", "--porcelain", "--untracked-files=no"]).length > 0;
+    const commit = sourceCommit.slice(0, 12);
     const buildId = `${version}-g${commit}-${compactTimestamp(new Date(completedAt))}-${digest.slice(0, 12)}`;
     const finalDir = buildDir(root, buildId);
     mkdirSync(dirname(finalDir), { recursive: true });

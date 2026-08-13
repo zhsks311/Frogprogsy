@@ -128,7 +128,7 @@ jobs:
             exit 1
           }
 
-      - name: Require successful CI and package-lifecycle runs for this commit
+      - name: Require latest successful CI, package, and Pages runs for this commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -139,30 +139,42 @@ jobs:
             exit 1
           fi
 
-          # Fail closed: BOTH Cross-platform CI and Package lifecycle must have a
-          # successful run for THIS exact GITHUB_SHA. A missing workflow run is never
-          # treated as success — an empty result aborts the release.
-          require_success() {
+          # Fail closed on the latest run for this exact SHA. Filtering to successful
+          # runs would let an older green retry hide a newer failed or queued run.
+          require_latest_success() {
             workflow="$1"
-            run_url="$(
+            gate_fields="$(
               gh run list \
                 --workflow "$workflow" \
                 --commit "$GITHUB_SHA" \
-                --status success \
-                --limit 10 \
-                --json conclusion,headSha,url,workflowName \
-                --jq '.[0].url // ""'
+                --limit 20 \
+                --json databaseId,conclusion,headSha,status,url,workflowName \
+                --jq '(sort_by(.databaseId) | reverse | .[0] // empty) | [.headSha, .status, (.conclusion // "none"), .url] | @tsv'
             )"
-            if [ -z "$run_url" ]; then
-              echo "::error::No successful ${workflow} run found for ${GITHUB_SHA}. Wait for it to pass before releasing."
-              gh run list --workflow "$workflow" --commit "$GITHUB_SHA" --limit 10 || true
+            if [ -z "$gate_fields" ]; then
+              echo "::error::No ${workflow} run found for exact release SHA ${GITHUB_SHA}."
               exit 1
             fi
-            echo "${workflow} passed for ${GITHUB_SHA}: ${run_url}"
+
+            IFS=$'\t' read -r gate_sha gate_status gate_conclusion gate_url <<< "$gate_fields"
+            test "$gate_sha" = "$GITHUB_SHA" || {
+              echo "::error::Latest ${workflow} run resolved to ${gate_sha}, not ${GITHUB_SHA}."
+              exit 1
+            }
+            test "$gate_status" = "completed" || {
+              echo "::error::Latest ${workflow} run for ${GITHUB_SHA} is ${gate_status}; refusing release."
+              exit 1
+            }
+            test "$gate_conclusion" = "success" || {
+              echo "::error::Latest ${workflow} run for ${GITHUB_SHA} concluded ${gate_conclusion}; refusing release."
+              exit 1
+            }
+            echo "${workflow} passed for ${GITHUB_SHA}: ${gate_url}"
           }
 
-          require_success ci.yml
-          require_success package-lifecycle.yml
+          require_latest_success ci.yml
+          require_latest_success package-lifecycle.yml
+          require_latest_success deploy-docs.yml
 
       # Normal real publishes are tokenless Trusted Publishing (OIDC): npm auto-detects the
       # OIDC environment (`id-token: write` above) and generates provenance automatically.
@@ -303,6 +315,7 @@ jobs:
         env:
           DRY_RUN: ${{ inputs.dry-run }}
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
+          PAGES_CATALOG_URL: https://zhsks311.github.io/frog-progsy/catalog/v1/model-catalog.json
         run: |
           set -euo pipefail
           bun run prepublishOnly
@@ -310,6 +323,43 @@ jobs:
           TARBALL="$(bun scripts/dev-package.ts path)"
           echo "verified tarball=${TARBALL}"
           echo "TARBALL=${TARBALL}" >> "$GITHUB_ENV"
+
+          catalog_dir="$(mktemp -d)"
+          trap 'rm -rf "$catalog_dir"' EXIT
+          tar -xzf "$TARBALL" -C "$catalog_dir" package/src/generated/model-catalog-v1.json
+          echo "Verify packaged catalog matches deployed Pages catalog"
+          curl --fail-with-body --silent --show-error --location \
+            --output "$catalog_dir/pages-model-catalog-v1.json" \
+            "$PAGES_CATALOG_URL"
+          EXPECTED_SHA="$GITHUB_SHA" \
+            PACKAGE_CATALOG="$catalog_dir/package/src/generated/model-catalog-v1.json" \
+            PAGES_CATALOG="$catalog_dir/pages-model-catalog-v1.json" \
+            bun -e '
+              import { catalogDataDigest } from "./src/model-catalog-generator";
+              import { modelCatalogDocumentV1Schema } from "./src/model-catalog-schema";
+              const expectedSha = process.env.EXPECTED_SHA;
+              const packageCatalog = modelCatalogDocumentV1Schema.parse(await Bun.file(process.env.PACKAGE_CATALOG).json());
+              const pagesCatalog = modelCatalogDocumentV1Schema.parse(await Bun.file(process.env.PAGES_CATALOG).json());
+              for (const catalog of [packageCatalog, pagesCatalog]) {
+                if (catalog.catalogDigest !== catalogDataDigest({ providers: catalog.providers })) {
+                  throw new Error(`Catalog revision ${catalog.catalogRevision} has an invalid digest`);
+                }
+              }
+              if (packageCatalog.sourceCommit !== expectedSha) {
+                throw new Error(`Package catalog source ${packageCatalog.sourceCommit} != release ${expectedSha}`);
+              }
+              if (pagesCatalog.sourceCommit !== expectedSha) {
+                throw new Error(`Pages catalog source ${pagesCatalog.sourceCommit} != release ${expectedSha}`);
+              }
+              if (packageCatalog.catalogRevision !== pagesCatalog.catalogRevision) {
+                throw new Error("Package and Pages catalog revisions differ");
+              }
+              if (packageCatalog.catalogDigest !== pagesCatalog.catalogDigest) {
+                throw new Error("Package and Pages catalog digests differ");
+              }
+            '
+          rm -rf "$catalog_dir"
+          trap - EXIT
 
           if [ "$DRY_RUN" = "true" ]; then
             echo "::notice::DRY RUN — validating the exact Bun-built tarball, not publishing"
