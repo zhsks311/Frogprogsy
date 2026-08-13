@@ -320,9 +320,13 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
       const { system, messages } = messagesToAnthropicFormat(parsed, toolNames);
       const nativeWebSearchEnabled = modelRecordValue(provider.modelCapabilities, parsed.modelId)?.webSearch === true;
       const tools = toolsToAnthropicFormat(parsed, toolNames, nativeWebSearchEnabled);
+      const wireModelId = provider.modelWireIds
+        && Object.prototype.hasOwnProperty.call(provider.modelWireIds, parsed.modelId)
+        ? provider.modelWireIds[parsed.modelId]
+        : undefined;
 
       const body: Record<string, unknown> = {
-        model: provider.modelWireIds?.[parsed.modelId] ?? parsed.modelId,
+        model: wireModelId ?? parsed.modelId,
         messages,
         stream: parsed.stream,
         max_tokens: parsed.options.maxOutputTokens ?? DEFAULT_MAX_TOKENS,

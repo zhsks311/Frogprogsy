@@ -229,6 +229,17 @@ describe("managed wire model IDs", () => {
     expect(outgoing.model).toBe("claude-opus-4-6");
   });
 
+  test("prototype model IDs fall back to the requested logical ID", () => {
+    const provider = {
+      ...keyProvider,
+      modelWireIds: {},
+    } as FrogProviderConfig;
+
+    const { body } = build(provider, { model: "constructor" });
+
+    expect(body.model).toBe("constructor");
+  });
+
   test("wire mapping을 지원하지 않는 adapter는 mapping이 있어도 logical ID를 보낸다", () => {
     const logicalModelId = "claude-opus-4-6[1m]";
     const provider = {
