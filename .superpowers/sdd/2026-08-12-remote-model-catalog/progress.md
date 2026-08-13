@@ -17,5 +17,8 @@ Task 7: fix round 1/5 (2 addressed, 0 open; commits 4d4198e..6518b42)
 Task 7: complete (commits 994aeb0..6518b42, review clean)
 Task 8: fix round 1/5 (2 addressed, 0 open; commits 874ed49..68fe2b7)
 Task 8: complete (commits 6518b42..68fe2b7, review clean)
+Final review: fix wave 1 (5 addressed, 0 open; commits 68fe2b7..81bbb17)
+Final review: fix wave 2 (1 addressed, 0 open; commits 81bbb17..d7f82d3)
+Final review: clean
 Task final: Important fix wave complete (5 addressed, 0 open; commit 81bbb17)
 Task final: fix round 2/5 (1 addressed, 0 open; follow-up commit SHA recorded in completion chat)
