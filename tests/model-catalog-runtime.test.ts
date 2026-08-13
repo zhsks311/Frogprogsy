@@ -355,13 +355,20 @@ describe("model catalog refresh fallback", () => {
 
   test("a decoded body over 2 MiB keeps the valid cache", async () => {
     const cached = makeDocument({ revision: bundled.catalogRevision + 1 });
-    const body = new Uint8Array(2 * 1024 * 1024 + 1).fill(32);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1024 * 1024));
+        controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+        controller.close();
+      },
+    });
     const result = await refreshModelCatalog(runtimeDeps({
       cacheDocument: cached,
       fetchImpl: async () => new Response(body, { headers: { "content-type": "application/json" } }),
     }));
 
     expect(result.status.source).toBe("cached");
+    expect(result.status.warnings).not.toBeEmpty();
   });
 
   test("provider and model count limits keep the valid cache", async () => {

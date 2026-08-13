@@ -356,4 +356,19 @@ describe("model catalog status UX", () => {
     expect(markup).toContain("1건의 문제가 발생");
     expect(markup).not.toContain("1개 항목을 제외");
   });
+
+  test.each([
+    null,
+    { count: -1 },
+    { count: 1.5 },
+    { count: "1" },
+  ])("rejects malformed warning summaries: %p", warnings => {
+    expect(() => parseCatalogStatus({
+      source: "remote",
+      catalogRevision: 45,
+      sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      skippedRecords: 0,
+      warnings,
+    })).toThrow("invalid catalog warnings");
+  });
 });

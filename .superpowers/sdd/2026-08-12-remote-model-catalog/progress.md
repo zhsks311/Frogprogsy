@@ -1,4 +1,4 @@
-# SDD ledger — plan: /Users/d66hjkxwt9/Idea/private/frogprogsy/docs/superpowers/plans/2026-08-12-remote-model-catalog.md
+# SDD ledger — plan: docs/superpowers/plans/2026-08-12-remote-model-catalog.md
 Task 1: fix round 1/5 (1 addressed, 0 open; commits dd071a0..105df92)
 Task 1: complete (commits 2b40ba4..105df92, review clean)
 Task 2: fix round 1/5 (3 addressed, 0 open; commits 94f3ac8..3d0b296)

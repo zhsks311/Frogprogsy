@@ -38,16 +38,19 @@ export function parseCatalogStatus(value: unknown): ModelCatalogStatus {
     throw new Error("invalid skipped record count");
   }
   let warningCount = 0;
-  if (
-    "warnings" in value
-    && value.warnings
-    && typeof value.warnings === "object"
-    && "count" in value.warnings
-    && typeof value.warnings.count === "number"
-    && Number.isInteger(value.warnings.count)
-    && value.warnings.count >= 0
-  ) {
-    warningCount = value.warnings.count;
+  if ("warnings" in value) {
+    const warnings = value.warnings;
+    if (
+      !warnings
+      || typeof warnings !== "object"
+      || !("count" in warnings)
+      || typeof warnings.count !== "number"
+      || !Number.isInteger(warnings.count)
+      || warnings.count < 0
+    ) {
+      throw new Error("invalid catalog warnings");
+    }
+    warningCount = warnings.count;
   }
   return {
     source: value.source,

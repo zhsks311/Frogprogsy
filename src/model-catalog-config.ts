@@ -51,8 +51,8 @@ export function writeCatalogConfigBackupOnce(configPath: string, bytes: string):
   } finally {
     try {
       unlinkSync(tempPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    } catch {
+      // The backup result is authoritative; temporary-file cleanup is best-effort.
     }
   }
 }
