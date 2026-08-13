@@ -128,6 +128,19 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
+function setOwnRecordValue<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
+function ownRecordValue<T>(record: Record<string, T> | undefined, key: string): T | undefined {
+  return record && Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+}
+
 function catalogProviderConfig(provider: ModelCatalogProviderV1): Partial<FrogProviderConfig> {
   const models = provider.models.map(model => model.id);
   const modelContextWindows: Record<string, number> = {};
@@ -143,11 +156,11 @@ function catalogProviderConfig(provider: ModelCatalogProviderV1): Partial<FrogPr
   const preserveReasoningContentModels: string[] = [];
 
   for (const model of provider.models) {
-    if (model.contextWindow !== undefined) modelContextWindows[model.id] = model.contextWindow;
-    if (model.inputModalities !== undefined) modelCapabilities[model.id] = { input: [...model.inputModalities] };
-    if (model.reasoningEfforts !== undefined) modelReasoningEfforts[model.id] = [...model.reasoningEfforts];
-    if (model.reasoningEffortMap !== undefined) modelReasoningEffortMap[model.id] = { ...model.reasoningEffortMap };
-    if (model.wireModelId !== undefined) modelWireIds[model.id] = model.wireModelId;
+    if (model.contextWindow !== undefined) setOwnRecordValue(modelContextWindows, model.id, model.contextWindow);
+    if (model.inputModalities !== undefined) setOwnRecordValue(modelCapabilities, model.id, { input: [...model.inputModalities] });
+    if (model.reasoningEfforts !== undefined) setOwnRecordValue(modelReasoningEfforts, model.id, [...model.reasoningEfforts]);
+    if (model.reasoningEffortMap !== undefined) setOwnRecordValue(modelReasoningEffortMap, model.id, { ...model.reasoningEffortMap });
+    if (model.wireModelId !== undefined) setOwnRecordValue(modelWireIds, model.id, model.wireModelId);
     if (model.noReasoning) noReasoningModels.push(model.id);
     if (model.noTemperature) noTemperatureModels.push(model.id);
     if (model.noTopP) noTopPModels.push(model.id);
@@ -274,8 +287,8 @@ function mergePositiveRecords(
   if (!managed && !userOverride) return undefined;
   const merged: Record<string, number> = {};
   for (const key of new Set([...Object.keys(managed ?? {}), ...Object.keys(userOverride ?? {})])) {
-    const value = minimumPositive(managed?.[key], userOverride?.[key]);
-    if (value !== undefined) merged[key] = value;
+    const value = minimumPositive(ownRecordValue(managed, key), ownRecordValue(userOverride, key));
+    if (value !== undefined) setOwnRecordValue(merged, key, value);
   }
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
@@ -287,14 +300,14 @@ function mergeModelCapabilities(
   if (!managed && !userOverride) return undefined;
   const merged: Record<string, FrogModelCapabilities> = {};
   for (const key of new Set([...Object.keys(managed ?? {}), ...Object.keys(userOverride ?? {})])) {
-    const managedCapabilities = managed?.[key];
-    const userCapabilities = userOverride?.[key];
+    const managedCapabilities = ownRecordValue(managed, key);
+    const userCapabilities = ownRecordValue(userOverride, key);
     const input = intersectValues(managedCapabilities?.input, userCapabilities?.input);
-    merged[key] = {
+    setOwnRecordValue(merged, key, {
       ...managedCapabilities,
       ...userCapabilities,
       ...(input !== undefined ? { input } : {}),
-    };
+    });
   }
   return merged;
 }
@@ -306,8 +319,8 @@ function mergeReasoningEffortRecords(
   if (!managed && !userOverride) return undefined;
   const merged: Record<string, string[]> = {};
   for (const key of new Set([...Object.keys(managed ?? {}), ...Object.keys(userOverride ?? {})])) {
-    const efforts = intersectReasoningEfforts(managed?.[key], userOverride?.[key]);
-    if (efforts !== undefined) merged[key] = efforts;
+    const efforts = intersectReasoningEfforts(ownRecordValue(managed, key), ownRecordValue(userOverride, key));
+    if (efforts !== undefined) setOwnRecordValue(merged, key, efforts);
   }
   return merged;
 }
@@ -323,11 +336,11 @@ function mergeReasoningEffortMapRecords(
   for (const key of new Set([...Object.keys(managed ?? {}), ...Object.keys(userOverride ?? {})])) {
     const effortMap = mergeReasoningEffortMap(
       undefined,
-      managed?.[key],
-      userOverride?.[key],
-      modelEfforts?.[key] ?? providerEfforts,
+      ownRecordValue(managed, key),
+      ownRecordValue(userOverride, key),
+      ownRecordValue(modelEfforts, key) ?? providerEfforts,
     );
-    if (effortMap !== undefined) merged[key] = effortMap;
+    if (effortMap !== undefined) setOwnRecordValue(merged, key, effortMap);
   }
   return Object.keys(merged).length > 0 ? merged : undefined;
 }

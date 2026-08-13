@@ -2906,13 +2906,17 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
 
   await persistProviderConfigIfChanged(restoreCredentialedOAuthProviderConfigs(config));
 
-  const providerSummaries = () => Object.entries(state.effective.providers).map(([name, p]) => ({
-    name,
-    ...redactProviderForApi(p),
-    hasApiKey: effectiveKeyCandidates(p).length > 0,
-    apiKeyCount: effectiveKeyCandidates(p).length,
-    balanceSupported: false,
-  }));
+  const providerSummaries = () => Object.entries(state.effective.providers).map(([name, provider]) => {
+    const persistedUserModels = config.providers[name]?.userModels;
+    return {
+      name,
+      ...redactProviderForApi(provider),
+      ...(persistedUserModels !== undefined ? { userModels: [...persistedUserModels] } : {}),
+      hasApiKey: effectiveKeyCandidates(provider).length > 0,
+      apiKeyCount: effectiveKeyCandidates(provider).length,
+      balanceSupported: false,
+    };
+  });
 
   const isRedactedCredentialPlaceholder = (value: unknown): boolean =>
     typeof value === "string" && (value === "..." || value === "[REDACTED]" || /^.{3}\.\.\..{4}$/.test(value));

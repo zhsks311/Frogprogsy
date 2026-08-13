@@ -314,9 +314,21 @@ describe("provider REST persistence boundary", () => {
       catalogProviderId: "openai-apikey",
       apiKey: "old-secret",
       liveModels: true,
+      userModels: ["gpt-5.5", "private-model"],
     };
     const catalog = selectedOpenAiCatalog();
     const effective = buildEffectiveConfig(config, catalog);
+    const stateResponse = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/provider-state"),
+      new URL("http://localhost/api/provider-state"),
+      config,
+      { effectiveConfig: effective, catalog },
+    );
+    const providerState = await stateResponse!.json() as {
+      providers: Record<string, FrogProviderConfig>;
+    };
+    const providerSnapshot = providerState.providers["work-openai"];
+    expect(providerSnapshot.userModels).toEqual(["gpt-5.5", "private-model"]);
     const saved: FrogConfig[] = [];
 
     const response = await __requestLogTest.handleManagementAPI(
@@ -327,7 +339,7 @@ describe("provider REST persistence boundary", () => {
           name: "work-openai",
           catalogId: "openai-apikey",
           provider: {
-            ...effective.providers["work-openai"],
+            ...providerSnapshot,
             apiKey: "new-secret",
           },
         }),
@@ -352,8 +364,38 @@ describe("provider REST persistence boundary", () => {
       apiKey: "new-secret",
       liveModels: true,
       defaultModel: "gpt-5.5",
+      userModels: ["gpt-5.5", "private-model"],
     });
+    const explicitEffective = buildEffectiveConfig(config, catalog);
+    const explicitResponse = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "work-openai",
+          catalogId: "openai-apikey",
+          provider: {
+            ...providerSnapshot,
+            apiKey: "new-secret",
+            userModels: ["private-model"],
+          },
+        }),
+      }),
+      new URL("http://localhost/api/providers"),
+      config,
+      {
+        effectiveConfig: explicitEffective,
+        catalog,
+        saveConfig: value => { saved.push(structuredClone(value)); },
+        refreshClaudeCodeCatalog: async () => {},
+      },
+    );
+
+    expect(explicitResponse?.status).toBe(200);
+    expect(saved).toHaveLength(2);
+    expect(saved[1].providers["work-openai"].userModels).toEqual(["private-model"]);
   });
+
 
   test("catalog-backed classifier provider validates against the effective model list when saved", async () => {
     const config = baseConfig();
@@ -484,6 +526,14 @@ describe("model catalog management API", () => {
           models: ["legacy-fixed"],
           liveModels: false,
         },
+        forward: {
+          adapter: "anthropic",
+          baseUrl: "https://api.anthropic.com",
+          authMode: "forward",
+          catalogProviderId: "anthropic",
+          models: ["validated-forward", "discovered-forward"],
+          userModels: ["discovered-forward"],
+        },
       },
     };
     const response = await __requestLogTest.handleManagementAPI(
@@ -505,6 +555,8 @@ describe("model catalog management API", () => {
     });
     expect(rows.find(row => row.id === "discovered-model")?.supportStatus).toBe("discovered");
     expect(rows.find(row => row.id === "legacy-fixed")?.supportStatus).toBe("unknown");
+    expect(rows.find(row => row.id === "validated-forward")?.supportStatus).toBe("validated");
+    expect(rows.find(row => row.id === "discovered-forward")?.supportStatus).toBe("discovered");
     expect(rows.every(row => ["remote", "cached", "bundled"].includes(String(row.catalogSource)))).toBe(true);
   });
 

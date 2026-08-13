@@ -485,7 +485,7 @@ function mergeProviderModelMetadata(
 }
 
 export function applyProviderConfigHints(name: string, prov: FrogProviderConfig, model: CatalogModel): CatalogModel {
-  return mergeCatalogModelMetadata(model, undefined, catalogHintsFromProviderConfig(name, prov, model.id));
+  return mergeProviderModelMetadata(name, prov, managedModelIds(prov), model);
 }
 
 function isGlm52ModelId(id: string): boolean {

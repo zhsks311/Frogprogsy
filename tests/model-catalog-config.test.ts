@@ -6,6 +6,7 @@ import {
   buildEffectiveConfig,
   migratePersistedCatalogConfig,
   providerUserSeedFromRegistry,
+  sanitizeCatalogProviderForPersistence,
   writeCatalogConfigBackupOnce,
 } from "../src/model-catalog-config";
 import { createRuntimeConfigState } from "../src/runtime-config-state";
@@ -346,6 +347,76 @@ describe("effective model catalog config", () => {
     expect(persisted.providers.umans.models).toBeUndefined();
     expect(persisted.providers.umans.userModels).toEqual(["user-added", "umans-coder"]);
     expect(persisted.providers.umans.noTemperatureModels).toEqual([]);
+  });
+
+  test("preserves a full persisted user-model snapshot and accepts an explicit replacement", () => {
+    const persisted: FrogConfig = {
+      port: 3764,
+      defaultProvider: "umans",
+      modelCatalogConfigVersion: 1,
+      providers: {
+        umans: {
+          adapter: "anthropic",
+          baseUrl: "https://api.code.umans.ai",
+          catalogProviderId: "umans",
+          userModels: ["user-added", "umans-coder"],
+        },
+      },
+    };
+    const effective = buildEffectiveConfig(persisted, selectedCatalog());
+    const apiSnapshot = {
+      ...effective.providers.umans,
+      userModels: [...persisted.providers.umans.userModels!],
+    };
+
+    const sanitizedSnapshot = sanitizeCatalogProviderForPersistence(
+      "umans",
+      apiSnapshot,
+      persisted.providers.umans,
+      effective.providers.umans,
+    );
+    const sanitizedExplicitEdit = sanitizeCatalogProviderForPersistence(
+      "umans",
+      { ...effective.providers.umans, userModels: ["user-added"] },
+      persisted.providers.umans,
+      effective.providers.umans,
+    );
+
+    expect(sanitizedSnapshot.userModels).toEqual(["user-added", "umans-coder"]);
+    expect(sanitizedExplicitEdit.userModels).toEqual(["user-added"]);
+  });
+
+  test("stores special model IDs as own metadata keys without changing record prototypes", () => {
+    const document = bundledCatalog();
+    document.providers.find(provider => provider.id === "umans")!.models.push({
+      id: "__proto__",
+      contextWindow: 123_456,
+      inputModalities: ["text"],
+      reasoningEfforts: ["low"],
+    });
+    const persisted: FrogConfig = {
+      port: 3764,
+      defaultProvider: "umans",
+      modelCatalogConfigVersion: 1,
+      providers: {
+        umans: {
+          adapter: "anthropic",
+          baseUrl: "https://api.code.umans.ai",
+          catalogProviderId: "umans",
+          modelReasoningEfforts: { unrelated: ["high"] },
+        },
+      },
+    };
+
+    const provider = buildEffectiveConfig(persisted, selectedCatalog(document)).providers.umans;
+
+    expect(Object.getPrototypeOf(provider.modelCapabilities)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(provider.modelCapabilities, "__proto__")).toBe(true);
+    expect(provider.modelCapabilities?.["__proto__"]).toEqual({ input: ["text"] });
+    expect(Object.prototype.hasOwnProperty.call(provider.modelContextWindows, "__proto__")).toBe(true);
+    expect(provider.modelContextWindows?.["__proto__"]).toBe(123_456);
+    expect(Object.prototype.hasOwnProperty.call(provider.modelReasoningEfforts, "__proto__")).toBe(true);
+    expect(provider.modelReasoningEfforts?.["__proto__"]).toEqual(["low"]);
   });
 
   test("retired managed default만 catalog default로 교체하고 사용자 default 경계를 보존한다", () => {
