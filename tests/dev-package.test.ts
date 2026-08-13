@@ -148,6 +148,7 @@ describe("Bun-only development package contract", () => {
 
   test("prepublish catalog generation does not change clean or dirty source classification", async () => {
     const repositoryRoot = fileURLToPath(root);
+    const generatorScript = join(repositoryRoot, "scripts", "generate-model-catalog.ts").replaceAll("\\", "/");
     const pkg = await Bun.file(new URL("package.json", root)).json() as { scripts?: Record<string, string> };
     const generateCommand = pkg.scripts?.["generate:model-catalog:git"] ?? "";
     expect(generateCommand).toBe("bun run generate:model-catalog -- --git-derived");
@@ -162,7 +163,7 @@ describe("Bun-only development package contract", () => {
       expect(spawnSync("git", ["config", "core.hooksPath", ".git/disabled-hooks"], { cwd: tempRoot }).status).toBe(0);
       writeFileSync(join(tempRoot, "package.json"), JSON.stringify({
         scripts: {
-          "generate:model-catalog": `bun ${join(repositoryRoot, "scripts", "generate-model-catalog.ts")}`,
+          "generate:model-catalog": `bun "${generatorScript}"`,
           "generate:model-catalog:git": generateCommand,
         },
       }), "utf8");
