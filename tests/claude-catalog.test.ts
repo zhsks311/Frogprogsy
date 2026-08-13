@@ -212,6 +212,7 @@ describe("Claude Code catalog routed normalization", () => {
             adapter: "openai-chat",
             authMode: "key",
             liveModels: false,
+            userModels: ["user-only"],
             models: ["alpha", "beta"],
           },
         },
@@ -222,6 +223,7 @@ describe("Claude Code catalog routed normalization", () => {
         "static-provider/alpha",
         "static-provider/beta",
       ]);
+      expect(models.map(m => m.id)).not.toContain("user-only");
     } finally {
       globalThis.fetch = originalFetch;
       clearModelCache("static-provider");
@@ -307,6 +309,83 @@ describe("Claude Code catalog routed normalization", () => {
       globalThis.fetch = originalFetch;
       clearModelCache("static-toggle");
     }
+  });
+
+  test("managed fallback retirement is applied when a fresh live cache is reused", async () => {
+    clearModelCache("managed-fresh-retirement");
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({ data: [] }));
+    }) as typeof fetch;
+    const configWith = (models: string[]): FrogConfig => ({
+      port: 3764,
+      defaultProvider: "managed-fresh-retirement",
+      providers: {
+        "managed-fresh-retirement": {
+          adapter: "openai-chat",
+          baseUrl: "https://managed-fresh-retirement.test/v1",
+          apiKey: "sk-test",
+          catalogProviderId: "managed-fresh-retirement",
+          models,
+        },
+      },
+    });
+
+    const before = await gatherRoutedModels(configWith(["active", "retired"]));
+    const after = await gatherRoutedModels(configWith(["active"]));
+
+    expect(before.map(model => model.id)).toEqual(["active", "retired"]);
+    expect(after.map(model => model.id)).toEqual(["active"]);
+    expect(fetchCalls).toBe(1);
+  });
+
+  test("managed fallback retirement is applied when stale live cache handles a fetch failure", async () => {
+    clearModelCache("managed-stale-retirement");
+    let failFetch = false;
+    globalThis.fetch = (async () => failFetch
+      ? new Response("unavailable", { status: 503 })
+      : new Response(JSON.stringify({ data: [] }))) as typeof fetch;
+    const configWith = (models: string[], modelCacheTtlMs?: number): FrogConfig => ({
+      port: 3764,
+      defaultProvider: "managed-stale-retirement",
+      ...(modelCacheTtlMs !== undefined ? { modelCacheTtlMs } : {}),
+      providers: {
+        "managed-stale-retirement": {
+          adapter: "openai-chat",
+          baseUrl: "https://managed-stale-retirement.test/v1",
+          apiKey: "sk-test",
+          catalogProviderId: "managed-stale-retirement",
+          models,
+        },
+      },
+    });
+
+    const before = await gatherRoutedModels(configWith(["active", "retired"]));
+    failFetch = true;
+    const after = await gatherRoutedModels(configWith(["active"], 0));
+
+    expect(before.map(model => model.id)).toEqual(["active", "retired"]);
+    expect(after.map(model => model.id)).toEqual(["active"]);
+  });
+
+  test("empty modality intersections remain explicit in routed catalog entries", () => {
+    const merged = mergeCatalogModelMetadata(
+      {
+        id: "modality-conflict",
+        provider: "managed",
+        inputModalities: ["image"],
+      },
+      {
+        id: "modality-conflict",
+        inputModalities: ["text"],
+      },
+    );
+    const entry = buildCatalogEntries(nativeTemplate(), [], [merged])
+      .find(model => model.slug === "managed/modality-conflict");
+
+    expect(merged.inputModalities).toEqual([]);
+    expect(entry?.input_modalities).toEqual([]);
   });
 
   test("routed entries receive exact jawcode context metadata", () => {

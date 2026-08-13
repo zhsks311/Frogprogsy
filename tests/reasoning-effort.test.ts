@@ -131,6 +131,25 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body.messages[0]?.reasoning_content).toBe("managed reasoning");
   });
 
+  test("empty effective reasoning efforts suppress a managed wire map", () => {
+    const provider = effectiveManagedProvider({
+      adapter: "openai-chat",
+      baseUrl: "https://managed.test/v1",
+      modelReasoningEfforts: { reasoner: [] },
+      modelReasoningEffortMap: { reasoner: { high: "unsafe" } },
+    }, {
+      id: "managed",
+      models: [{
+        id: "reasoner",
+        reasoningEfforts: ["high"],
+        reasoningEffortMap: { high: "max" },
+      }],
+    });
+
+    expect(provider.modelReasoningEfforts?.reasoner).toEqual([]);
+    expect(buildBody(provider, "reasoner", { reasoning: "high" })).not.toHaveProperty("reasoning_effort");
+  });
+
   test("Z.AI GLM-5.2 maps Claude Code xhigh to the upstream max effort", () => {
     const provider: FrogProviderConfig = {
       adapter: "openai-chat",

@@ -287,7 +287,7 @@ function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel): void 
     entry.max_context_window = model.contextWindow;
     entry.auto_compact_token_limit = Math.floor(model.contextWindow * 0.9);
   }
-  if (Array.isArray(model.inputModalities) && model.inputModalities.length > 0) {
+  if (Array.isArray(model.inputModalities)) {
     entry.input_modalities = model.inputModalities;
   }
 }
@@ -488,14 +488,21 @@ export function applyProviderConfigHints(name: string, prov: FrogProviderConfig,
   return mergeCatalogModelMetadata(model, undefined, catalogHintsFromProviderConfig(name, prov, model.id));
 }
 
-function applyConfigHintsToCachedModels(name: string, prov: FrogProviderConfig, models: CatalogModel[]): CatalogModel[] {
-  const managedIds = managedModelIds(prov);
-  return models.map(model => mergeProviderModelMetadata(name, prov, managedIds, model));
-}
-
 function isGlm52ModelId(id: string): boolean {
   const normalized = id.toLowerCase();
   return normalized === "glm-5.2" || normalized === "glm-5.2[1m]";
+}
+
+function mergeLiveAndConfiguredModels(
+  name: string,
+  prov: FrogProviderConfig,
+  managedIds: ReadonlySet<string>,
+  liveModels: CatalogModel[],
+  configuredModels: CatalogModel[],
+): CatalogModel[] {
+  const live = liveModels.map(model => mergeProviderModelMetadata(name, prov, managedIds, model));
+  const liveIds = new Set(live.map(model => model.id));
+  return [...live, ...configuredModels.filter(model => !liveIds.has(model.id))];
 }
 
 function catalogHintsFromModelsApiItem(providerName: string, item: ProviderModelsApiItem): Partial<CatalogModel> {
@@ -572,7 +579,8 @@ async function fetchProviderModels(name: string, prov: FrogProviderConfig, ttlMs
   authReadyByProvider?.set(name, authReady);
   const markReady = (models: CatalogModel[]): CatalogModel[] => models.map(m => ({ ...m, authReady }));
   const managedIds = managedModelIds(prov);
-  const configured: CatalogModel[] = configuredModelIds(prov).map(id => ({
+  const configuredIds = prov.liveModels === false ? prov.models ?? [] : configuredModelIds(prov);
+  const configured: CatalogModel[] = configuredIds.map(id => ({
     id,
     provider: name,
     ...catalogHintsFromProviderConfig(name, prov, id),
@@ -589,30 +597,33 @@ async function fetchProviderModels(name: string, prov: FrogProviderConfig, ttlMs
     return markReady(configured);
   }
   const fresh = getFreshCached(name, ttlMs);
-  if (fresh) return markReady(applyConfigHintsToCachedModels(name, prov, fresh)); // dedups Claude Code's frequent /v1/models polling within the TTL
+  if (fresh) {
+    return markReady(mergeLiveAndConfiguredModels(name, prov, managedIds, fresh, configured));
+  }
   const { url, headers } = buildModelsRequest(prov, apiKey);
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
       const stale = getStaleCached(name);
-      return markReady(stale ? applyConfigHintsToCachedModels(name, prov, stale) : configured);
+      return markReady(stale
+        ? mergeLiveAndConfiguredModels(name, prov, managedIds, stale, configured)
+        : configured);
     }
     const json = await res.json() as { data?: ProviderModelsApiItem[]; models?: ProviderModelsApiItem[] };
-    const live = providerModelItemsFromJson(json).map(m => mergeProviderModelMetadata(name, prov, managedIds, {
+    const live = providerModelItemsFromJson(json).map(m => ({
       id: m.id,
       provider: name,
       owned_by: m.owned_by,
-      supportStatus: "discovered",
+      supportStatus: "discovered" as const,
       ...catalogHintsFromModelsApiItem(name, m),
     }));
-    const liveIds = new Set(live.map(m => m.id));
-    // Merge explicit config additions (e.g. a model not in the provider's /models, like a new endpoint).
-    const merged = [...live, ...configured.filter(m => !liveIds.has(m.id))];
-    setCached(name, merged);
-    return markReady(merged);
+    setCached(name, live);
+    return markReady(mergeLiveAndConfiguredModels(name, prov, managedIds, live, configured));
   } catch {
     const stale = getStaleCached(name);
-    return markReady(stale ? applyConfigHintsToCachedModels(name, prov, stale) : configured);
+    return markReady(stale
+      ? mergeLiveAndConfiguredModels(name, prov, managedIds, stale, configured)
+      : configured);
   }
 }
 

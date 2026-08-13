@@ -119,13 +119,16 @@ export function mapReasoningEffort(provider: FrogProviderConfig, modelId: string
   if (modelInList(provider.noReasoningModels, modelId)) return undefined;
 
   const wireMap = reasoningEffortMapFor(provider, modelId);
-  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, requested)) return wireMap[requested];
-
   const supported = configuredReasoningEfforts(provider, modelId);
-
-  const claudeEffort = supported !== undefined ? clampToSupportedClaudeCodeEffort(requested, supported) : requestToClaudeCodeEffort(requested);
+  if (supported === undefined) {
+    if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, requested)) return wireMap[requested];
+    const claudeEffort = requestToClaudeCodeEffort(requested);
+    if (!claudeEffort) return undefined;
+    if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, claudeEffort)) return wireMap[claudeEffort];
+    return claudeEffort;
+  }
+  const claudeEffort = clampToSupportedClaudeCodeEffort(requested, supported);
   if (!claudeEffort) return undefined;
-
   if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, claudeEffort)) return wireMap[claudeEffort];
   return claudeEffort;
 }
