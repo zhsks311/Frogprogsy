@@ -73,6 +73,7 @@ const MANAGED_METADATA_FIELDS = [
   "preserveReasoningContentModels",
   "escapeBuiltinToolNames",
 ] as const satisfies readonly (keyof FrogProviderConfig)[];
+const MANAGED_METADATA_FIELD_SET = new Set<keyof FrogProviderConfig>(MANAGED_METADATA_FIELDS);
 
 const USER_OWNED_PROVIDER_FIELDS = [
   "apiKey",
@@ -443,9 +444,11 @@ export function sanitizeCatalogProviderForPersistence(
   catalogProviderId: string,
   submitted: FrogProviderConfig,
   current?: FrogProviderConfig,
+  effectiveCurrent?: FrogProviderConfig,
 ): FrogProviderConfig {
   const seed = registryUserSeed(catalogProviderId);
   const sameCatalogCurrent = current?.catalogProviderId === catalogProviderId ? current : undefined;
+  const sameCatalogEffective = effectiveCurrent?.catalogProviderId === catalogProviderId ? effectiveCurrent : undefined;
   const combined = sameCatalogCurrent ? { ...sameCatalogCurrent, ...submitted } : submitted;
   if (combined.liveModels === false) {
     return structuredClone({
@@ -458,7 +461,16 @@ export function sanitizeCatalogProviderForPersistence(
 
   const sanitized = { ...seed };
   for (const field of USER_OWNED_PROVIDER_FIELDS) {
-    const value = submitted[field] !== undefined ? submitted[field] : sameCatalogCurrent?.[field];
+    const submittedValue = submitted[field];
+    const isUnchangedManagedSnapshot = MANAGED_METADATA_FIELD_SET.has(field)
+      && submittedValue !== undefined
+      && sameCatalogEffective !== undefined
+      && equalJson(submittedValue, sameCatalogEffective[field]);
+    const value = isUnchangedManagedSnapshot
+      ? sameCatalogCurrent?.[field]
+      : submittedValue !== undefined
+        ? submittedValue
+        : sameCatalogCurrent?.[field];
     if (value !== undefined) sanitized[field] = structuredClone(value) as never;
   }
   return sanitized;

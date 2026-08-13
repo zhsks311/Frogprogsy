@@ -158,6 +158,9 @@ describe("Bun-only development package contract", () => {
       expect(spawnSync("git", ["init"], { cwd: tempRoot }).status).toBe(0);
       expect(spawnSync("git", ["config", "user.email", "test@example.invalid"], { cwd: tempRoot }).status).toBe(0);
       expect(spawnSync("git", ["config", "user.name", "Test"], { cwd: tempRoot }).status).toBe(0);
+      expect(spawnSync("git", ["config", "commit.gpgSign", "false"], { cwd: tempRoot }).status).toBe(0);
+      mkdirSync(join(tempRoot, ".git", "disabled-hooks"));
+      expect(spawnSync("git", ["config", "core.hooksPath", ".git/disabled-hooks"], { cwd: tempRoot }).status).toBe(0);
       writeFileSync(join(tempRoot, "package.json"), JSON.stringify({
         scripts: {
           "generate:model-catalog": `bun ${join(repositoryRoot, "scripts", "generate-model-catalog.ts")}`,
@@ -188,12 +191,17 @@ describe("Bun-only development package contract", () => {
   test("build generates an exact tracked-SHA catalog before GUI build and validates it after packing", async () => {
     const source = await Bun.file(new URL("scripts/dev-package.ts", root)).text();
     const generator = source.indexOf('"generate:model-catalog"');
+    const install = source.indexOf('run("bun", ["install", "--frozen-lockfile"])');
     const gui = source.indexOf('run("bun", ["run", "build:gui"])');
     const pack = source.indexOf('"pm", "pack"');
     const tarballValidation = source.indexOf("verifyPackagedModelCatalog(stagedTarball)");
 
     expect(source).toContain('commandResult("git", ["rev-parse", "HEAD"])');
     expect(source).toContain('commandResult("git", ["show", "-s", "--format=%cI", sourceCommit])');
+    expect(install).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(generator);
+    expect(source).not.toContain('import { catalogDataDigest } from "../src/model-catalog-generator"');
+    expect(source).not.toContain("  modelCatalogDocumentV1Schema,");
     expect(generator).toBeGreaterThan(-1);
     expect(gui).toBeGreaterThan(generator);
     expect(pack).toBeGreaterThan(gui);

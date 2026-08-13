@@ -1,10 +1,7 @@
 #!/usr/bin/env bun
-import { catalogDataDigest } from "../src/model-catalog-generator";
-import {
-  modelCatalogDocumentV1Schema,
-  type ModelCatalogDocumentV1,
-} from "../src/model-catalog-schema";
+import type { ModelCatalogDocumentV1 } from "../src/model-catalog-schema";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import {
   cpSync,
   existsSync,
@@ -23,6 +20,14 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+
+type CatalogDataDigest = (catalog: Pick<ModelCatalogDocumentV1, "providers">) => string;
+interface ModelCatalogSchema {
+  parse(value: unknown): ModelCatalogDocumentV1;
+}
+
+// Static imports cannot be used here: a normal build repairs dependencies before loading Zod.
+const requireFromScript = createRequire(import.meta.url);
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_NAME = "frogprogsy";
@@ -191,6 +196,12 @@ async function sha256(path: string): Promise<string> {
 }
 
 export function verifyPackagedModelCatalog(tarball: string): ModelCatalogDocumentV1 {
+  const { catalogDataDigest } = requireFromScript("../src/model-catalog-generator") as {
+    catalogDataDigest: CatalogDataDigest;
+  };
+  const { modelCatalogDocumentV1Schema } = requireFromScript("../src/model-catalog-schema") as {
+    modelCatalogDocumentV1Schema: ModelCatalogSchema;
+  };
   const extractionRoot = mkdtempSync(join(tmpdir(), "frogprogsy-catalog-"));
   const catalogMember = "package/src/generated/model-catalog-v1.json";
   try {
@@ -296,6 +307,9 @@ async function buildPackage(skipGates: boolean): Promise<DevBuildManifest> {
   mkdirSync(staging, { recursive: true });
 
   try {
+    if (!skipGates) {
+      run("bun", ["install", "--frozen-lockfile"]);
+    }
     run("bun", [
       "run",
       "generate:model-catalog",
@@ -309,7 +323,6 @@ async function buildPackage(skipGates: boolean): Promise<DevBuildManifest> {
     ]);
 
     if (!skipGates) {
-      run("bun", ["install", "--frozen-lockfile"]);
       run("bun", ["run", "typecheck"]);
       run("bun", ["run", "test"]);
       run("bun", ["run", "build:gui"]);

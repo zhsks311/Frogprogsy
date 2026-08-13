@@ -41,7 +41,7 @@ import { decideImageFallback, describeImagesInPlace } from "./image-fallback";
 import { removeCredential } from "./oauth/store";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
-import { sanitizeCatalogProviderForPersistence } from "./model-catalog-config";
+import { buildEffectiveConfig, sanitizeCatalogProviderForPersistence } from "./model-catalog-config";
 import { createRuntimeConfigState, type RuntimeConfigState } from "./runtime-config-state";
 import type { CatalogRuntimeStatus, SelectedModelCatalog } from "./model-catalog-runtime";
 import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
@@ -2073,10 +2073,15 @@ function managementTestState(
       },
     },
     rebuild() {
-      state.effective = structuredClone(state.persisted);
+      state.effective = selectedCatalog
+        ? buildEffectiveConfig(state.persisted, selectedCatalog)
+        : structuredClone(state.persisted);
+    },
+    save() {
+      save(state.persisted);
     },
     persist() {
-      save(state.persisted);
+      state.save();
       state.rebuild();
     },
   };
@@ -3930,6 +3935,7 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
           requestedCatalogId,
           prov,
           config.providers[name],
+          state.effective.providers[name],
         );
       } catch {
         return jsonResponse({ error: `unknown catalog provider: ${requestedCatalogId}` }, 400);
@@ -4332,7 +4338,7 @@ export async function startServer(
         }
         noteClaudeProfileRequest(persistedConfig, profileId, req.headers);
         const view = await effectiveModelView(config, { profileId, headers: req.headers });
-        if (profileId) state.persist();
+        if (profileId) state.save();
         const { buildCatalogEntries, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents } = await import("./claude-catalog");
         const nativeSlugs = nativeOpenAiSlugs().filter(slug => !isNativeSlugHidden(config, slug));
         // Picker/export readiness filter: hide any provider whose configured credential is not ready
@@ -4366,7 +4372,7 @@ export async function startServer(
         noteClaudeProfileRequest(persistedConfig, profileId, req.headers);
         const response = await runLoggedDataPlane(req, url.pathname, logCtx => handleCountTokens(req, config, logCtx, { abortSignal: req.signal, profileId }));
         if (profileId && response.status === 401) noteClaudeProfileRequest(persistedConfig, profileId, req.headers, "oauth_rejected");
-        if (profileId) state.persist();
+        if (profileId) state.save();
         return response;
       }
 
@@ -4383,7 +4389,7 @@ export async function startServer(
         noteClaudeProfileRequest(persistedConfig, profileId, req.headers);
         const response = await runLoggedDataPlane(req, url.pathname, logCtx => handleMessages(req, config, logCtx, { abortSignal: req.signal, profileId }));
         if (profileId && response.status === 401) noteClaudeProfileRequest(persistedConfig, profileId, req.headers, "oauth_rejected");
-        if (profileId) state.persist();
+        if (profileId) state.save();
         return response;
       }
       if (url.pathname === "/v1/responses" && req.method === "POST") {

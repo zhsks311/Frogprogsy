@@ -161,4 +161,21 @@ describe("server startup runtime config", () => {
     expect(state.effective.providers.gateway.models).toEqual(["catalog-model", "private-model"]);
     expect(refreshCalls).toBe(1);
   });
+
+  test("save writes profile observations without rebuilding the effective catalog", async () => {
+    const saved: FrogConfig[] = [];
+    const state = await createRuntimeConfigState({
+      loadConfig: persistedConfig,
+      configExists: () => false,
+      saveConfig: value => { saved.push(structuredClone(value)); },
+      refreshCatalog: async () => selected(catalog(["catalog-model"])),
+    });
+
+    state.persisted.providers.gateway.userModels = ["private-model"];
+    state.save();
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0].providers.gateway.userModels).toEqual(["private-model"]);
+    expect(state.effective.providers.gateway.models).toEqual(["catalog-model"]);
+  });
 });

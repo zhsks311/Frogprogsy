@@ -14,6 +14,7 @@ export interface RuntimeConfigState {
   effective: FrogConfig;
   readonly catalog: SelectedModelCatalog;
   rebuild(): void;
+  save(): void;
   persist(): void;
 }
 
@@ -35,7 +36,7 @@ class DefaultRuntimeConfigState implements RuntimeConfigState {
   constructor(
     public persisted: FrogConfig,
     public readonly catalog: SelectedModelCatalog,
-    private readonly save: (config: FrogConfig) => void,
+    private readonly writePersisted: (config: FrogConfig) => void,
   ) {
     this.effective = buildEffectiveConfig(persisted, catalog);
   }
@@ -44,8 +45,12 @@ class DefaultRuntimeConfigState implements RuntimeConfigState {
     this.effective = buildEffectiveConfig(this.persisted, this.catalog);
   }
 
+  save(): void {
+    this.writePersisted(this.persisted);
+  }
+
   persist(): void {
-    this.save(this.persisted);
+    this.save();
     this.rebuild();
   }
 }

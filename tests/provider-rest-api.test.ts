@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { buildEffectiveConfig } from "../src/model-catalog-config";
+import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
 import { __requestLogTest } from "../src/server";
 import type { FrogConfig, FrogProviderConfig } from "../src/types";
 
@@ -33,6 +35,40 @@ async function addProvider(
   );
   if (!response) throw new Error("provider management route was not handled");
   return { response, saved };
+}
+
+function selectedOpenAiCatalog(): SelectedModelCatalog {
+  return {
+    document: {
+      schemaVersion: 1,
+      catalogRevision: 42,
+      catalogDigest: "a".repeat(64),
+      sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      generatedAt: "2026-08-12T10:00:00.000Z",
+      minFrogprogsyVersion: "0.0.0",
+      providers: [{
+        id: "openai-apikey",
+        defaultModel: "gpt-5.5",
+        models: [{
+          id: "gpt-5.5",
+          contextWindow: 272_000,
+          inputModalities: ["text"],
+          reasoningEfforts: ["low", "high"],
+          noTemperature: true,
+        }],
+      }],
+    },
+    status: {
+      source: "remote",
+      catalogRevision: 42,
+      catalogDigest: "a".repeat(64),
+      sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      generatedAt: "2026-08-12T10:00:00.000Z",
+      refreshedAt: "2026-08-12T10:30:00.000Z",
+      skippedRecords: 0,
+      warnings: [],
+    },
+  };
 }
 
 describe("provider REST persistence boundary", () => {
@@ -208,6 +244,100 @@ describe("provider REST persistence boundary", () => {
     expect(saved[0].providers["renamed-umans"].catalogProviderId).toBeUndefined();
   });
 });
+
+  test("an effective catalog snapshot is not persisted during a credential round-trip", async () => {
+    const config = baseConfig();
+    config.providers["work-openai"] = {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      authMode: "key",
+      catalogProviderId: "openai-apikey",
+      apiKey: "old-secret",
+      liveModels: true,
+    };
+    const catalog = selectedOpenAiCatalog();
+    const effective = buildEffectiveConfig(config, catalog);
+    const saved: FrogConfig[] = [];
+
+    const response = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "work-openai",
+          catalogId: "openai-apikey",
+          provider: {
+            ...effective.providers["work-openai"],
+            apiKey: "new-secret",
+          },
+        }),
+      }),
+      new URL("http://localhost/api/providers"),
+      config,
+      {
+        effectiveConfig: effective,
+        catalog,
+        saveConfig: value => { saved.push(structuredClone(value)); },
+        refreshClaudeCodeCatalog: async () => {},
+      },
+    );
+
+    expect(response?.status).toBe(200);
+    expect(saved).toHaveLength(1);
+    expect(saved[0].providers["work-openai"]).toEqual({
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      authMode: "key",
+      catalogProviderId: "openai-apikey",
+      apiKey: "new-secret",
+      liveModels: true,
+      defaultModel: "gpt-5.5",
+    });
+  });
+
+  test("management mutations rebuild the effective catalog before refreshing Claude Code", async () => {
+    const config = baseConfig();
+    config.providers["work-openai"] = {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      authMode: "key",
+      catalogProviderId: "openai-apikey",
+      apiKey: "old-secret",
+      liveModels: true,
+    };
+    const catalog = selectedOpenAiCatalog();
+    const effective = buildEffectiveConfig(config, catalog);
+    let refreshed: FrogConfig | undefined;
+
+    const response = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "work-openai",
+          catalogId: "openai-apikey",
+          provider: {
+            adapter: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+            apiKey: "new-secret",
+          },
+        }),
+      }),
+      new URL("http://localhost/api/providers"),
+      config,
+      {
+        effectiveConfig: effective,
+        catalog,
+        saveConfig: () => {},
+        refreshClaudeCodeCatalog: async value => { refreshed = structuredClone(value); },
+      },
+    );
+
+    expect(response?.status).toBe(200);
+    expect(refreshed?.providers["work-openai"].models).toEqual(["gpt-5.5"]);
+    expect(refreshed?.providers["work-openai"].modelContextWindows).toEqual({ "gpt-5.5": 272_000 });
+  });
+
 
 describe("model catalog management API", () => {
   const selectedCatalog = {

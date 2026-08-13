@@ -799,6 +799,58 @@ describe("CLI subcommand help", () => {
       rmSync(workClaudeHome, { recursive: true, force: true });
     }
   });
+  test("claude reload-models includes bundled models for a catalog-managed provider", () => {
+    const frogHome = mkdtempSync(join(tmpdir(), "frogp-managed-reload-cli-"));
+    const claudeHome = mkdtempSync(join(tmpdir(), "frogp-managed-reload-claude-"));
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+    };
+    delete env.FROGPROGSY_NO_CLAUDE_WRITES;
+
+    try {
+      writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+        port: 9,
+        defaultProvider: "codex",
+        modelCatalogConfigVersion: 1,
+        providers: {
+          codex: {
+            adapter: "openai-chat",
+            baseUrl: "https://models.test/v1",
+            catalogProviderId: "codex",
+            apiKey: "sk-test",
+            liveModels: true,
+          },
+        },
+        claudeProfiles: {
+          schemaVersion: 1,
+          defaultProfileId: "cp_default",
+          profiles: [
+            { id: "cp_default", name: "Default", claudeHome, authState: "not_seen" },
+          ],
+        },
+      }, null, 2) + "\n");
+
+      const result = spawnSync(process.execPath, [cliPath, "claude", "reload-models", "cp_default"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+
+      expect(result.status).toBe(0);
+      const gatewayCache = JSON.parse(
+        readFileSync(join(claudeHome, "cache", "gateway-models.json"), "utf8"),
+      ) as { models: Array<{ display_name: string }> };
+      expect(gatewayCache.models.map(model => model.display_name)).toContain("codex/gpt-5.5");
+      expect(gatewayCache.models.length).toBeGreaterThan(1);
+    } finally {
+      rmSync(frogHome, { recursive: true, force: true });
+      rmSync(claudeHome, { recursive: true, force: true });
+    }
+  }, 15000);
+
 
   test("claude project CLI enrolls local settings and reports account/home boundary", () => {
     const frogHome = mkdtempSync(join(tmpdir(), "frogp-project-cli-home-"));

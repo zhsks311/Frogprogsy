@@ -24,6 +24,7 @@ import {
   writeActivePort,
   writeShutdownIntent,
 } from "./config";
+import { createRuntimeConfigState } from "./runtime-config-state";
 import { createConfigMutationLock } from "./config-mutation-lock";
 import { generateLocalAccessSecret, hashLocalAccessSecret, sameMachineAccessHeaders } from "./local-access";
 import { findAvailablePort } from "./ports";
@@ -74,6 +75,7 @@ import {
   resolveClaudeGrant,
 } from "./claude-grants";
 import type { ClaudeGrantRecord, FrogConfig } from "./types";
+import type { ClaudeCodeCatalogRefreshResult } from "./claude-refresh";
 import { deleteClaudeGrantCredential, inspectClaudeGrantStatus, type ClaudeGrantStatusState } from "./claude-grant-auth";
 import { ClaudeGrantProbeError, runClaudeGrantLiveProbe } from "./claude-grant-probe";
 import { assertAllowedClaudeGrantTarget } from "./provider-auth";
@@ -261,7 +263,9 @@ if (command !== undefined && command !== "help" && hasHelpFlag(frogpArgs)) {
 }
 
 async function syncModelsToClaudeCode(port?: number) {
-  const config = loadConfig();
+  const state = await createRuntimeConfigState();
+  const config = state.persisted;
+  const effectiveConfig = state.effective;
   const p = port ?? config.port ?? DEFAULT_PORT;
   const profiles = managedClaudeProfiles(config);
   const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
@@ -272,7 +276,7 @@ async function syncModelsToClaudeCode(port?: number) {
   for (const profile of profiles) {
     let catalogPath: string | null | undefined;
     try {
-      const cat = await refreshClaudeCodeModelCatalog(config, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
+      const cat = await refreshClaudeCodeModelCatalog(effectiveConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
       catalogPath = cat.catalogExists ? cat.path : null;
       if (cat.added > 0) {
         console.log(`   + ${cat.added} models appended to Claude Code catalog for ${profile.name} (${cat.path})`);
@@ -1398,29 +1402,34 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
     case "refresh":
     case "reload-models": {
       const parsed = parseGlobalDiscoveryAuthFlag(values);
-      const profile = resolveClaudeProfile(config, parsed.values.slice(1).join(" ") || undefined);
       const isReloadModels = sub === "reload-models";
+      const runtimeState = sub === "refresh" || isReloadModels
+        ? await createRuntimeConfigState({ loadConfig: () => config })
+        : undefined;
+      const persistedConfig = runtimeState?.persisted ?? config;
+      const effectiveConfig = runtimeState?.effective ?? config;
+      const profile = resolveClaudeProfile(persistedConfig, parsed.values.slice(1).join(" ") || undefined);
       let catalogPath: string | null | undefined;
-      let refreshed: import("./claude-refresh").ClaudeCodeCatalogRefreshResult | undefined;
+      let refreshed: ClaudeCodeCatalogRefreshResult | undefined;
       if (sub === "refresh" || isReloadModels) {
         const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
-        refreshed = await refreshClaudeCodeModelCatalog(config, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
+        refreshed = await refreshClaudeCodeModelCatalog(effectiveConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
         catalogPath = refreshed.catalogExists ? refreshed.path : null;
       }
-      const result = await (await import("./claude-inject")).injectClaudeCodeConfig(config.port ?? DEFAULT_PORT, config, { catalogPath, claudeHome: profile.claudeHome, profileId: profile.id, includeAuthToken: parsed.includeAuthToken });
+      const result = await (await import("./claude-inject")).injectClaudeCodeConfig(persistedConfig.port ?? DEFAULT_PORT, persistedConfig, { catalogPath, claudeHome: profile.claudeHome, profileId: profile.id, includeAuthToken: parsed.includeAuthToken });
       if (!result.success) {
         console.error(`❌ ${result.message}`);
         process.exit(1);
       }
-      markClaudeProfileInjected(config, profile.id, true);
-      saveConfig(config);
-      syncLaunchers(config);
+      markClaudeProfileInjected(persistedConfig, profile.id, true);
+      saveConfig(persistedConfig);
+      syncLaunchers(persistedConfig);
       if (!isReloadModels) {
         console.log(result.message);
         return;
       }
 
-      const port = config.port ?? DEFAULT_PORT;
+      const port = persistedConfig.port ?? DEFAULT_PORT;
       const healthy = await proxyHealthy(port);
       const lines = [
         result.message,

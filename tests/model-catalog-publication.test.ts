@@ -25,6 +25,10 @@ describe("model catalog publication workflows", () => {
     expect(workflow).toContain("candidate.catalogRevision <= existing.catalogRevision");
     expect(workflow).toContain("docs-site/out/catalog/v1/model-catalog.json");
     expect(workflow).toContain("cp src/generated/model-catalog-v1.json docs-site/out/catalog/v1/model-catalog.json");
+    expect(workflow).toContain('catalog_url="${PAGES_CATALOG_URL}?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
+    expect(workflow).toContain("Cache-Control: no-cache");
+    expect(workflow).toContain("Pragma: no-cache");
+    expect(workflow).toContain("--retry 3");
   });
 
   test("package lifecycle generates the catalog before GUI build and exact tarball packing", async () => {
@@ -72,5 +76,9 @@ describe("model catalog publication workflows", () => {
     expect(workflow).toContain("pagesCatalog.sourceCommit !== expectedSha");
     expect(workflow).toContain("packageCatalog.catalogRevision !== pagesCatalog.catalogRevision");
     expect(workflow).toContain("packageCatalog.catalogDigest !== pagesCatalog.catalogDigest");
+    expect(workflow).toContain('catalog_url="${PAGES_CATALOG_URL}?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
+    expect(workflow).toContain("Cache-Control: no-cache");
+    expect(workflow).toContain("Pragma: no-cache");
+    expect(workflow).toContain("--retry 3");
   });
 });

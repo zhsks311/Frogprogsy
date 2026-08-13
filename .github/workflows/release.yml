@@ -328,9 +328,27 @@ jobs:
           trap 'rm -rf "$catalog_dir"' EXIT
           tar -xzf "$TARBALL" -C "$catalog_dir" package/src/generated/model-catalog-v1.json
           echo "Verify packaged catalog matches deployed Pages catalog"
-          curl --fail-with-body --silent --show-error --location \
-            --output "$catalog_dir/pages-model-catalog-v1.json" \
-            "$PAGES_CATALOG_URL"
+          catalog_url="${PAGES_CATALOG_URL}?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          for attempt in 1 2 3; do
+            curl --fail-with-body --silent --show-error --location \
+              --retry 3 --retry-delay 1 --retry-all-errors \
+              --header "Cache-Control: no-cache" \
+              --header "Pragma: no-cache" \
+              --output "$catalog_dir/pages-model-catalog-v1.json" \
+              "${catalog_url}-${attempt}"
+            if EXPECTED_SHA="$GITHUB_SHA" PAGES_CATALOG="$catalog_dir/pages-model-catalog-v1.json" bun -e '
+              import { modelCatalogDocumentV1Schema } from "./src/model-catalog-schema";
+              const pagesCatalog = modelCatalogDocumentV1Schema.parse(await Bun.file(process.env.PAGES_CATALOG).json());
+              process.exit(pagesCatalog.sourceCommit === process.env.EXPECTED_SHA ? 0 : 1);
+            '; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Pages catalog did not converge to release SHA ${GITHUB_SHA}"
+              exit 1
+            fi
+            sleep 2
+          done
           EXPECTED_SHA="$GITHUB_SHA" \
             PACKAGE_CATALOG="$catalog_dir/package/src/generated/model-catalog-v1.json" \
             PAGES_CATALOG="$catalog_dir/pages-model-catalog-v1.json" \
