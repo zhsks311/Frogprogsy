@@ -113,7 +113,7 @@ export function ModelCatalogStatusSummary({
   );
 }
 
-function parseModelRows(value: unknown): ModelRow[] {
+export function parseModelRows(value: unknown): ModelRow[] {
   if (!Array.isArray(value)) throw new Error("models response must be an array");
   return value.map(item => {
     if (!item || typeof item !== "object") throw new Error("invalid model row");

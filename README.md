@@ -97,6 +97,8 @@ frogp claude reload-models <profile-id>
 
 Already-open `/model` screens do not hot reload; start a new `claude` session or resume one so Claude Code refetches `/v1/models`.
 
+FrogProgsy checks for validated model updates when the proxy starts. Restart the proxy to activate a newer list; if the check fails, FrogProgsy uses the last valid copy or the models bundled with the installed release. Your API keys, selected default, and models you added yourself stay unchanged. Run `frogp models` to see whether each model is validated or only discovered and which model-data source is active.
+
 `frogp start`/`frogp refresh` generate one shortcut per additional Claude account in `~/.frogprogsy/bin`, such as `claude-work` or `claude-personal`. The default account uses plain `claude`, which always remains your installed Claude Code. Append the shortcut directory to `PATH`. If the proxy is stopped, account shortcuts pass through to native Claude Code for the selected home.
 
 ### 4. Send your first Claude Code request

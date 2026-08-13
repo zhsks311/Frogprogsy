@@ -97,6 +97,8 @@ frogp claude reload-models <profile-id>
 
 已经打开的 `/model` 页面不会 hot reload；需要启动新的 `claude` 会话或 resume 一个会话，让 Claude Code 重新获取 `/v1/models`。
 
+FrogProgsy 会在 proxy 启动时检查经过验证的最新模型资料。要启用更新后的列表，请重启 proxy；检查失败时，FrogProgsy 会使用上次验证成功的副本或当前安装版本自带的模型资料。API key、已选默认模型和手动添加的模型不会改变。运行 `frogp models` 可以查看每个模型是**已验证**还是**仅发现**，以及当前模型资料的来源。
+
 `frogp start`/`frogp refresh` 会在 `~/.frogprogsy/bin` 为每个附加 Claude 账户生成一个快捷命令，例如 `claude-work` 或 `claude-personal`。默认账户使用普通的 `claude` 命令，该名称始终保留给用户安装的 Claude Code。请将快捷命令目录追加到 `PATH` 末尾。Proxy 停止时，账户快捷命令会按所选目录直通原生 Claude Code。
 
 ### 4. 发送第一条 Claude Code 请求

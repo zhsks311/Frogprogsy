@@ -72,6 +72,7 @@ export interface ModelCatalogFileSystem {
 
 export interface ModelCatalogRuntimeDeps {
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  remoteUrl?: string | URL;
   fileSystem?: Partial<ModelCatalogFileSystem>;
   now?: () => Date;
   runtimeVersion?: string;
@@ -398,10 +399,11 @@ async function readBodyWithLimit(response: Response): Promise<string | null> {
 
 async function fetchRemoteCatalog(
   fetchImpl: NonNullable<ModelCatalogRuntimeDeps["fetch"]>,
+  remoteUrl: string | URL,
 ): Promise<{ raw: unknown; text: string } | null> {
   let response: Response;
   try {
-    response = await fetchImpl(MODEL_CATALOG_REMOTE_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    response = await fetchImpl(remoteUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   } catch {
     return null;
   }
@@ -513,7 +515,7 @@ export async function refreshModelCatalog(
     }
   }
 
-  const remote = await fetchRemoteCatalog(deps.fetch ?? globalThis.fetch);
+  const remote = await fetchRemoteCatalog(deps.fetch ?? globalThis.fetch, deps.remoteUrl ?? MODEL_CATALOG_REMOTE_URL);
   if (!remote) {
     warnings.push("Remote model catalog refresh failed; the existing catalog remains active.");
     return { document: selected.document, status: statusFor(source, selected, warnings) };

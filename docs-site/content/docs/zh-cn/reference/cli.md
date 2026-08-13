@@ -87,11 +87,11 @@ Claude Code 持有 Claude 订阅登录。FrogProgsy 不保存、导入、刷新�
 
 | Command | Mutates | Effect |
 | --- | --- | --- |
-| `frogp models [--json]` | 无 | 路由模型列表的在线专用视图。需要运行中的 proxy，直接读取现有 `GET /api/models` — 与 dashboard 和 Claude Code catalog 使用的同一列表。文本输出按 provider 分组，并按原样显示响应字段（`disabled`、context window、modality、reasoning effort）。`--json` 原样输出 `/api/models` 数组。relay 停止时以 `frogp start` 指引失败；有记录但无响应时提示 `frogp status`/`frogp refresh`。绝不离线合成模型列表。 |
+| `frogp models [--json]` | 无 | 在线查看正在运行的 proxy 模型列表。文本输出按 provider 分组：有经过验证的兼容资料时标记为**已验证**，仅由 AI 服务响应或用户手动添加发现时标记为**仅发现**；同时显示当前模型资料来自远程、保存的副本，还是安装版本自带资料。`--json` 原样输出 `GET /api/models` 数组，包括稳定的 `supportStatus` 与 `catalogSource` 值。relay 停止时提示 `frogp start`；有运行记录但无响应时提示 `frogp status`/`frogp refresh`。不会离线合成模型列表。 |
 
 ## Catalog and Claude Code cache
 
-`frogp refresh` 会合并各 provider 的 `/models` 结果与 `config.json` 中的 static model list，生成 Claude Code 可见的 `provider/model` alias，然后为所有已配置的 Claude Code 目录 invalidate model cache。`frogp claude reload-models <profile-id>` 范围更窄：它只准备一个 Claude Code 目录的 gateway picker catalog/cache，且不会自动启动 proxy。若 proxy 已停止，请按输出的 `frogp refresh` 指引先恢复 relay。
+Proxy 启动时，FrogProgsy 先选择经过验证的模型资料，再与 AI 服务的 `/models` 响应和用户明确设置合并。要检查并启用更新后的模型资料，请重启 proxy。检查失败时继续使用上次验证成功的副本或安装版本自带模型，不会替换 API key、已选默认模型、已隐藏模型或手动添加的模型。`frogp refresh` 还会重新同步生成的 Claude Code `provider/model` 列表，并清除所有已配置 Claude Code 目录的模型缓存。`frogp claude reload-models <profile-id>` 范围更窄：它不会自动启动 proxy，只重建一个目录的模型选择器资料。
 `disabledModels` 会从 catalog 与 `/v1/models` 中排除，`subagentModels` 会优先放到 Claude Code subagent picker 前面的 slot。
 Claude Code 会在 session start 或 resume 时重新获取 `/v1/models`。重新打开已经打开的 `/model` 屏幕不会 hot reload picker；需要启动新的 Claude Code session 或 resume，让 models endpoint 再次被获取。Dashboard/API model list reload 与 Claude Code picker recovery 是分开的。
 

@@ -253,6 +253,7 @@ export async function runInit(): Promise<void> {
 
     const config: FrogConfig = {
       ...getDefaultConfig(),
+      modelCatalogConfigVersion: 1,
       port: portResult.port,
       providers: { [providerName]: providerConfig },
       defaultProvider: providerName,
