@@ -133,6 +133,20 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body.messages[0]?.reasoning_content).toBe("managed reasoning");
   });
 
+  test("a user wire map remains active when the catalog does not restrict supported efforts", () => {
+    const provider = effectiveManagedProvider({
+      adapter: "openai-chat",
+      baseUrl: "https://managed.test/v1",
+      reasoningEffortMap: { xhigh: "max" },
+    }, {
+      id: "managed",
+      models: [{ id: "reasoner" }],
+    });
+
+    expect(provider.reasoningEffortMap).toEqual({ xhigh: "max" });
+    expect(buildBody(provider, "reasoner", { reasoning: "xhigh" }).reasoning_effort).toBe("max");
+  });
+
   test("empty effective reasoning efforts suppress a managed wire map", () => {
     const provider = effectiveManagedProvider({
       adapter: "openai-chat",

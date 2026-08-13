@@ -81,15 +81,16 @@ export function ModelCatalogStatusSummary({
   t: TFn;
   onRefresh: () => void;
 }) {
+  const confirmedCurrent = status?.source === "remote" || status?.refreshedAt !== undefined;
   const needsAttention = status === null
-    || status.source !== "remote"
+    || !confirmedCurrent
     || status.skippedRecords > 0
     || status.warningCount > 0;
   const title = status === null
     ? t("models.catalog.unavailable")
-    : status.source === "cached"
+    : !confirmedCurrent && status.source === "cached"
       ? t("models.catalog.cached")
-      : status.source === "bundled"
+      : !confirmedCurrent && status.source === "bundled"
         ? t("models.catalog.bundled")
         : needsAttention
           ? t("models.catalog.review")

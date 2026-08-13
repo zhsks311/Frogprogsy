@@ -243,6 +243,66 @@ describe("provider REST persistence boundary", () => {
     expect(saved[0].providers["renamed-umans"]).toEqual(provider);
     expect(saved[0].providers["renamed-umans"].catalogProviderId).toBeUndefined();
   });
+  test("catalog provider preserves a user-selected adapter and endpoint", async () => {
+    const config = baseConfig();
+
+    const { response, saved } = await addProvider(config, {
+      name: "regional-openai",
+      catalogId: "openai-apikey",
+      provider: {
+        adapter: "openai-chat",
+        baseUrl: "https://regional-openai.example/v1",
+        authMode: "key",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(saved[0].providers["regional-openai"].adapter).toBe("openai-chat");
+    expect(saved[0].providers["regional-openai"].baseUrl).toBe("https://regional-openai.example/v1");
+  });
+
+  test("existing Anthropic provider can switch back to Claude Code auth without resubmitting a home", async () => {
+    const config = baseConfig();
+    config.providers.anthropic = {
+      adapter: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      authMode: "claude-grant",
+      claudeGrantId: "cg_existing",
+      catalogProviderId: "anthropic",
+    };
+
+    const { response, saved } = await addProvider(config, {
+      name: "anthropic",
+      provider: {
+        adapter: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+        authMode: "forward",
+        catalogProviderId: "anthropic",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(saved[0].providers.anthropic.authMode).toBe("forward");
+  });
+
+  test("new Anthropic Claude Code provider still requires a home", async () => {
+    const config = baseConfig();
+
+    const { response, saved } = await addProvider(config, {
+      name: "anthropic-work",
+      catalogId: "anthropic",
+      provider: {
+        adapter: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+        authMode: "forward",
+      },
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Claude Code home path is required" });
+    expect(saved).toHaveLength(0);
+  });
+
 });
 
   test("an effective catalog snapshot is not persisted during a credential round-trip", async () => {
@@ -293,6 +353,47 @@ describe("provider REST persistence boundary", () => {
       liveModels: true,
       defaultModel: "gpt-5.5",
     });
+  });
+
+  test("catalog-backed classifier provider validates against the effective model list when saved", async () => {
+    const config = baseConfig();
+    config.providers["work-openai"] = {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      authMode: "key",
+      catalogProviderId: "openai-apikey",
+    };
+    config.autoModeClassifier = { provider: "work-openai", model: "gpt-5.5" };
+    const catalog = selectedOpenAiCatalog();
+    const effective = buildEffectiveConfig(config, catalog);
+    const saved: FrogConfig[] = [];
+
+    const response = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "work-openai",
+          catalogId: "openai-apikey",
+          provider: {
+            adapter: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+            authMode: "key",
+          },
+        }),
+      }),
+      new URL("http://localhost/api/providers"),
+      config,
+      {
+        effectiveConfig: effective,
+        catalog,
+        saveConfig: value => { saved.push(structuredClone(value)); },
+        refreshClaudeCodeCatalog: async () => {},
+      },
+    );
+
+    expect(response?.status).toBe(200);
+    expect(saved).toHaveLength(1);
   });
 
   test("management mutations rebuild the effective catalog before refreshing Claude Code", async () => {

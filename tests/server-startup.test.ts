@@ -145,6 +145,37 @@ describe("server startup runtime config", () => {
     expect(handedOff?.providers.gateway.catalogProviderId).toBe("managed");
   });
 
+  test("restores configured OAuth providers from stored credentials before handing off startup config", async () => {
+    const saved: FrogConfig[] = [];
+    let handedOff: FrogConfig | undefined;
+
+    await startServer(0, {
+      createRuntimeConfigState: () => createRuntimeConfigState({
+        loadConfig: persistedConfig,
+        configExists: () => false,
+        saveConfig: value => { saved.push(structuredClone(value)); },
+        refreshCatalog: async () => selected(),
+      }),
+      restoreCredentialedOAuthProviderConfigs: config => {
+        config.providers.xai = {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "oauth",
+        };
+        return true;
+      },
+      serve: fakeServe(() => {}),
+      onRuntimeConfigReady: config => { handedOff = config; },
+    });
+
+    expect(saved).toHaveLength(1);
+    expect(handedOff?.providers.xai).toEqual({
+      adapter: "openai-chat",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "oauth",
+    });
+  });
+
   test("persist saves only persisted values and rebuilds effective from the startup catalog snapshot", async () => {
     const saved: FrogConfig[] = [];
     let refreshCalls = 0;

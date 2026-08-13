@@ -317,6 +317,23 @@ describe("model catalog status UX", () => {
     expect(markup).not.toContain("token=secret");
   });
 
+  test("an identical remotely refreshed cached catalog is shown as current", () => {
+    const status = parseCatalogStatus({
+      source: "cached",
+      catalogRevision: 42,
+      sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+      refreshedAt: "2026-08-12T10:30:00.000Z",
+      skippedRecords: 0,
+      warnings: { count: 0, causes: [] },
+    });
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelCatalogStatusSummary, { status, t: tKo, onRefresh: () => undefined }),
+    );
+
+    expect(markup).toContain("모델 자료가 최신입니다");
+    expect(markup).not.toContain("models-status-card warn");
+  });
+
   test("uses skippedRecords for excluded-item attention even when there are no warnings", () => {
     const status = parseCatalogStatus({
       source: "remote",

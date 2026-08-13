@@ -3945,8 +3945,9 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     // adapter is rejected. oauth/key/forward save + masking paths are untouched.
     const grantBinding = validateClaudeGrantProviderBinding(config, persistedProvider, deps.claudeGrants?.validateGrantTarget);
     if (!grantBinding.ok) return jsonResponse({ error: grantBinding.message }, 400);
+    const existingProvider = config.providers[name];
     const isAnthropicClaudeCodeProvider = persistedProvider.adapter === "anthropic" && persistedProvider.authMode === "forward";
-    if (requestedCatalogId === "anthropic" && isAnthropicClaudeCodeProvider && !(typeof body.claudeHome === "string" && body.claudeHome.trim())) {
+    if (requestedCatalogId === "anthropic" && isAnthropicClaudeCodeProvider && !existingProvider && !(typeof body.claudeHome === "string" && body.claudeHome.trim())) {
       return jsonResponse({ error: "Claude Code home path is required" }, 400);
     }
     if (isAnthropicClaudeCodeProvider && typeof body.claudeHome === "string" && body.claudeHome.trim()) {
@@ -3957,12 +3958,14 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       }
     }
     if (config.autoModeClassifier?.provider?.trim() === name) {
-      const candidateConfig: FrogConfig = {
+      const candidatePersistedConfig: FrogConfig = {
         ...config,
         providers: { ...config.providers, [name]: persistedProvider },
       };
+      const candidateConfig = buildEffectiveConfig(candidatePersistedConfig, state.catalog);
       const candidateTarget = resolveAutoModeClassifierTarget(candidateConfig);
-      const unknownModel = candidateTarget.ok && persistedProvider.liveModels !== true
+      const candidateProvider = candidateTarget.ok ? candidateConfig.providers[candidateTarget.provider] : undefined;
+      const unknownModel = candidateTarget.ok && candidateProvider?.liveModels !== true
         ? validateClassifierModel(candidateConfig, candidateTarget.provider, candidateTarget.model)
         : null;
       if (!candidateTarget.ok || unknownModel) {
@@ -4217,6 +4220,7 @@ export function buildAnthropicModelsList(
 
 export interface ServerStartDeps {
   createRuntimeConfigState?: () => Promise<RuntimeConfigState>;
+  restoreCredentialedOAuthProviderConfigs?: (config: FrogConfig) => boolean;
   serve?: typeof Bun.serve;
   onRuntimeConfigReady?: (effectiveConfig: FrogConfig) => void;
 }
@@ -4227,8 +4231,9 @@ export async function startServer(
 ): Promise<ReturnType<typeof Bun.serve>> {
   const state = await (deps.createRuntimeConfigState ?? createRuntimeConfigState)();
   const persistedConfig = state.persisted;
+  const restoredOAuthProviders = (deps.restoreCredentialedOAuthProviderConfigs ?? restoreCredentialedOAuthProviderConfigs)(persistedConfig);
   const removedFixtures = dropRuntimeFixtureProviders(persistedConfig);
-  let persistedChanged = removedFixtures.length > 0;
+  let persistedChanged = restoredOAuthProviders || removedFixtures.length > 0;
   if (removedFixtures.length > 0) {
     console.error(`frogprogsy: removed runtime fixture provider(s) from config: ${removedFixtures.join(", ")}`);
   }

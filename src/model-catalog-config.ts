@@ -76,6 +76,8 @@ const MANAGED_METADATA_FIELDS = [
 const MANAGED_METADATA_FIELD_SET = new Set<keyof FrogProviderConfig>(MANAGED_METADATA_FIELDS);
 
 const USER_OWNED_PROVIDER_FIELDS = [
+  "adapter",
+  "baseUrl",
   "apiKey",
   "apiKeys",
   "defaultModel",
@@ -453,8 +455,6 @@ export function sanitizeCatalogProviderForPersistence(
   if (combined.liveModels === false) {
     return structuredClone({
       ...combined,
-      adapter: seed.adapter,
-      baseUrl: seed.baseUrl,
       catalogProviderId,
     });
   }

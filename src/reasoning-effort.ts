@@ -56,13 +56,18 @@ export function mergeReasoningEffortMap(
   supported: readonly string[] | undefined,
 ): Record<string, string> | undefined {
   const merged: Record<string, string> = { ...live };
-  if (userOverride && supported) {
-    for (const effort of supported) {
+  if (userOverride) {
+    for (const [effort, value] of Object.entries(userOverride)) {
+      if (supported !== undefined && !supported.includes(effort)) continue;
       if (managed && Object.prototype.hasOwnProperty.call(managed, effort)) continue;
-      if (Object.prototype.hasOwnProperty.call(userOverride, effort)) merged[effort] = userOverride[effort];
+      Object.defineProperty(merged, effort, { value, enumerable: true, configurable: true, writable: true });
     }
   }
-  if (managed) Object.assign(merged, managed);
+  if (managed) {
+    for (const [effort, value] of Object.entries(managed)) {
+      Object.defineProperty(merged, effort, { value, enumerable: true, configurable: true, writable: true });
+    }
+  }
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
