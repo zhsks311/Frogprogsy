@@ -4881,6 +4881,8 @@ export interface ServerStartDeps {
   restoreCredentialedOAuthProviderConfigs?: (config: FrogConfig) => boolean;
   serve?: typeof Bun.serve;
   onRuntimeConfigReady?: (effectiveConfig: FrogConfig, retiredTargets: ReadonlySet<string>) => void;
+  /** Clock seam shared by continuity circuit routing and management reporting. */
+  now?: () => number;
 }
 
 export async function startServer(
@@ -4890,6 +4892,7 @@ export async function startServer(
   const state = await (deps.createRuntimeConfigState ?? createRuntimeConfigState)();
   reconcileRetiredModelAliases(state.retiredTargets);
   const continuityCircuit = new ContinuityCircuit();
+  const now = deps.now ?? Date.now;
   const persistedConfig = state.persisted;
   const restoredOAuthProviders = (deps.restoreCredentialedOAuthProviderConfigs ?? restoreCredentialedOAuthProviderConfigs)(persistedConfig);
   const removedFixtures = dropRuntimeFixtureProviders(persistedConfig);
@@ -4993,7 +4996,7 @@ export async function startServer(
       }
 
       if (url.pathname.startsWith("/api/")) {
-        const mgmtResponse = await handleManagementAPI(req, url, state, { clientAddress, continuityCircuit });
+        const mgmtResponse = await handleManagementAPI(req, url, state, { clientAddress, continuityCircuit, now });
         return mgmtResponse ?? jsonResponse({ error: `Unknown API endpoint: ${req.method} ${url.pathname}` }, 404);
       }
 
@@ -5065,6 +5068,7 @@ export async function startServer(
           profileId,
           retiredTargets: state.retiredTargets,
           continuityCircuit,
+          now,
         }));
         if (profileId && response.status === 401) noteClaudeProfileRequest(persistedConfig, profileId, req.headers, "oauth_rejected");
         if (profileId) state.save();

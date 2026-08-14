@@ -35,6 +35,7 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 | `defaultProvider` | `string` | `"anthropic"` | model id 没有 provider prefix 时使用的 routing fallback lane |
 | `subagentModels` | `string[]` | default GPT native list | Claude Code subagent picker 前面优先显示的最多 5 个 routed/native model id |
 | `disabledModels` | `string[]` | — | 从 catalog 与 `/v1/models` 隐藏的 routed models |
+| `modelContinuity` | object | — (`off`) | 仅用于普通模型请求的精确替代顺序与显式自动保护设置。参见[模型连续性](#模型连续性)。 |
 | `modelCacheTtlMs` | `number` | `300000` | Provider `/models` cache freshness window |
 | `stallTimeoutSec` | `number` | `90` | Upstream data silence 后以 incomplete/error 关闭的秒数，最小 1 |
 | `connectTimeoutMs` | `number` | `30000` | Upstream DNS/TCP/TLS/response-header timeout(ms) |
@@ -44,6 +45,32 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 | `modelMixing` | object | — | `frogp/mix` 别名背后的模型混合（route/fusion/pipeline）。`enabled: true` 前为禁用。见 [Model mixing fields](#model-mixing-fields)。 |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field；Claude Messages data plane 使用 HTTP/SSE |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op；不修改 Claude Code history |
+
+## 模型连续性
+
+`modelContinuity` 按普通模型请求的精确 route 保存替代模型，最多三个，数组顺序就是实际尝试顺序。
+
+```json
+{
+  "modelContinuity": {
+    "anthropic/claude-old": {
+      "fallbacks": ["anthropic/claude-new"],
+      "automatic": "off"
+    }
+  }
+}
+```
+
+`automatic` 有四种模式：
+
+- `off`：报告问题，并在所选模型上结束请求；
+- `retired`：仅当 managed catalog 确认所选模型已停止提供时使用已保存的替代模型；
+- `transient`：仅在连接失败、response header timeout、HTTP 404/410/429 或 HTTP 5xx 后使用替代模型；
+- `all`：同时处理模型停止提供和临时故障。
+
+未配置时默认为 `off`。每个 key 与 fallback 都必须是精确的 `provider/model`。FrogProgsy 不会根据模型名称、系列、价格、默认 provider 或 `fallbackProviders` 推断目标。自动连续性只适用于普通模型路由请求。自动模式判断、Model Mixing 内部调用、网页搜索与图像处理、`subagentModels` 只支持手动永久替换。
+
+临时故障会为精确的主目标打开一个仅保存在内存中的 30 秒 circuit。FrogProgsy 不会添加 health polling，也不会持久化 circuit 状态。自动尝试不会改写已保存的主模型；只有显式永久替换才会修改该设置。命令详见 [frogp 命令](/frog-progsy/zh-cn/reference/cli/#models)，界面流程详见[替换已停止提供的模型](/frog-progsy/zh-cn/guides/web-dashboard/#替换已停止提供的模型)。
 
 ## Relay access keys
 

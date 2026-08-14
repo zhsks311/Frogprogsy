@@ -65,6 +65,19 @@ frogp claude reload-models <profile-id>
 
 Then start a new Claude Code session or resume so `/v1/models` is fetched again. Already-open `/model` screens do not hot reload. If the proxy is not answering, run `frogp refresh` first, then reload the profile catalog.
 
+### Repair a retired model
+
+Read the live report first, save an exact ordinary-route fallback only when you want automatic handling, or permanently replace the affected reference:
+
+```text
+frogp models continuity
+frogp models continuity set <provider/model> --fallback <provider/model> --auto retired
+frogp models continuity replace <reference-id> <provider/model>
+```
+
+Copy `<reference-id>` from the report; it prevents a stale report from changing the wrong setting. `set` preserves the configured owner and only saves the exact request-time alternative. `replace` changes the stored owner after validation. The dashboard **Models** page offers the same problem-first actions.
+
+
 ## 3. Check Auth/OAuth
 
 Split 401/403 and login loops by provider type.

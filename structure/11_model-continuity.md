@@ -1,6 +1,6 @@
 # Model Continuity SOT
 
-> **Status:** Approved design. Not implemented. No runtime, GUI, CLI, or config behavior described below is active until the implementation and verification gates land together.
+> **Status:** Implemented. Runtime, management API, CLI, dashboard, public config, and ordinary data-plane behavior described below are active. Automatic model-mixing, web-search helper, image helper, classifier, and subagent fallback remain intentionally unimplemented.
 
 ## Goal
 
@@ -27,7 +27,7 @@ The continuity inventory reports every model setting that currently affects exec
 
 The inventory excludes model metadata and permission lists such as `disabledModels`, `userModels`, fixed allowlists, capability maps, and wire model ids. It also excludes typed fields that no runtime path reads. The feature must not activate dormant `shadowCompare.secondary` or `searchProviders.*.model` behavior.
 
-All inventoried references support diagnosis and an explicit permanent replacement. Automatic fallback in the first implementation applies only to ordinary routed model requests. It does not apply to:
+All inventoried references support diagnosis and an explicit permanent replacement. Automatic fallback applies only to ordinary routed model requests. It does not apply to:
 
 - the auto-mode classifier, which remains pinned to one explicit target;
 - model-mixing internal coordinator, panel, judge, synthesizer, or pipeline calls;
@@ -64,7 +64,7 @@ The optional top-level `modelContinuity` map uses the exact ordinary route targe
 Absent configuration is `off`. A sequence contains at most three exact `provider/model` targets. Validation rejects an unconfigured provider, the primary target itself, duplicates, hidden models, retired fallback targets, and more than three targets. A provider-discovered target is allowed with a warning that the managed catalog has not validated it.
 Policy validation may report missing authentication, but it does not reject a configured fallback solely from a management-time authentication snapshot: forwarded credentials are request-dependent. Automatic resolution performs normal authentication for each exact candidate and skips a candidate that is unusable for that request.
 
-The existing `fallbackProviders` setting remains independent. It never contributes a continuity candidate. The existing effective-config behavior that silently replaces a retired managed provider default with the catalog default must be removed; only the user's continuity sequence may replace a retired target.
+The existing `fallbackProviders` setting remains independent and never contributes a continuity candidate. Effective configuration keeps a retired managed provider default unchanged so the inventory can diagnose it. Only an explicit `replace` action mutates its owner; an opted-in exact continuity sequence may temporarily route an ordinary request elsewhere.
 
 ## Inventory and permanent replacement
 
@@ -75,7 +75,7 @@ Reference ids identify configuration owners for diagnosis and permanent replacem
 A permanent replacement request includes the reference id and the target observed by the caller. The server rejects the write when the current target differs. The server then uses the existing owner-specific validation, config save, and catalog refresh path. It must not perform arbitrary JSON-path mutation.
 Owner semantics constrain permanent replacement. A provider's `defaultModel` may change only to another model at that same configured provider; changing the global default provider remains the existing provider-management action. Owners that already store both provider and model may replace both fields. A gateway-alias tombstone has no mutable config owner, so users respond by setting a route policy rather than rewriting past Claude Code session state.
 
-The dashboard adds one section to the existing Models page. Problems appear first. Each problem states the affected feature, current target, reason, and primary action. Eligible ordinary route targets also expose the ordered fallback sequence and automatic mode. Normal references remain collapsed. No new top-level page, history store, or background worker is added.
+The dashboard provides one section on the existing Models page. Problems appear first. Each problem states the affected feature, current target, reason, and primary action. Eligible ordinary route targets also expose the ordered fallback sequence and automatic mode. Normal references remain collapsed. No new top-level page, history store, or background worker is added.
 
 The CLI uses the running proxy as the source of truth:
 
@@ -109,7 +109,7 @@ Tombstone aliases are reserved identities. Active alias generation must include 
 
 The ordinary `/v1/messages` attempt loop remains the only automatic fallback implementation. Existing helpers for same-provider key attempts, immutable request cloning, provider authentication, adapter selection, capability resolution, and request construction are reused.
 
-The continuity implementation adds exact fallback routes after the primary target's allowed key attempts. It never adds `fallbackProviders` candidates. Each fallback attempt rebuilds the routed request from the immutable parsed request so provider- and model-specific authentication, adapter, capability, and wire-model rules apply to the selected target.
+Continuity routes append exact fallback routes after the primary target's allowed key attempts. They never add `fallbackProviders` candidates. Each fallback attempt rebuilds the routed request from the immutable parsed request so provider- and model-specific authentication, adapter, capability, and wire-model rules apply to the selected target.
 
 Transient fallback is limited to failures known before a successful upstream response body:
 
@@ -123,7 +123,7 @@ HTTP 400/401/402/403, context-limit errors, tool or schema errors, adapter parse
 
 A single in-memory map records a 30-second open circuit for an exact configured provider/model target. Lookups remove expired entries. A successful primary request clears its entry. No timer, persistence file, manual retry action, or health poller is required.
 
-Claude Code-facing response metadata keeps the requested alias. Existing request-log fields keep the requested and routed targets and per-attempt results. The implementation adds only a structured `continuityReason`; it does not store prompts, responses, credentials, or upstream error bodies.
+Claude Code-facing response metadata keeps the requested alias. Existing request-log fields keep the requested and routed targets and per-attempt results. Request logs add only a structured `continuityReason`; they do not store prompts, responses, credentials, or upstream error bodies.
 
 ## Classifier invariant
 
@@ -147,7 +147,7 @@ Automatic resolution never mutates the persisted primary setting. Only the expli
 
 ## Verification
 
-The implementation is complete only when it proves these observable contracts:
+Focused unit, API, CLI, GUI, and end-to-end verification covers these observable contracts:
 
 1. **Inventory**
    - finds every in-scope active reference;
@@ -183,4 +183,4 @@ bun test --isolate ./tests
 bun run build:gui
 ```
 
-A browser-driven GUI check must exercise the problem card, policy save, and permanent replacement flows. A mock upstream smoke check must prove 404 to explicit fallback, 401 without fallback, and primary retry after the 30-second circuit expires.
+A focused end-to-end smoke uses the real `startServer`, local primary and fallback upstreams, a temporary home, and a frozen circuit clock. It proves retired-alias direct fallback, transient 503 fallback, circuit skip and expiry retry, terminal 401 handling, API/CLI parity, requested-alias metadata, and no automatic persisted-owner mutation. Browser-driven GUI verification covers the problem card, policy save, and permanent replacement flows.

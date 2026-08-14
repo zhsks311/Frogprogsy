@@ -65,6 +65,19 @@ frogp claude reload-models <profile-id>
 
 然后启动新的 Claude Code session 或 resume，让它重新获取 `/v1/models`。已经打开的 `/model` 页面不会 hot reload。如果 proxy 没有响应，先运行 `frogp refresh`，再重新加载 profile catalog。
 
+### 修复已停止提供的模型
+
+先读取正在运行的 FrogProgsy 报告。只想让普通模型请求自动处理时，保存精确的替代模型；需要更改以后请求使用的已保存模型时，永久替换对应 reference。
+
+```text
+frogp models continuity
+frogp models continuity set <provider/model> --fallback <provider/model> --auto retired
+frogp models continuity replace <reference-id> <provider/model>
+```
+
+请从报告中原样复制 `<reference-id>`；它能防止旧报告改错设置。`set` 保留已配置的主模型，只保存请求时使用的精确替代目标。`replace` 验证后修改已保存的 owner。Dashboard **Models** 页面提供相同的 problem-first 操作流程。
+
+
 ## 3. 检查 Auth/OAuth
 
 401/403 或 login loop 按 provider 类型拆分。

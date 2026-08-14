@@ -68,6 +68,19 @@ frogp claude reload-models <profile-id>
 
 그다음 새 Claude Code 세션을 시작하거나 resume해서 `/v1/models`를 다시 가져오게 합니다. 이미 열린 `/model` 화면은 hot reload되지 않습니다. Proxy가 응답하지 않으면 먼저 `frogp refresh`를 실행한 뒤 profile catalog를 다시 불러옵니다.
 
+### 종료된 모델 복구
+
+먼저 실행 중인 FrogProgsy의 보고서를 확인합니다. 일반 모델 요청에만 자동 대응을 쓰려면 정확한 대체 모델을 저장하고, 이후 요청의 저장 모델 자체를 바꾸려면 해당 항목을 영구 교체합니다.
+
+```text
+frogp models continuity
+frogp models continuity set <provider/model> --fallback <provider/model> --auto retired
+frogp models continuity replace <reference-id> <provider/model>
+```
+
+`<reference-id>`는 보고서에 나온 값을 그대로 복사하세요. 오래된 보고서로 엉뚱한 설정을 바꾸지 않도록 확인하는 값입니다. `set`은 저장된 주 모델을 유지하고 요청 때 쓸 정확한 대체 모델만 저장합니다. `replace`는 검증을 거쳐 저장된 주인을 바꿉니다. Dashboard **Models**에서도 같은 문제 우선 흐름을 사용할 수 있습니다.
+
+
 ## 3. 인증/OAuth 확인
 
 401/403 또는 로그인 반복은 연결 종류별로 나눕니다.

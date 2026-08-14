@@ -23,9 +23,9 @@ The current behavior is:
 - In the verified dangerous-command scenario, the observed upstream sequence was
   `main model → reviewer → reviewer → main model`: the first and last calls belong to the normal main-model work
   loop, while the two middle calls are Claude Code's separate review stages. FrogProgsy does not create them.
-- The reserved alias is pinned to the single configured target. Ordinary provider fallback, long-context routing,
-  and model mixing cannot replace or intercept that reviewer. Multiple keys for the selected provider may be
-  retried, but another provider/model is never substituted.
+- The reserved alias is pinned to the single configured target. Ordinary provider fallback, model-continuity
+  automatic fallback, long-context routing, and model mixing cannot replace or intercept that reviewer. Multiple
+  keys for the selected provider may be retried, but another provider/model is never substituted.
 - Management writes fail closed. Incomplete, unknown, or disabled targets are rejected. Deleting, overwriting, or
   disabling the saved target is blocked. Static-catalog targets are also checked before server listen when review
   routing is enabled.
@@ -80,6 +80,7 @@ interface FrogConfig {
 There is one global switch and one review target. `ClaudeProfileRecord` has no classifier-routing flag. The retired
 `classifierFallback`, provider-level `classifierModel`, and per-profile `routeAutoModeClassifier` fields are not
 part of this contract. Startup removes the retired per-profile field without silently enabling the global switch.
+The model-continuity inventory diagnoses and can permanently replace this owner, but marks it automatic-ineligible.
 There is no ordered runtime classifier fallback.
 
 ## Routing contract
@@ -97,7 +98,7 @@ claude-frogp-auto-classifier
 3. Reject an absent/incomplete target, missing provider, or disabled target.
 4. Return `routeKind: "classifier"` and `classifierRoute: true`.
 5. Protect that route from long-context routing and model mixing.
-6. Build only the selected provider's key attempts. Never append `fallbackProviders`.
+6. Build only the selected provider's key attempts. Never append `fallbackProviders` or `modelContinuity` targets.
 
 No other id is inferred to be a classifier. In particular, ordinary Sonnet, Haiku, Opus, and default-provider
 requests follow normal routing. Request prompt inspection and model-name guessing are prohibited.
@@ -171,7 +172,7 @@ Automated tests cover:
 
 - exact reserved-alias routing and all fail-closed target states;
 - absence of Sonnet/Haiku prompt/model-name inference;
-- no generic provider fallback, long-context override, or model mixing;
+- no generic provider fallback, continuity automatic fallback, long-context override, or model mixing;
 - global home/project injection, exact backup restore, native-env cleanup, and partial-update rollback;
 - strict management payload validation, saved-target protection, retired per-profile field removal, and profile
   deletion while global review remains enabled.
