@@ -370,8 +370,8 @@ export async function postModelContinuityAction(
   request: ModelContinuityRequest,
   apiBase: string,
   action: ModelContinuityAction,
-  reloadStale: () => Promise<unknown> | unknown,
-): Promise<{ ok: boolean; stale: boolean; message: string }> {
+  reloadStale: () => Promise<boolean> | boolean,
+): Promise<{ ok: boolean; stale: boolean; reloadFailed: boolean; message: string }> {
   try {
     const response = await request(`${apiBase}/api/model-continuity`, {
       method: "POST",
@@ -381,12 +381,39 @@ export async function postModelContinuityAction(
     const body = await response.json().catch(() => ({})) as { error?: unknown };
     const message = typeof body.error === "string" ? body.error : "";
     if (response.status === 409) {
-      await reloadStale();
-      return { ok: false, stale: true, message };
+      const reloaded = await reloadStale();
+      return { ok: false, stale: reloaded, reloadFailed: !reloaded, message };
     }
-    return { ok: response.ok, stale: false, message };
+    return { ok: response.ok, stale: false, reloadFailed: false, message };
   } catch {
-    return { ok: false, stale: false, message: "" };
+    return { ok: false, stale: false, reloadFailed: false, message: "" };
+  }
+}
+
+type ModelContinuityLoadCallbacks = {
+  success: (report: ModelContinuityReport) => void;
+  failure: () => void;
+  settled: () => void;
+};
+
+export async function loadModelContinuityReport(
+  request: (input: string) => Promise<Response>,
+  apiBase: string,
+  isLatest: () => boolean,
+  callbacks: ModelContinuityLoadCallbacks,
+): Promise<boolean> {
+  try {
+    const response = await request(`${apiBase}/api/model-continuity`);
+    if (!response.ok) throw new Error("model continuity load failed");
+    const report = parseModelContinuityReport(await response.json());
+    if (!isLatest()) return false;
+    callbacks.success(report);
+    return true;
+  } catch {
+    if (isLatest()) callbacks.failure();
+    return false;
+  } finally {
+    if (isLatest()) callbacks.settled();
   }
 }
 
@@ -667,20 +694,6 @@ export function ModelContinuityPanel({
         </span>
       </div>
 
-      {report.circuits.length > 0 && (
-        <div className="continuity-active-status" role="status">
-          <strong>{t("models.continuity.activeTitle")}</strong>
-          <p>{t("models.continuity.activeImpact")}</p>
-          <ul>
-            {report.circuits.map(entry => (
-              <li key={entry.primary}>
-                <code className="text-anywhere">{entry.primary}</code>
-                <span>{continuityReasonText(entry.reason, t)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
 
       {attention.length > 0 && (
         <div className="continuity-card-list">
@@ -694,6 +707,20 @@ export function ModelContinuityPanel({
               onReplace={onReplace}
             />
           ))}
+        </div>
+      )}
+      {report.circuits.length > 0 && (
+        <div className="continuity-active-status" role="status">
+          <strong>{t("models.continuity.activeTitle")}</strong>
+          <p>{t("models.continuity.activeImpact")}</p>
+          <ul>
+            {report.circuits.map(entry => (
+              <li key={entry.primary}>
+                <code className="text-anywhere">{entry.primary}</code>
+                <span>{continuityReasonText(entry.reason, t)}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -805,6 +832,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
   const featuredDirtyRef = useRef(false);
   const featuredSavingRef = useRef(false);
   const featuredLoadSeqRef = useRef(0);
+  const continuityLoadSeqRef = useRef(0);
   const modelControlsRef = useRef<HTMLElement | null>(null);
 
   const loadFeatured = async (force = false) => {
@@ -829,23 +857,27 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
   };
 
   const loadContinuity = async (): Promise<boolean> => {
-    try {
-      const response = await fetch(`${apiBase}/api/model-continuity`);
-      if (!response.ok) throw new Error("model continuity load failed");
-      setContinuityReport(parseModelContinuityReport(await response.json()));
-      setContinuityStatus("");
-      return true;
-    } catch {
-      setContinuityOk(false);
-      setContinuityStatus(t("models.continuity.loadFailed"));
-      return false;
-    } finally {
-      setContinuityLoading(false);
-    }
+    const requestId = ++continuityLoadSeqRef.current;
+    setContinuityLoading(true);
+    return loadModelContinuityReport(
+      input => fetch(input),
+      apiBase,
+      () => requestId === continuityLoadSeqRef.current,
+      {
+        success: report => {
+          setContinuityReport(report);
+          setContinuityStatus("");
+        },
+        failure: () => {
+          setContinuityOk(false);
+          setContinuityStatus(t("models.continuity.loadFailed"));
+        },
+        settled: () => setContinuityLoading(false),
+      },
+    );
   };
 
-  const load = async () => {
-    const continuityRequest = loadContinuity();
+  const loadModels = async () => {
     try {
       const [modelsResponse, catalogResponse] = await Promise.all([
         fetch(`${apiBase}/api/models`),
@@ -867,24 +899,25 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     } catch {
       setOk(false); setStatus(t("models.loadFail"));
     } finally {
-      await continuityRequest;
       setLoading(false);
     }
   };
 
   const refreshAll = () => {
     setLoading(true);
-    load();
-    loadFeatured(true);
+    void loadModels();
+    void loadContinuity();
+    void loadFeatured(true);
   };
 
   useEffect(() => {
-    load();
-    loadFeatured(true);
+    void loadModels();
+    void loadContinuity();
+    void loadFeatured(true);
     // Provider models resolve lazily (live /models + OAuth tokens), so a provider that wasn't ready
     // on first load would otherwise stay missing until a manual remove/re-add.
     // Re-poll to pick it up; skip while a toggle PUT is in flight to avoid clobbering.
-    const timer = setInterval(() => { if (!busyRef.current) { load(); loadFeatured(); } }, 10000);
+    const timer = setInterval(() => { if (!busyRef.current) { void loadModels(); void loadFeatured(); } }, 10000);
     return () => clearInterval(timer);
   }, [apiBase]);
 
@@ -1005,13 +1038,21 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
       loadContinuity,
     );
     if (result.ok) {
-      await Promise.all([load(), loadFeatured(true)]);
-      setContinuityOk(true);
-      setContinuityStatus(t(successMessage));
+      const [, continuityReloaded] = await Promise.all([
+        loadModels(),
+        loadContinuity(),
+        loadFeatured(true),
+      ]);
+      if (continuityReloaded) {
+        setContinuityOk(true);
+        setContinuityStatus(t(successMessage));
+      }
       return true;
     }
     setContinuityOk(false);
-    if (result.stale) {
+    if (result.reloadFailed) {
+      setContinuityStatus(t("models.continuity.loadFailed"));
+    } else if (result.stale) {
       setContinuityStatus(t("models.continuity.stale"));
     } else if (result.message) {
       setContinuityStatus(t("models.continuity.saveFailedWithReason", { reason: result.message }));

@@ -22,6 +22,7 @@ const {
 
 const {
   confirmModelContinuityReplacement,
+  loadModelContinuityReport,
   postModelContinuityAction,
   saveModelContinuityPolicy,
   updateModelContinuityFallback,
@@ -226,15 +227,105 @@ describe("GUI interaction stability", () => {
         expectedPrimary: "work/old",
         replacement: "work/new",
       },
-      async () => { reloads += 1; },
+      async () => { reloads += 1; return true; },
     );
 
     expect(reloads).toBe(1);
     expect(result).toEqual({
       ok: false,
       stale: true,
+      reloadFailed: false,
       message: "model reference changed; reload and retry",
     });
+  });
+  test("Models stale continuity action does not claim a reload when refresh fails", async () => {
+    const result = await postModelContinuityAction(
+      async () => Response.json({
+        error: "model reference changed; reload and retry",
+        code: "stale_reference",
+      }, { status: 409 }),
+      "/frogp",
+      {
+        action: "replace",
+        referenceId: "provider-default:work",
+        expectedPrimary: "work/old",
+        replacement: "work/new",
+      },
+      async () => false,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      stale: false,
+      reloadFailed: true,
+      message: "model reference changed; reload and retry",
+    });
+  });
+
+  test("Models continuity latest request wins when deferred responses complete out of order", async () => {
+    let resolveFirst!: (response: Response) => void;
+    let resolveSecond!: (response: Response) => void;
+    const firstResponse = new Promise<Response>(resolve => { resolveFirst = resolve; });
+    const secondResponse = new Promise<Response>(resolve => { resolveSecond = resolve; });
+    let latestRequest = 0;
+    let shownPrimary = "";
+    let failures = 0;
+    let settled = 0;
+    const start = (response: Promise<Response>) => {
+      const requestId = ++latestRequest;
+      return loadModelContinuityReport(
+        async () => response,
+        "/frogp",
+        () => requestId === latestRequest,
+        {
+          success: report => { shownPrimary = report.references[0]?.primary ?? ""; },
+          failure: () => { failures += 1; },
+          settled: () => { settled += 1; },
+        },
+      );
+    };
+    const first = start(firstResponse);
+    const second = start(secondResponse);
+    const reportFor = (primary: string) => ({
+      policies: {},
+      references: [{
+        id: "provider-default:work",
+        kind: "provider-default",
+        primary,
+        status: "ready",
+        automaticEligible: true,
+        policy: { fallbacks: [], automatic: "off" },
+        supportStatus: "validated",
+      }],
+      circuits: [],
+    });
+
+    resolveSecond(Response.json(reportFor("work/newest")));
+    await second;
+    resolveFirst(Response.json(reportFor("work/stale")));
+    await first;
+
+    expect(shownPrimary).toBe("work/newest");
+    expect(failures).toBe(0);
+    expect(settled).toBe(1);
+  });
+
+  test("Models model polling excludes continuity and model loading does not await it", () => {
+    const models = read("gui/src/pages/Models.tsx");
+    const modelLoadStart = models.indexOf("const loadModels = async");
+    const refreshStart = models.indexOf("const refreshAll", modelLoadStart);
+    const effectStart = models.indexOf("useEffect(() =>", refreshStart);
+    const timerStart = models.indexOf("const timer = setInterval", effectStart);
+    const modelLoad = models.slice(modelLoadStart, refreshStart);
+    const refresh = models.slice(refreshStart, effectStart);
+    const polling = models.slice(timerStart, models.indexOf("return () => clearInterval(timer)", timerStart));
+
+    expect(modelLoad).not.toContain("loadContinuity");
+    expect(modelLoad).toContain("setLoading(false)");
+    expect(refresh).toContain("loadContinuity()");
+    expect(polling).toContain("loadModels()");
+    expect(polling).not.toContain("loadContinuity");
+    expect(models).toContain("const continuityLoadSeqRef = useRef(0)");
   });
 
   test("Models continuity normal rows stay collapsed and localized copy avoids internal terms", () => {

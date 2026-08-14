@@ -474,6 +474,25 @@ describe("model continuity UX", () => {
     expect(markup).toContain("영구 교체");
     expect(markup).not.toContain("provider-default:work");
   });
+  test("retired actions precede active fallback status and collapsed normal rows", () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelContinuityPanel, {
+        report: parseModelContinuityReport(STUB_CONTINUITY_REPORT),
+        selectableModels: ["work/new", "codex/gpt-5.5", "work/backup"],
+        t: tKo,
+        onSet: async () => true,
+        onReplace: async () => true,
+      }),
+    );
+    const attention = markup.indexOf("기본 모델이 종료됐습니다");
+    const active = markup.indexOf("저장한 대체 모델을 사용 중입니다");
+    const normal = markup.indexOf('<details class="continuity-normal-list">');
+
+    expect(attention).toBeGreaterThan(-1);
+    expect(active).toBeGreaterThan(attention);
+    expect(normal).toBeGreaterThan(active);
+  });
+
 
   test("classifier row has no automatic selector and normal rows start collapsed", () => {
     const report = parseModelContinuityReport({
