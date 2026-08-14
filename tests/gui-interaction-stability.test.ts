@@ -189,6 +189,43 @@ describe("GUI interaction stability", () => {
     )).toBeNull();
   });
 
+  test("Models gateway alias fallback policy remains saveable", async () => {
+    const reference = Models.parseModelContinuityReport({
+      policies: {},
+      references: [{
+        id: "gateway-alias:session",
+        kind: "gateway-alias",
+        primary: "work/session",
+        status: "retired",
+        automaticEligible: true,
+        policy: { fallbacks: ["work/first"], automatic: "off" },
+        supportStatus: "validated",
+      }],
+      circuits: [],
+    }).references[0];
+    const actions: Models.ModelContinuitySetAction[] = [];
+    const saved = await saveModelContinuityPolicy(
+      reference,
+      { fallbacks: ["work/first", "codex/second"], automatic: "retired" },
+      async action => {
+        actions.push(action);
+        return "applied";
+      },
+    );
+
+    expect(saved).toEqual({
+      fallbacks: ["work/first", "codex/second"],
+      automatic: "retired",
+    });
+    expect(actions).toEqual([{
+      action: "set",
+      primary: "work/session",
+      referenceId: "gateway-alias:session",
+      fallbacks: ["work/first", "codex/second"],
+      automatic: "retired",
+    }]);
+  });
+
 
   test("Models permanent replacement requires confirmation and sends expectedPrimary", async () => {
     const reference = Models.parseModelContinuityReport({

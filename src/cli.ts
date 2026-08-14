@@ -1186,7 +1186,16 @@ function renderHumanModelContinuity(report: CliModelContinuityReport, paint: boo
     }
     const replacement = reference.policy.fallbacks[0];
     if (reference.status === "retired") {
-      if (replacement) {
+      if (reference.kind === "gateway-alias") {
+        if (replacement) {
+          const fallbackArgs = reference.policy.fallbacks
+            .map(fallback => `--fallback ${fallback}`)
+            .join(" ");
+          console.log(`  Policy: frogp models continuity set ${reference.primary} ${fallbackArgs} --auto retired`);
+        } else {
+          console.log("  Next: frogp models");
+        }
+      } else if (replacement) {
         console.log(`  Replace: frogp models continuity replace ${reference.id} ${replacement}`);
       } else {
         console.log("  Next: frogp models");

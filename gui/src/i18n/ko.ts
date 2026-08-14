@@ -716,6 +716,7 @@ export const ko: Record<TKey, string> = {
   "models.continuity.fallback.unavailable": "현재 선택할 수 없음",
   "models.continuity.saveAutomatic": "자동 대응 저장",
   "models.continuity.manualOnly": "이 모델 설정에는 영구 교체만 사용할 수 있습니다.",
+  "models.continuity.savedSessionPolicyOnly": "저장된 세션 모델은 위의 대체 설정을 따릅니다. 영구 교체 대신 여기에서 대체 순서를 저장하세요.",
   "models.continuity.replaceModel": "영구 교체 모델",
   "models.continuity.replaceChoose": "모델 선택",
   "models.continuity.replace": "영구 교체",

@@ -638,31 +638,35 @@ function ContinuityReferenceCard({
         <p className="continuity-manual-only">{t("models.continuity.manualOnly")}</p>
       )}
 
-      <div className="continuity-replace">
-        <div className="continuity-field">
-          <label htmlFor={`${fieldId}-replacement`}>{t("models.continuity.replaceModel")}</label>
-          <select
-            id={`${fieldId}-replacement`}
-            className="select-sm"
-            value={replacement}
-            disabled={saving}
-            aria-label={t("models.continuity.replaceModel")}
-            onChange={event => setReplacement(event.target.value)}
+      {reference.kind === "gateway-alias" ? (
+        <p className="continuity-manual-only">{t("models.continuity.savedSessionPolicyOnly")}</p>
+      ) : (
+        <div className="continuity-replace">
+          <div className="continuity-field">
+            <label htmlFor={`${fieldId}-replacement`}>{t("models.continuity.replaceModel")}</label>
+            <select
+              id={`${fieldId}-replacement`}
+              className="select-sm"
+              value={replacement}
+              disabled={saving}
+              aria-label={t("models.continuity.replaceModel")}
+              onChange={event => setReplacement(event.target.value)}
+            >
+              <option value="">{t("models.continuity.replaceChoose")}</option>
+              {candidateModels.map(model => <option key={model} value={model}>{model}</option>)}
+            </select>
+          </div>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={saving || !replacement}
+            aria-label={t("models.continuity.replace")}
+            onClick={() => void replace()}
           >
-            <option value="">{t("models.continuity.replaceChoose")}</option>
-            {candidateModels.map(model => <option key={model} value={model}>{model}</option>)}
-          </select>
+            {saving ? t("prov.savingDefault") : t("models.continuity.replace")}
+          </button>
         </div>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={saving || !replacement}
-          aria-label={t("models.continuity.replace")}
-          onClick={() => void replace()}
-        >
-          {t("models.continuity.replace")}
-        </button>
-      </div>
+      )}
     </article>
   );
 }

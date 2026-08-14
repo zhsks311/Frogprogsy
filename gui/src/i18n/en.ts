@@ -716,6 +716,7 @@ export const en = {
   "models.continuity.fallback.unavailable": "currently unavailable",
   "models.continuity.saveAutomatic": "Save automatic protection",
   "models.continuity.manualOnly": "Only permanent replacement is available for this model setting.",
+  "models.continuity.savedSessionPolicyOnly": "This saved session model follows the fallback settings above. Save its fallback order here instead of replacing it permanently.",
   "models.continuity.replaceModel": "Permanent replacement model",
   "models.continuity.replaceChoose": "Choose a model",
   "models.continuity.replace": "Replace permanently",

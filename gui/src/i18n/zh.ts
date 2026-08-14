@@ -716,6 +716,7 @@ export const zh: Record<TKey, string> = {
   "models.continuity.fallback.unavailable": "当前不可选",
   "models.continuity.saveAutomatic": "保存自动保护",
   "models.continuity.manualOnly": "此模型设置只能使用永久替换。",
+  "models.continuity.savedSessionPolicyOnly": "此已保存的会话模型使用上面的备用设置。请在这里保存备用顺序，不要永久替换模型。",
   "models.continuity.replaceModel": "永久替换模型",
   "models.continuity.replaceChoose": "选择模型",
   "models.continuity.replace": "永久替换",

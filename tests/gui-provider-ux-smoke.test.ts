@@ -516,6 +516,40 @@ describe("model continuity UX", () => {
     expect(markup).toContain('<details class="continuity-normal-list">');
     expect(markup).not.toContain('<details class="continuity-normal-list" open');
   });
+  test("gateway alias keeps fallback policy controls without permanent replacement", () => {
+    const report = parseModelContinuityReport({
+      policies: {
+        "work/session": { fallbacks: ["work/first"], automatic: "retired" },
+      },
+      references: [{
+        id: "gateway-alias:session",
+        kind: "gateway-alias",
+        primary: "work/session",
+        status: "retired",
+        automaticEligible: true,
+        policy: { fallbacks: ["work/first"], automatic: "retired" },
+        supportStatus: "validated",
+        label: "Saved session model",
+      }],
+      circuits: [],
+    });
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelContinuityPanel, {
+        report,
+        selectableModels: ["work/first", "work/second"],
+        t: tKo,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
+      }),
+    );
+
+    expect(markup).toContain('aria-label="자동 대응 범위"');
+    expect(markup).toContain('aria-label="자동 대응 저장"');
+    expect(markup).toContain("저장된 세션 모델은 위의 대체 설정을 따릅니다");
+    expect(markup).not.toContain('aria-label="영구 교체 모델"');
+    expect(markup).not.toContain('aria-label="영구 교체"');
+  });
+
 
   test("automatic controls expose labels in keyboard reading order", () => {
     const markup = renderToStaticMarkup(

@@ -67,6 +67,44 @@ const STUB_RETIRED_WITHOUT_FALLBACK_REPORT = {
   ],
   circuits: [],
 };
+const STUB_GATEWAY_ALIAS_REPORT = {
+  policies: {
+    "work/session": {
+      fallbacks: ["work/first", "codex/second"],
+      automatic: "off",
+    },
+  },
+  references: [{
+    id: "gateway-alias:session",
+    kind: "gateway-alias",
+    primary: "work/session",
+    status: "retired",
+    automaticEligible: true,
+    policy: {
+      fallbacks: ["work/first", "codex/second"],
+      automatic: "off",
+    },
+    supportStatus: "validated",
+    label: "Saved session model",
+  }],
+  circuits: [],
+};
+
+const STUB_GATEWAY_ALIAS_WITHOUT_FALLBACK_REPORT = {
+  policies: {},
+  references: [{
+    id: "gateway-alias:session",
+    kind: "gateway-alias",
+    primary: "work/session",
+    status: "retired",
+    automaticEligible: true,
+    policy: { fallbacks: [], automatic: "off" },
+    supportStatus: "validated",
+    label: "Saved session model",
+  }],
+  circuits: [],
+};
+
 
 function runCli(argv: string[], frogHome: string, extraEnv: Record<string, string> = {}) {
   const claudeHome = join(frogHome, "claude");
@@ -290,6 +328,44 @@ describe("frogp models", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+  test("retired gateway alias prints an executable route policy command instead of replace", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const { server, port } = startStubProxy({ continuityReport: STUB_GATEWAY_ALIAS_REPORT });
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync(["models", "continuity"], home);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain(
+        "frogp models continuity set work/session --fallback work/first --fallback codex/second --auto retired",
+      );
+      expect(result.stdout).not.toContain("frogp models continuity replace");
+      expect(result.stdout).not.toContain("gateway-alias:session");
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("retired gateway alias without fallback prints executable candidate discovery", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const { server, port } = startStubProxy({
+      continuityReport: STUB_GATEWAY_ALIAS_WITHOUT_FALLBACK_REPORT,
+    });
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync(["models", "continuity"], home);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Next: frogp models");
+      expect(result.stdout).not.toContain("frogp models continuity replace");
+      expect(result.stdout).not.toContain("<provider/model>");
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
 
   test("models continuity --json prints the API document unchanged without ANSI", async () => {
     const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
