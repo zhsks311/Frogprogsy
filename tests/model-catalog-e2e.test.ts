@@ -111,16 +111,21 @@ async function startProxy(home: string, catalogUrl: string) {
     }, null, 2)}\n`, { mode: 0o600 });
   }
   let effectiveConfig: FrogConfig | undefined;
+  let retiredTargets: ReadonlySet<string> | undefined;
   const server = await startServer(0, {
     createRuntimeConfigState: () => createRuntimeConfigState({
       refreshCatalog: () => refreshModelCatalog({ remoteUrl: catalogUrl }),
     }),
-    onRuntimeConfigReady: config => { effectiveConfig = config; },
+    onRuntimeConfigReady: (config, selectedRetiredTargets) => {
+      effectiveConfig = config;
+      retiredTargets = selectedRetiredTargets;
+    },
   });
-  if (!effectiveConfig) throw new Error("server did not hand off effective startup config");
+  if (!effectiveConfig || !retiredTargets) throw new Error("server did not hand off effective startup model state");
   await refreshClaudeCodeModelCatalog(effectiveConfig, undefined, {
     claudeHome,
     profileId: "cp_e2e",
+    retiredTargets,
   });
   writeFileSync(join(home, "frogp.pid"), String(process.pid), "utf8");
   writeFileSync(join(home, "frogp.port"), String(server.port), "utf8");

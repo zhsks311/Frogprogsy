@@ -27,6 +27,7 @@ import {
 import { createConfigMutationLock } from "./config-mutation-lock";
 import { generateLocalAccessSecret, hashLocalAccessSecret, sameMachineAccessHeaders } from "./local-access";
 import { findAvailablePort } from "./ports";
+
 import { maybeShowStarPrompt } from "./star-prompt";
 import { parseEnvFlag, resolveWatchdogEnabled } from "./watchdog";
 import { configureZshAccountShortcuts, maybeConfigureAccountShortcuts, removeZshAccountShortcuts, shellManualPathLine, zshAccountShortcutsSupported } from "./shell-shortcuts";
@@ -454,13 +455,17 @@ async function handleStart(options: { block?: boolean } = {}) {
 
       const port = await chooseListenPort(requestedPort);
       let effectiveConfig: FrogConfig | undefined;
+      let retiredTargets: ReadonlySet<string> | undefined;
       const { startServer } = await import("./server");
       const server = await startServer(port, {
-        onRuntimeConfigReady: config => { effectiveConfig = config; },
+        onRuntimeConfigReady: (config, selectedRetiredTargets) => {
+          effectiveConfig = config;
+          retiredTargets = selectedRetiredTargets;
+        },
       });
-      if (effectiveConfig === undefined) {
+      if (effectiveConfig === undefined || retiredTargets === undefined) {
         server.stop(true);
-        throw new Error("Server startup did not provide the effective runtime config.");
+        throw new Error("Server startup did not provide the effective runtime model state.");
       }
       let pidPublished = false;
       let activePortPublished = false;
@@ -469,7 +474,7 @@ async function handleStart(options: { block?: boolean } = {}) {
         pidPublished = true;
         writeActivePort(port);
         activePortPublished = true;
-        return { server, port, effectiveConfig };
+        return { server, port, effectiveConfig, retiredTargets };
       } catch (error) {
         server.stop(true);
         if (activePortPublished) removeActivePort();
@@ -485,7 +490,12 @@ async function handleStart(options: { block?: boolean } = {}) {
     console.error(`⚠️  Proxy already running (PID ${startup.runningPid}). Use 'frogp stop' first.`);
     process.exit(1);
   }
-  const { server, port, effectiveConfig: effectiveStartConfig } = startup;
+  const {
+    server,
+    port,
+    effectiveConfig: effectiveStartConfig,
+    retiredTargets: startupRetiredTargets,
+  } = startup;
 
   clearShutdownIntent();
   // Clear any stale watchdog give-up status so 'frogp status' doesn't show
@@ -542,7 +552,11 @@ async function handleStart(options: { block?: boolean } = {}) {
   const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
   for (const profile of startProfiles) {
     try {
-      const cat = await refreshClaudeCodeModelCatalog(effectiveStartConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
+      const cat = await refreshClaudeCodeModelCatalog(effectiveStartConfig, undefined, {
+        claudeHome: profile.claudeHome,
+        profileId: profile.id,
+        retiredTargets: startupRetiredTargets,
+      });
       if (cat.added > 0) console.log(`   + ${cat.added} models appended to Claude Code catalog for ${profile.name} (${cat.path})`);
     } catch (e) {
       console.error(`catalog sync skipped for ${profile.name}:`, e instanceof Error ? e.message : String(e));
@@ -1554,7 +1568,12 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       let refreshed: ClaudeCodeCatalogRefreshResult | undefined;
       if (shouldRefresh) {
         const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
-        refreshed = await refreshClaudeCodeModelCatalog(effectiveConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
+        if (!runtimeState) throw new Error("model catalog refresh state was not selected");
+        refreshed = await refreshClaudeCodeModelCatalog(effectiveConfig, undefined, {
+          claudeHome: profile.claudeHome,
+          profileId: profile.id,
+          retiredTargets: runtimeState.retiredTargets,
+        });
         catalogPath = refreshed.catalogExists ? refreshed.path : null;
       }
       const result = await (await import("./claude-inject")).injectClaudeCodeConfig(persistedConfig.port ?? DEFAULT_PORT, persistedConfig, { catalogPath, claudeHome: profile.claudeHome, profileId: profile.id, includeAuthToken: parsed.includeAuthToken });

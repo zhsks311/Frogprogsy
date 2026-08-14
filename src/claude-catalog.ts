@@ -747,7 +747,6 @@ export async function syncCatalogModels(
 
   const catalog = loadCatalogForSync(catalogPath);
   if (!catalog) return { added: 0, path: catalogPath };
-  if (goModels.length === 0) return { added: 0, path: catalogPath };
 
   const template = findNativeTemplate(catalog);
 

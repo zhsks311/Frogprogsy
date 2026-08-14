@@ -438,6 +438,37 @@ describe("Claude-visible model aliases", () => {
     }
   });
 
+
+  test("canonical unretire preserves the old alias while suffixing only a newly colliding route", () => {
+    const homes = makeHomes();
+    try {
+      const [old] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune: true });
+      reconcileRetiredModelAliases(new Set(["a/b-c"]));
+      const [collision] = materializeModelAliases([{ provider: "a-b", model: "c" }], { prune: true });
+      reconcileRetiredModelAliases(new Set());
+
+      const active = materializeModelAliases([
+        { provider: "a", model: "b-c" },
+        { provider: "a-b", model: "c" },
+      ], { prune: true });
+
+      expect(active).toContainEqual(expect.objectContaining({
+        alias: old!.alias,
+        routeKey: "a/b-c",
+        status: "active",
+      }));
+      expect(active).toContainEqual(expect.objectContaining({
+        alias: collision!.alias,
+        routeKey: "a-b/c",
+        status: "active",
+      }));
+      expect(collision!.alias).toMatch(new RegExp(`^${old!.alias}-[a-f0-9]{6}$`));
+      expect(resolvePersistedModelAlias(old!.alias)?.routeKey).toBe("a/b-c");
+      expect(resolvePersistedModelAlias(collision!.alias)?.routeKey).toBe("a-b/c");
+    } finally {
+      homes.cleanup();
+    }
+  });
   test("live discovery cannot republish a retired model through canonical catalog sync", async () => {
     const homes = makeHomes();
     const originalFetch = globalThis.fetch;

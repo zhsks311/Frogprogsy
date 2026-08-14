@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { catalogDataDigest } from "../src/model-catalog-generator";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
@@ -175,4 +176,97 @@ describe("frogp models", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  test("refresh CLI seams keep selected-catalog retired live rows out of Claude publications", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-cli-retired-"));
+    const claudeHome = join(home, "claude");
+    const provider = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/healthz") return new Response("ok");
+        if (path.endsWith("/models")) {
+          return Response.json({ data: [{ id: "claude-old" }, { id: "claude-new" }] });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      mkdirSync(join(home, "cache"), { recursive: true });
+      mkdirSync(claudeHome, { recursive: true });
+      const providers = [{
+        id: "anthropic",
+        models: [{ id: "claude-new" }],
+        retiredModels: ["claude-old"],
+      }];
+      writeFileSync(join(home, "cache", "model-catalog-v1.json"), JSON.stringify({
+        schemaVersion: 1,
+        catalogRevision: 999_999,
+        catalogDigest: catalogDataDigest({ providers }),
+        sourceCommit: "c".repeat(40),
+        generatedAt: "2026-08-14T00:00:00.000Z",
+        minFrogprogsyVersion: "0.0.0",
+        providers,
+      }));
+      writeFileSync(join(home, "config.json"), JSON.stringify({
+        port: provider.port,
+        hostname: "127.0.0.1",
+        modelCatalogConfigVersion: 1,
+        defaultProvider: "work",
+        providers: {
+          work: {
+            adapter: "openai-chat",
+            baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+            apiKey: "test-key",
+            catalogProviderId: "anthropic",
+            liveModels: true,
+          },
+        },
+        claudeProfiles: {
+          schemaVersion: 1,
+          defaultProfileId: "cp_default",
+          profiles: [{
+            id: "cp_default",
+            name: "Default",
+            claudeHome,
+            authState: "not_seen",
+          }],
+        },
+      }));
+      writeFileSync(join(claudeHome, "frogprogsy-catalog.json"), JSON.stringify({
+        models: [{
+          slug: "gpt-5.5",
+          display_name: "gpt-5.5",
+          priority: 1,
+          base_instructions: "Native model fixture",
+        }],
+      }));
+
+      for (const argv of [
+        ["refresh"],
+        ["claude", "refresh", "cp_default"],
+        ["claude", "reload-models", "cp_default"],
+      ]) {
+        const result = await runCliAsync(argv, home);
+        expect(result.status).toBe(0);
+
+        const catalog = JSON.parse(readFileSync(
+          join(claudeHome, "frogprogsy-catalog.json"),
+          "utf8",
+        )) as { models: Array<{ slug: string }> };
+        const gateway = JSON.parse(readFileSync(
+          join(claudeHome, "cache", "gateway-models.json"),
+          "utf8",
+        )) as { models: Array<{ display_name: string }> };
+        expect(catalog.models.map(model => model.slug)).toContain("work/claude-new");
+        expect(catalog.models.map(model => model.slug)).not.toContain("work/claude-old");
+        expect(gateway.models.map(model => model.display_name)).toContain("work/claude-new");
+        expect(gateway.models.map(model => model.display_name)).not.toContain("work/claude-old");
+      }
+    } finally {
+      provider.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

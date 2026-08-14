@@ -353,7 +353,7 @@ export async function syncClaudeCodeGatewayModelsCache(
 export async function refreshClaudeCodeModelCatalog(
   effectiveConfig: FrogConfig,
   deps: RefreshDeps = defaultDeps,
-  options: { claudeHome?: string; profileId?: string; retiredTargets?: ReadonlySet<string> } = {},
+  options: { claudeHome?: string; profileId?: string; retiredTargets: ReadonlySet<string> },
 ): Promise<ClaudeCodeCatalogRefreshResult> {
   const result = await deps.syncCatalogModels(effectiveConfig, options);
   let gatewayCache: ClaudeCodeGatewayModelsCacheSyncResult;

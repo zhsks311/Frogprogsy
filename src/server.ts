@@ -4405,7 +4405,7 @@ export interface ServerStartDeps {
   createRuntimeConfigState?: () => Promise<RuntimeConfigState>;
   restoreCredentialedOAuthProviderConfigs?: (config: FrogConfig) => boolean;
   serve?: typeof Bun.serve;
-  onRuntimeConfigReady?: (effectiveConfig: FrogConfig) => void;
+  onRuntimeConfigReady?: (effectiveConfig: FrogConfig, retiredTargets: ReadonlySet<string>) => void;
 }
 
 export async function startServer(
@@ -4435,7 +4435,7 @@ export async function startServer(
   }
   if (persistedChanged) state.persist();
   const startupConfig = state.effective;
-  deps.onRuntimeConfigReady?.(structuredClone(startupConfig));
+  deps.onRuntimeConfigReady?.(structuredClone(startupConfig), state.retiredTargets);
   // Auto-mode classifier: validate the saved target independently, then enforce it only when the
   // global switch is on. Disabled configurations may retain their last valid target for later reuse.
   const classifierResolution = resolveAutoModeClassifierTarget(startupConfig);

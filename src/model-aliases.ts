@@ -128,8 +128,8 @@ export function materializeModelAliases(models: AliasSourceModel[], options: { p
   const aliases = computeModelAliases(models);
   const keep = new Set<string>();
   const entries: ModelAliasEntry[] = [];
-  // Reverse index of persisted aliases by routeKey so a subset writer reuses the existing canonical
-  // alias for a routeKey instead of minting a divergent (e.g. hashless) one.
+  // Reverse index of persisted aliases by routeKey so every writer keeps an issued route identity
+  // stable. Canonical writes may prune absent routes, but never rename a route that remains active.
   const existingByRouteKey = new Map<string, ModelAliasEntry>();
   for (const entry of Object.values(state.aliases)) existingByRouteKey.set(entry.routeKey, entry);
   for (const [routeKey, computedAlias] of aliases) {
@@ -143,7 +143,7 @@ export function materializeModelAliases(models: AliasSourceModel[], options: { p
       keep.add(existingRoute.alias);
       continue;
     }
-    const preserved = !options.prune ? existingRoute : undefined;
+    const preserved = existingRoute;
     let alias = preserved?.alias ?? computedAlias;
     const collisionAlias = `${computedAlias}-${collisionSuffix(provider, model)}`;
     let collisionIndex = 1;
