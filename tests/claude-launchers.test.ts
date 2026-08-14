@@ -1594,6 +1594,7 @@ describe("Claude launchers", () => {
   });
 });
 const SENTINEL_TOKEN = "local-frogprogsy";
+const NO_RETIRED_TARGETS: ReadonlySet<string> = new Set();
 
 const gatewayHome = mkdtempSync(join(tmpdir(), "frog-launcher-profile-home-"));
 const gatewayProfile: ClaudeProfileRecord = { id: "cp_work", name: "anthropic-work", claudeHome: gatewayHome };
@@ -1675,6 +1676,7 @@ describe("managed launch account-home conflict", () => {
     const errors = captureConsoleError();
     try {
       await runClaudeProfile(profile, config(), [], {
+        retiredTargets: NO_RETIRED_TARGETS,
         env: { CLAUDE_CONFIG_DIR: other },
         validateExecutable: candidate => { order.push(`validate:${candidate}`); return candidate!; },
         refreshCatalog: refreshFake(order),
@@ -1700,6 +1702,7 @@ describe("managed launch real-Claude validation", () => {
     const order: string[] = [];
     const exit: { code?: number } = {};
     await runClaudeProfile(gatewayProfile, config(), [], {
+      retiredTargets: NO_RETIRED_TARGETS,
       env: {},
       gateway: true,
       realClaude: "/real/claude",
@@ -1737,6 +1740,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     const captured: { env?: NodeJS.ProcessEnv } = {};
     const exit: { code?: number } = {};
     await runClaudeProfile(gatewayProfile, config(), ["--version"], {
+      retiredTargets: NO_RETIRED_TARGETS,
       gateway: true,
       realClaude: "/usr/bin/true",
       validateExecutable: candidate => candidate!,
@@ -1766,6 +1770,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     const captured: { env?: NodeJS.ProcessEnv } = {};
     try {
       await runClaudeProfile(gatewayProfile, cfg, [], {
+        retiredTargets: NO_RETIRED_TARGETS,
         gateway: true,
         realClaude: "/usr/bin/true",
         validateExecutable: candidate => candidate!,
@@ -1791,6 +1796,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     const cfg: FrogConfig = { ...config(), gatewayAuthCarrier: "sentinel" };
     const captured: { env?: NodeJS.ProcessEnv } = {};
     await runClaudeProfile(gatewayProfile, cfg, [], {
+      retiredTargets: NO_RETIRED_TARGETS,
       gateway: true,
       realClaude: "/usr/bin/true",
       validateExecutable: candidate => candidate!,
@@ -1801,17 +1807,39 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     expect(captured.env?.ANTHROPIC_AUTH_TOKEN).toBe(SENTINEL_TOKEN);
   });
 
-  test("refreshes the profile picker cache before spawning the gateway Claude", async () => {
+  test("refreshes the profile picker cache with the effective config and exact retired targets before spawning", async () => {
     const order: string[] = [];
-    await runClaudeProfile(gatewayProfile, config(), [], {
+    const effectiveConfig = config();
+    const retiredTargets = new Set(["anthropic/claude-retired"]);
+    let receivedConfig: FrogConfig | undefined;
+    let receivedOptions: { claudeHome?: string; profileId?: string; retiredTargets: ReadonlySet<string> } | undefined;
+    const refreshCatalog = (async (
+      configValue: FrogConfig,
+      _deps: unknown,
+      options: { claudeHome?: string; profileId?: string; retiredTargets: ReadonlySet<string> },
+    ) => {
+      order.push("refresh");
+      receivedConfig = configValue;
+      receivedOptions = options;
+      return { added: 0, path: "/catalog", catalogExists: false, cacheSynced: false, gatewayCache: { status: "skipped" as const }, warnings: [] };
+    }) as NonNullable<RunClaudeProfileOptions["refreshCatalog"]>;
+    await runClaudeProfile(gatewayProfile, effectiveConfig, [], {
       gateway: true,
+      retiredTargets,
       realClaude: "/usr/bin/true",
       validateExecutable: candidate => candidate!,
-      refreshCatalog: refreshFake(order),
+      refreshCatalog,
       spawn: spawnFake(order, {}),
       exit: exitFake({}),
     });
     expect(order).toEqual(["refresh", "spawn"]);
+    expect(receivedConfig).toBe(effectiveConfig);
+    expect(receivedOptions).toEqual({
+      claudeHome: gatewayProfile.claudeHome,
+      profileId: gatewayProfile.id,
+      retiredTargets,
+    });
+    expect(receivedOptions?.retiredTargets).toBe(retiredTargets);
   });
 
   test("a transient refresh failure warns without leaking secrets and still launches", async () => {
@@ -1822,6 +1850,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
     try {
       await runClaudeProfile(gatewayProfile, config(), [], {
+        retiredTargets: NO_RETIRED_TARGETS,
         gateway: true,
         realClaude: "/usr/bin/true",
         validateExecutable: candidate => candidate!,
@@ -1847,6 +1876,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
     try {
       await runClaudeProfile(gatewayProfile, config(), [], {
+        retiredTargets: NO_RETIRED_TARGETS,
         gateway: true,
         realClaude: "/usr/bin/true",
         validateExecutable: candidate => candidate!,
@@ -1879,6 +1909,7 @@ describe("runClaudeProfile carrier + pre-launch cache", () => {
     const order: string[] = [];
     const captured: { env?: NodeJS.ProcessEnv } = {};
     await runClaudeProfile(gatewayProfile, config(), [], {
+      retiredTargets: NO_RETIRED_TARGETS,
       gateway: false,
       realClaude: "/usr/bin/true",
       validateExecutable: candidate => candidate!,
@@ -1915,6 +1946,7 @@ describe("launcher spawn failure exit codes", () => {
     const err = captureConsoleError();
     try {
       await runClaudeProfile(gatewayProfile, config(), ["--version"], {
+        retiredTargets: NO_RETIRED_TARGETS,
         gateway: false,
         realClaude: "/opt/homebrew/bin/claude",
         validateExecutable: candidate => candidate!,
@@ -1935,6 +1967,7 @@ describe("launcher spawn failure exit codes", () => {
     const err = captureConsoleError();
     try {
       await runClaudeProfile(gatewayProfile, config(), [], {
+        retiredTargets: NO_RETIRED_TARGETS,
         gateway: false,
         realClaude: "/tmp/blocked/claude",
         validateExecutable: candidate => candidate!,
@@ -1954,6 +1987,7 @@ describe("launcher spawn failure exit codes", () => {
     const err = captureConsoleError();
     try {
       await runClaudeProfile(gatewayProfile, config(), [], {
+        retiredTargets: NO_RETIRED_TARGETS,
         gateway: false,
         realClaude: "/usr/bin/true",
         validateExecutable: candidate => candidate!,
@@ -1972,6 +2006,7 @@ describe("launcher spawn failure exit codes", () => {
     const err = captureConsoleError();
     try {
       await runClaudeProfile(gatewayProfile, config(), [], {
+        retiredTargets: NO_RETIRED_TARGETS,
         gateway: false,
         realClaude: "/usr/bin/true",
         validateExecutable: candidate => candidate!,

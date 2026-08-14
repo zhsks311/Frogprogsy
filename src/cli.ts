@@ -1143,7 +1143,7 @@ function modelContinuityReport(document: unknown): CliModelContinuityReport {
       || !reference.policy
       || typeof reference.policy !== "object"
       || !Array.isArray(reference.policy.fallbacks)
-      || !reference.policy.fallbacks.every(fallback => typeof fallback === "string")
+      || !reference.policy.fallbacks.every((fallback: unknown) => typeof fallback === "string")
       || (reference.policy.automatic !== "off"
         && reference.policy.automatic !== "retired"
         && reference.policy.automatic !== "transient"
@@ -1947,9 +1947,13 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       const separator = values.indexOf("--");
       const selectorValues = separator === -1 ? values.slice(1, 2) : values.slice(1, separator);
       const claudeArgs = separator === -1 ? values.slice(2) : values.slice(separator + 1);
-      const profile = resolveClaudeProfile(config, selectorValues.join(" ") || undefined);
+      const runtimeState = await createRuntimeConfigState();
+      const profile = resolveClaudeProfile(runtimeState.persisted, selectorValues.join(" ") || undefined);
       try {
-        await runClaudeProfile(profile, config, claudeArgs, { realClaude: process.env.FROGP_REAL_CLAUDE?.trim() || undefined });
+        await runClaudeProfile(profile, runtimeState.effective, claudeArgs, {
+          retiredTargets: runtimeState.retiredTargets,
+          realClaude: process.env.FROGP_REAL_CLAUDE?.trim() || undefined,
+        });
       } catch {
         console.error("frogprogsy: refused to launch Claude because the executable could not be validated.");
         process.exit(1);
