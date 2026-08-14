@@ -47,4 +47,4 @@ claude -m "codex/gpt-5.5" "Draft a migration plan"
 - `frogp restore` 与 `frogp uninstall` 是把 Claude Code 或本地 FrogProgsy 状态恢复到干净基线的恢复命令。
 - 直接编辑 `~/.frogprogsy/config.json` 由 configuration reference 覆盖；provider catalog 选择由 provider guide 覆盖。
 
-下一步：[请求生命周期](/frog-progsy/zh-cn/getting-started/how-it-works/) 或 [Provider 设置](/frog-progsy/zh-cn/guides/providers/)。
+下一步：[请求生命周期](/zh-cn/getting-started/how-it-works/) 或 [Provider 设置](/zh-cn/guides/providers/)。

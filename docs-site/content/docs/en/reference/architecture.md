@@ -124,7 +124,7 @@ The dashboard is a local operations surface. It shows config provider lanes, rou
 - safe error summary;
 - aggregate provider-reported token usage when available.
 
-Operational procedures live in [Troubleshooting](/frog-progsy/guides/troubleshooting/).
+Operational procedures live in [Troubleshooting](/guides/troubleshooting/).
 
 ## Operational guardrails
 

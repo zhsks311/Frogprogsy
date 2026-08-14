@@ -30,7 +30,7 @@
 - `.gjc/**`는 런타임 소유(gitignore) — 직접 편집 금지, `gjc` CLI로만. **durable 명세와 유지보수 결정은 `structure/`에만** 남긴다.
 
 ## 프로젝트 사실 (frogprogsy)
-- product = **frogprogsy**, bin = **`frogp`**, config = `~/.frogprogsy/`. 문서 base 는 `/frog-progsy`.
+- product = **frogprogsy**, bin = **`frogp`**, config = `~/.frogprogsy/`. 문서 base 는 `/Frogprogsy`.
 - 유지보수 SOT = `structure/*.md`, 공개 문서 = `docs-site/`와 루트 다국어 README, 런타임 상태 = `.gjc/`(비추적). `docs/`와 `artifacts/`는 로컬 조사·검증용이며 gitignore하고 커밋하지 않는다.
 - **분류기 라우팅** SOT = `structure/07_classifier-routing.md`. 원칙: Claude Code 2.1.220에서 프로필별 opt-in이 보내는 정확한 예약 alias만 단일 명시 대상(`autoModeClassifier`)으로 라우팅한다. 모델명·가격·프롬프트 내용으로 추측하지 않고, 일반 provider fallback/long-context/model mixing을 적용하지 않는다.
 - frogprogsy 런타임은 `~/.claude`를 함부로 읽거나 수정하지 않는다(공인 inject 경로만).

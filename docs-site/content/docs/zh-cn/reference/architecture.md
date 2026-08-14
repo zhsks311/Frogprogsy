@@ -124,7 +124,7 @@ Dashboard 是本地运营表面。它显示 config provider lanes、route/defaul
 - safe error summary
 - provider-reported token usage 的 aggregate count（如果存在）
 
-运营流程维护在 [`/zh-cn/guides/troubleshooting/`](/frog-progsy/zh-cn/guides/troubleshooting/)。
+运营流程维护在 [`/zh-cn/guides/troubleshooting/`](/zh-cn/guides/troubleshooting/)。
 
 ## Operational guardrails
 

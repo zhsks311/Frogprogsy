@@ -136,7 +136,7 @@ safe metadata만 제공합니다.
 - safe error summary
 - provider-reported token usage가 있는 경우의 aggregate count
 
-운영 절차는 [`/ko/guides/troubleshooting/`](/frog-progsy/ko/guides/troubleshooting/)에 유지합니다.
+운영 절차는 [`/ko/guides/troubleshooting/`](/ko/guides/troubleshooting/)에 유지합니다.
 
 ## 운영 guardrail
 

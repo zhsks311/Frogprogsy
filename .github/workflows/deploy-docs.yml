@@ -35,7 +35,7 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Verify current main and generate catalog
         env:
-          PAGES_CATALOG_URL: https://zhsks311.github.io/frog-progsy/catalog/v1/model-catalog.json
+          PAGES_CATALOG_URL: https://zhsks311.github.io/Frogprogsy/catalog/v1/model-catalog.json
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = "refs/heads/main" || {

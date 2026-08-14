@@ -179,7 +179,7 @@ export default function App() {
             aria-label={`${t("theme.label")}: ${t(THEME_TKEY[theme])}`} title={`${t("theme.label")}: ${t(THEME_TKEY[theme])}`}>
             <ThemeIcon /> <span className="mode">{t(THEME_TKEY[theme])}</span>
           </button>
-          <a className="sidebar-link" href="https://github.com/zhsks311/frog-progsy" target="_blank" rel="noreferrer">
+          <a className="sidebar-link" href="https://github.com/zhsks311/Frogprogsy" target="_blank" rel="noreferrer">
             <IconGithub /> {t("common.github")}
           </a>
         </div>

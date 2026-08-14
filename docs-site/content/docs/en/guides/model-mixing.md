@@ -70,7 +70,7 @@ your Codex OAuth even for headless callers, because the grant supplies readiness
 Code home. The grant token is per-provider isolated: it attaches only to its bound Anthropic provider, and the
 Codex/xAI/Kimi answerers, judge, and synthesizer never receive it. If the grant can't refresh, that Anthropic
 leg fails closed with a re-auth hint rather than falling back to a forwarded header or an API key. A grant
-carries Anthropic ToS/account/quota risk (see the [Claude Code wiring guide](/frog-progsy/guides/claude-integration/));
+carries Anthropic ToS/account/quota risk (see the [Claude Code wiring guide](/guides/claude-integration/));
 Anthropic API-key providers stay the alternative.
 
 The built-in Low/Balanced/Research presets are the measured Codex profiles. Anthropic can be added manually as an
@@ -168,4 +168,4 @@ All profiles below are opt-in. Low and Balanced are convenience presets. Researc
 - The evaluated profile mixed Codex-family models only. Cross-provider rosters (for example Claude together with Codex) are supported functionally but have not been measured for quality.
 - The eval server uses an isolated `FROGPROGSY_HOME` and starts through the eval-only `serve` helper that imports `startServer()` directly; it does not use `frogp start` and must not touch user `~/.claude` or default `~/.frogprogsy`.
 
-All fields are documented in [Configuration](/frog-progsy/reference/configuration/#model-mixing-fields).
+All fields are documented in [Configuration](/reference/configuration/#model-mixing-fields).

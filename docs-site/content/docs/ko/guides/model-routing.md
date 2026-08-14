@@ -70,4 +70,4 @@ Claude Code 모델 선택기는 자동으로 만든 표시 이름을 보여줄 �
 2. 요청 모델이 `provider/model`인지, 자동 표시 이름인지, 짧은 이름인지 구분합니다.
 3. 정적 설정의 `defaultProvider`, 각 provider의 `defaultModel`, `models[]`, `disabledModels`를 확인합니다.
 4. alias가 관련된 경우 `~/.frogprogsy/model-aliases.json`을 확인합니다.
-5. 해결되지 않으면 [설정 파일 항목](/frog-progsy/ko/reference/configuration/)의 해당 항목을 확인합니다.
+5. 해결되지 않으면 [설정 파일 항목](/ko/reference/configuration/)의 해당 항목을 확인합니다.

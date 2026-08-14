@@ -4,7 +4,7 @@ description: "OAuth 계정, API 키, 로컬 서버, OpenAI 호환 서버를 Frog
 ---
 FrogProgsy의 전체 운영 문서는 docs-site의 `/ko/` 경로가 기준입니다. 이 가이드는 AI 서비스를 처음
 연결하고 기본 모델을 정하는 작업만 다룹니다. 설정 파일의 모든 항목은
-[설정 파일 항목](/frog-progsy/ko/reference/configuration/)에서 확인하세요.
+[설정 파일 항목](/ko/reference/configuration/)에서 확인하세요.
 
 FrogProgsy는 각 AI 서비스를 로컬 `frogp` 뒤에 붙는 **연결 대상**으로 다룹니다. Claude Code는
 평소처럼 요청을 보내고, FrogProgsy가 어떤 주소로 보낼지, 어떤 인증을 쓸지, 어떤 모델을 보여줄지 결정합니다.
@@ -20,8 +20,8 @@ AI 서비스 연결은 대시보드에서 하는 게 가장 안전합니다.
 5. **Models**에서 기본 모델과 Claude Code에 보여줄 모델을 확인하고, 필요 없는 항목은 숨깁니다.
 6. **Activity**에서 요청이 어느 단계까지 갔는지 확인합니다. 단계 이름은 문제를 좁힐 때만 보면 됩니다.
 
-대시보드 작업 뒤에는 [모델 선택 규칙](/frog-progsy/ko/guides/model-routing/)과
-[대시보드와 사용 기록](/frog-progsy/ko/guides/web-dashboard/)을 이어서 보면 됩니다.
+대시보드 작업 뒤에는 [모델 선택 규칙](/ko/guides/model-routing/)과
+[대시보드와 사용 기록](/ko/guides/web-dashboard/)을 이어서 보면 됩니다.
 
 ## 최신 모델 자료 적용하기
 
@@ -40,7 +40,7 @@ FrogProgsy는 proxy가 요청을 받기 전, 시작할 때 한 번 검증된 최
 | **API 키 연결** | 서비스가 API 키를 제공합니다. | 직접 입력한 키 또는 `~/.frogprogsy/config.json`의 `${ENV_VAR}`. | 대부분 `openai-chat`, 일부 `anthropic` |
 | **로컬 서버** | Ollama, vLLM, LM Studio 같은 로컬 OpenAI 호환 서버를 씁니다. | 보통 빈 키 또는 로컬 전용 키. | `openai-chat` |
 
-고급 설정을 직접 편집할 때의 항목별 설명은 [설정 파일 항목](/frog-progsy/ko/reference/configuration/)에 있습니다.
+고급 설정을 직접 편집할 때의 항목별 설명은 [설정 파일 항목](/ko/reference/configuration/)에 있습니다.
 
 ## AI 계정과 Claude Code 홈의 차이
 
@@ -74,7 +74,7 @@ frogprogsy는 Claude 토큰을 저장하지 않고, 들어온 Claude Code 요청
 - Anthropic 기존 로그인 전달은 실제로 존재하는 `authorization` 또는 `x-api-key`만 전달합니다.
 - `ANTHROPIC_AUTH_TOKEN=local-frogprogsy`는 내부 표시값이라 외부 서비스로 보내기 전에 제거됩니다.
 - OpenAI Responses 전달 방식은 호환 서비스와 대신 처리 기능에 필요한 헤더만 골라 보냅니다.
-- 호환 인증이 있으면 [웹 검색 및 이미지 대신 처리](/frog-progsy/ko/guides/capability-fallbacks/)도 사용할 수 있습니다.
+- 호환 인증이 있으면 [웹 검색 및 이미지 대신 처리](/ko/guides/capability-fallbacks/)도 사용할 수 있습니다.
 
 FrogProgsy가 요청 변환은 하되 서비스 비밀키를 저장하지 않게 하려면 이 방식을 쓰세요.
 
@@ -91,7 +91,7 @@ claude-work "hello"
 ## 계정 로그인: FrogProgsy가 토큰을 갱신
 
 OAuth 계정은 `~/.frogprogsy/auth.json`에 저장되고 만료 전에 갱신됩니다. Claude 구독 인증은 여기서 OAuth lane이 아닙니다. Claude Code에 남기고 별도 Claude Code 설정 디렉터리가 필요하면 `frogp claude` 홈을 사용하세요. CLI 또는
-[대시보드와 사용 기록](/frog-progsy/ko/guides/web-dashboard/)에서 지원되는 로그인을 시작할 수 있습니다.
+[대시보드와 사용 기록](/ko/guides/web-dashboard/)에서 지원되는 로그인을 시작할 수 있습니다.
 
 ```bash
 frogp login codex        # ChatGPT/Codex 계정, Codex backend로 route

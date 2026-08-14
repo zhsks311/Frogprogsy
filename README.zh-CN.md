@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <b>简体中文</b> · <a href="https://zhsks311.github.io/frog-progsy/zh-cn/"><b>完整文档</b></a>
+  <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <b>简体中文</b> · <a href="https://zhsks311.github.io/Frogprogsy/zh-cn/"><b>完整文档</b></a>
 </p>
 
 frogprogsy 是运行在 Claude Code 前面的本地 provider 网关。先在仪表盘中连接 provider，然后照常使用 Claude Code。
@@ -107,13 +107,13 @@ FrogProgsy 会在 proxy 启动时检查经过验证的最新模型资料。要�
 claude "解释这个项目的入口点"
 ```
 
-要路由到其他 model，或使用 `provider/model` alias，请继续阅读[模型路由](https://zhsks311.github.io/frog-progsy/zh-cn/guides/model-routing/)。
+要路由到其他 model，或使用 `provider/model` alias，请继续阅读[模型路由](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/model-routing/)。
 
 ## 指定 auto-mode 审查模型（预览版）
 
 把主模型设为 GPT，并不会自动把 Claude Code 内部的两次 auto-mode 审查调用也设为 GPT；它们是独立请求。在 `0.0.2-preview.1` 中，先在仪表盘选择一组明确的审查 provider/model，再为需要使用该功能的每个 Claude Code 目录启用 **Route auto-mode reviews**。只有保留的审查路由会使用这个目标；普通 provider fallback 和 Model Mixing 都不会替换它。
 
-此行为已在 Claude Code 2.1.220 上验证。更改目录设置后，请重启或 resume Claude Code 会话。启用该路由时，切换主模型要选择 FrogProgsy gateway catalog 中的精确条目，不要使用 Claude Code 内置的 `sonnet` 快捷名。详见[Dashboard 与 Activity](https://zhsks311.github.io/frog-progsy/zh-cn/guides/web-dashboard/#自动模式审查路由)和[配置参考](https://zhsks311.github.io/frog-progsy/zh-cn/reference/configuration/#自动模式审查路由)。
+此行为已在 Claude Code 2.1.220 上验证。更改目录设置后，请重启或 resume Claude Code 会话。启用该路由时，切换主模型要选择 FrogProgsy gateway catalog 中的精确条目，不要使用 Claude Code 内置的 `sonnet` 快捷名。详见[Dashboard 与 Activity](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/web-dashboard/#自动模式审查路由)和[配置参考](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/configuration/#自动模式审查路由)。
 
 ## 可选：连接 Claude 订阅（dual-auth grant）
 
@@ -130,13 +130,13 @@ frogp claude grants status
 
 `grants add` 不会自动登录：它只创建 grant 记录和隔离目录，并用已验证的真实 Claude 可执行文件和一个隔离的 `CLAUDE_CONFIG_DIR` 打印一条手动登录命令。add 本身不验证凭据；你亲自完成 Claude 登录后，再由 `grants status`（或仪表盘）核对隔离 scoped 凭据是否就绪。`grants status` 只报告 `ok`/`reauth_required`/`dangling` 这类就绪状态，不显示任何 secret。绑定后的 grant 可以和 Codex/ChatGPT 等 OAuth 登录在同一 session 及 model mixing 中并存，Codex OAuth 保持独立。
 
-Grant 是 opt-in 的托管选择：携带订阅认证的网络请求可能触及 Anthropic 服务条款，并带来 account/quota 层面的后果。显式同意用于选择启用 grant，以及 `frogp claude auth probe-b --live --yes` 这类实时订阅诊断，而不是每个正常 provider 请求都弹确认。不想托管订阅、或需要纯 headless/API 认证时，Anthropic API-key provider 仍是随时可用的替代方案。frogprogsy 不复制 token，也不接管全局登录。详见[Claude Code 接入指南](https://zhsks311.github.io/frog-progsy/zh-cn/guides/claude-integration/)。
+Grant 是 opt-in 的托管选择：携带订阅认证的网络请求可能触及 Anthropic 服务条款，并带来 account/quota 层面的后果。显式同意用于选择启用 grant，以及 `frogp claude auth probe-b --live --yes` 这类实时订阅诊断，而不是每个正常 provider 请求都弹确认。不想托管订阅、或需要纯 headless/API 认证时，Anthropic API-key provider 仍是随时可用的替代方案。frogprogsy 不复制 token，也不接管全局登录。详见[Claude Code 接入指南](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/claude-integration/)。
 
 </details>
 
 ## model-mixing 配置
 
-现在可以在仪表盘的 **Model Mixing** 标签页中，无需编辑 JSON，直接应用 Low、Balanced 或 Research 预设并启用 `frogp/mix`。面向用户的仪表盘流程和 caveats 见[模型混合指南](https://zhsks311.github.io/frog-progsy/zh-cn/guides/model-mixing/)。
+现在可以在仪表盘的 **Model Mixing** 标签页中，无需编辑 JSON，直接应用 Low、Balanced 或 Research 预设并启用 `frogp/mix`。面向用户的仪表盘流程和 caveats 见[模型混合指南](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/model-mixing/)。
 
 Model mixing 是 opt-in 功能，启用前不会改变行为。仪表盘预设包括 Low（4 次答案调用，0 次搜索）、Balanced（5 次答案调用，0 次搜索）和 Research（11 次答案调用，最多 3 次搜索）。应用预设不会自动启用；Enable 开关需要单独确认。启用后，Claude Code 模型列表会出现 `frogp/mix`。
 
@@ -154,11 +154,11 @@ README 只覆盖第一次成功使用的路径。官方完整文档位于 docs-s
 
 | 要做什么 | 文档 |
 | --- | --- |
-| 查看安装行为和首次运行生成的文件 | [安装 frogp](https://zhsks311.github.io/frog-progsy/zh-cn/getting-started/installation/) |
-| 详细走一遍首次 relay 启动 | [启动并验证](https://zhsks311.github.io/frog-progsy/zh-cn/getting-started/quickstart/) |
-| 配置 provider、OAuth、API key、本地 endpoint | [provider 设置](https://zhsks311.github.io/frog-progsy/zh-cn/guides/providers/) |
-| 查看 dashboard activity 与 usage | [Dashboard 与 Activity](https://zhsks311.github.io/frog-progsy/zh-cn/guides/web-dashboard/) |
-| 阅读 CLI、config JSON、adapter 参考 | [CLI 参考](https://zhsks311.github.io/frog-progsy/zh-cn/reference/cli/) · [配置参考](https://zhsks311.github.io/frog-progsy/zh-cn/reference/configuration/) · [adapter 参考](https://zhsks311.github.io/frog-progsy/zh-cn/reference/adapters/) |
+| 查看安装行为和首次运行生成的文件 | [安装 frogp](https://zhsks311.github.io/Frogprogsy/zh-cn/getting-started/installation/) |
+| 详细走一遍首次 relay 启动 | [启动并验证](https://zhsks311.github.io/Frogprogsy/zh-cn/getting-started/quickstart/) |
+| 配置 provider、OAuth、API key、本地 endpoint | [provider 设置](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/providers/) |
+| 查看 dashboard activity 与 usage | [Dashboard 与 Activity](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/web-dashboard/) |
+| 阅读 CLI、config JSON、adapter 参考 | [CLI 参考](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/cli/) · [配置参考](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/configuration/) · [adapter 参考](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/adapters/) |
 
 `frogp init`、config JSON、provider 矩阵、capability fallback 等高级主题不放在 README 主路径中，而是在上面的文档中维护。
 

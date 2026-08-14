@@ -39,7 +39,7 @@ The generator serves two release paths:
 2. the GitHub Pages deployment publishes the catalog generated from the latest qualifying `main` commit at:
 
 ```text
-https://zhsks311.github.io/frog-progsy/catalog/v1/model-catalog.json
+https://zhsks311.github.io/Frogprogsy/catalog/v1/model-catalog.json
 ```
 
 The artifact contains a schema version, catalog revision, SHA-256 digest of the canonical provider/model data, source `main` commit SHA, generation time, minimum reader version, providers, and model records. Stable key and array ordering makes equal inputs produce equal model data. CI supplies the generation time and source SHA explicitly. Runtime validation rejects an invalid time or a time unreasonably later than the local clock.

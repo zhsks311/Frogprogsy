@@ -5,7 +5,7 @@ import { createInterface } from "node:readline/promises";
 import { ensureConfigDirForWrite, getConfigDir } from "./config";
 import { parseEnvFlag } from "./watchdog";
 
-const REPO = "zhsks311/frog-progsy";
+const REPO = "zhsks311/Frogprogsy";
 /** Fires exactly once from the first interactive `frogp start`. */
 const MARKER = ".star-prompted";
 

@@ -59,7 +59,7 @@ Claude 구독을 Model Mixing에 쓰는 방식은 두 가지이며, headless 여
 
 **Forward(기본).** frogprogsy는 Claude 토큰을 저장하지 않고, Anthropic 내부 호출은 Claude Code가 게이트웨이로 보낸 실제 `Authorization` 또는 `x-api-key` 헤더를 그대로 재사용합니다. 그래서 로그인·주입된 Claude Code 홈에서 온 요청일 때만 Model Mixing 안에서 Anthropic이 동작합니다. `frogp/mix`를 호출하는 스크립트/API가 Anthropic 헤더를 보내지 않으면 forward로는 Anthropic 단계를 채울 수 없습니다.
 
-**Claude grant(선택).** grant는 frogprogsy 전용으로 격리된 credential을 보관하므로, 헤더가 없는 headless `frogp/mix` 호출에서도 Anthropic이 바로 준비됩니다(readiness). Anthropic provider를 grant에 연결(binding)해 두면 됩니다. 만드는 방법은 [Claude Code 연결](/frog-progsy/ko/guides/claude-integration/)의 grant 절을 참고하세요. 두 방식 다 원치 않고 구독 보관을 피하려면 Anthropic API-key provider를 따로 쓰면 됩니다.
+**Claude grant(선택).** grant는 frogprogsy 전용으로 격리된 credential을 보관하므로, 헤더가 없는 headless `frogp/mix` 호출에서도 Anthropic이 바로 준비됩니다(readiness). Anthropic provider를 grant에 연결(binding)해 두면 됩니다. 만드는 방법은 [Claude Code 연결](/ko/guides/claude-integration/)의 grant 절을 참고하세요. 두 방식 다 원치 않고 구독 보관을 피하려면 Anthropic API-key provider를 따로 쓰면 됩니다.
 
 인증은 provider별로 격리됩니다. grant 토큰은 연결된 Anthropic provider에만 붙고, 답변기·심판·최종 답변기·fallback으로 쓰인 codex·xai·kimi 같은 다른 provider는 Anthropic 토큰을 받지 않습니다. 반대로 Codex OAuth 로그인은 Anthropic 단계에 쓰이지 않고 계속 별개로 유지됩니다.
 
@@ -158,4 +158,4 @@ Claude 구독을 Model Mixing에 쓰는 방식은 두 가지이며, headless 여
 - 평가된 프로필은 Codex 계열 모델끼리 섞은 조합뿐입니다. Claude+Codex 같은 교차 프로바이더 구성은 기능상 지원되지만 품질은 측정되지 않았습니다.
 - Eval server는 isolated `FROGPROGSY_HOME`과 `startServer()`를 직접 import하는 eval-only `serve` helper를 사용합니다. `frogp start`를 쓰지 않고 사용자 `~/.claude`나 기본 `~/.frogprogsy`를 건드리면 안 됩니다.
 
-전체 항목은 [설정](/frog-progsy/ko/reference/configuration/#model-mixing-fields)에 있습니다.
+전체 항목은 [설정](/ko/reference/configuration/#model-mixing-fields)에 있습니다.

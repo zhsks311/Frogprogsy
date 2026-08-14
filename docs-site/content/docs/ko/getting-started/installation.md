@@ -46,7 +46,7 @@ frogp start
 ```
 
 `frogp start`는 로컬 연결을 열고 Claude Code가 볼 모델 목록을 맞춥니다.
-AI 서비스 추가, 기본 AI 서비스/모델 선택, 첫 `claude` 요청은 [처음 실행하기](/frog-progsy/ko/getting-started/quickstart/)에서 이어집니다.
+AI 서비스 추가, 기본 AI 서비스/모델 선택, 첫 `claude` 요청은 [처음 실행하기](/ko/getting-started/quickstart/)에서 이어집니다.
 
 ## Docker Compose
 
@@ -75,8 +75,8 @@ Client는 relay key를 `x-frogp-local-key`로 보내는 방식을 기본으로 �
 ## 처음 설치할 때는 넘겨도 되는 것
 
 - `frogp init`은 터미널에서 하나씩 설정하고 싶을 때 쓰는 다른 방법입니다. 처음에는 `frogp gui` 대시보드로 시작하는 흐름을 권장합니다.
-- `frogp restore`와 `frogp uninstall`은 문제가 생겼을 때 되돌리는 명령이며, 자세한 내용은 [frogp 명령](/frog-progsy/ko/reference/cli/)에 있습니다.
-- `config.json`을 직접 고쳐야 하는 경우는 [설정 파일 항목](/frog-progsy/ko/reference/configuration/)에서 다룹니다.
+- `frogp restore`와 `frogp uninstall`은 문제가 생겼을 때 되돌리는 명령이며, 자세한 내용은 [frogp 명령](/ko/reference/cli/)에 있습니다.
+- `config.json`을 직접 고쳐야 하는 경우는 [설정 파일 항목](/ko/reference/configuration/)에서 다룹니다.
 - 소스 checkout과 대시보드 개발 서버 실행은 기여자/개발 작업에만 필요합니다.
 
-다음: [처음 실행하기](/frog-progsy/ko/getting-started/quickstart/).
+다음: [처음 실행하기](/ko/getting-started/quickstart/).

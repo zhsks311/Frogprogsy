@@ -35,7 +35,7 @@ three locales in the same change.
 `.github/workflows/deploy-docs.yml` publishes the docs to:
 
 ```text
-https://zhsks311.github.io/frog-progsy/
+https://zhsks311.github.io/Frogprogsy/
 ```
 
 Every `main` push triggers the workflow; there is deliberately no path filter. Manual dispatch is

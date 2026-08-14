@@ -101,7 +101,7 @@ Claude Code refetches `/v1/models` when a session starts or resumes. Reopening a
 | --- | --- | --- |
 | `frogp gui` | relay process when needed | Opens the local dashboard, auto-starting the proxy and waiting for it to become healthy first. The URL uses the actual active listen port. |
 
-The dashboard is an operations surface for config, routes, safe request logs, and usage summaries. Use it with [Troubleshooting](/frog-progsy/guides/troubleshooting/) when diagnosing failed requests.
+The dashboard is an operations surface for config, routes, safe request logs, and usage summaries. Use it with [Troubleshooting](/guides/troubleshooting/) when diagnosing failed requests.
 
 ## Recovery
 

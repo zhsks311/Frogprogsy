@@ -203,7 +203,7 @@ FrogProgsy는 provider별 `modelCapabilities`로 Claude Code catalog hint와 ima
 
 ## Model mixing fields
 
-`modelMixing`은 여러 제공자/모델을 `frogp/mix` 별칭 뒤에 둡니다. `enabled: true` 전에는 비활성이고, auto-mode 안전 분류기와는 무관합니다. 예시는 [모델 섞어 쓰기](/frog-progsy/ko/guides/model-mixing/) 가이드를 보세요.
+`modelMixing`은 여러 제공자/모델을 `frogp/mix` 별칭 뒤에 둡니다. `enabled: true` 전에는 비활성이고, auto-mode 안전 분류기와는 무관합니다. 예시는 [모델 섞어 쓰기](/ko/guides/model-mixing/) 가이드를 보세요.
 
 | 항목 | 타입 | 역할 |
 | --- | --- | --- |
@@ -289,4 +289,4 @@ FrogProgsy는 provider별 `modelCapabilities`로 Claude Code catalog hint와 ima
 
 ## Safe restore expectations
 
-`frogp restore`, `frogp stop`, `frogp uninstall`은 FrogProgsy가 쓴 Claude Code settings/catalog entry만 제거합니다. 다른 Claude Code 설정, history, credential은 삭제하지 않습니다. 설정이 꼬인 경우 운영 절차는 [`/ko/guides/troubleshooting/`](/frog-progsy/ko/guides/troubleshooting/)의 clean restore path를 따르세요.
+`frogp restore`, `frogp stop`, `frogp uninstall`은 FrogProgsy가 쓴 Claude Code settings/catalog entry만 제거합니다. 다른 Claude Code 설정, history, credential은 삭제하지 않습니다. 설정이 꼬인 경우 운영 절차는 [`/ko/guides/troubleshooting/`](/ko/guides/troubleshooting/)의 clean restore path를 따르세요.

@@ -298,7 +298,7 @@ const presetLabel = (t: TFn, preset: Preset) => PRESET_TEXT[preset.id] ? t(PRESE
 const presetDescription = (t: TFn, preset: Preset) => PRESET_TEXT[preset.id] ? t(PRESET_TEXT[preset.id].desc) : preset.description;
 
 const DOCS_PREFIX: Record<string, string> = { en: "", ko: "ko/", zh: "zh-cn/" };
-const mixingDocsUrl = (locale: string) => `https://zhsks311.github.io/frog-progsy/${DOCS_PREFIX[locale] ?? ""}guides/model-mixing/`;
+const mixingDocsUrl = (locale: string) => `https://zhsks311.github.io/Frogprogsy/${DOCS_PREFIX[locale] ?? ""}guides/model-mixing/`;
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url);

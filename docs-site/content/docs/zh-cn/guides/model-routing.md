@@ -63,4 +63,4 @@ Claude Code picker 可能显示 stable alias，但 `display_name` 会保留用�
 2. 区分 request model 是 `provider/model`、gateway alias，还是 short id。
 3. 检查静态 config 的 `defaultProvider`、各 provider 的 `defaultModel`、`models[]`、`disabledModels`。
 4. 如果涉及 alias，检查 `~/.frogprogsy/model-aliases.json`。
-5. 仍无法解决时，进入 [配置参考](/frog-progsy/zh-cn/reference/configuration/) 的对应字段。
+5. 仍无法解决时，进入 [配置参考](/zh-cn/reference/configuration/) 的对应字段。
