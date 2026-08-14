@@ -195,13 +195,17 @@ describe("model continuity end to end", () => {
 
     type PrimaryMode = "success" | "unavailable" | "unauthorized";
     let primaryMode: PrimaryMode = "success";
-    const calls: Array<{ upstream: "primary" | "fallback"; model: unknown }> = [];
+    const calls: Array<{ upstream: "primary" | "fallback"; model: unknown; apiKey: string | null }> = [];
     const primary = trackServer(Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
       fetch: async request => {
         const body = await request.json() as Record<string, unknown>;
-        calls.push({ upstream: "primary", model: body.model });
+        calls.push({
+          upstream: "primary",
+          model: body.model,
+          apiKey: request.headers.get("x-api-key"),
+        });
         if (primaryMode === "unavailable") {
           return Response.json({ error: { type: "server_error", message: "temporarily unavailable" } }, { status: 503 });
         }
@@ -216,7 +220,11 @@ describe("model continuity end to end", () => {
       hostname: "127.0.0.1",
       fetch: async request => {
         const body = await request.json() as Record<string, unknown>;
-        calls.push({ upstream: "fallback", model: body.model });
+        calls.push({
+          upstream: "fallback",
+          model: body.model,
+          apiKey: request.headers.get("x-api-key"),
+        });
         return anthropicMessage(String(body.model), "fallback ok");
       },
     }));
@@ -261,7 +269,11 @@ describe("model continuity end to end", () => {
 
     const retiredResponse = await messages(proxy, oldAlias.alias);
     expect(retiredResponse).toMatchObject({ status: 200, body: { model: oldAlias.alias } });
-    expect(calls).toEqual([{ upstream: "fallback", model: "new" }]);
+    expect(calls).toEqual([{
+      upstream: "fallback",
+      model: "new",
+      apiKey: "continuity-e2e-fallback-key",
+    }]);
     expect(readFileSync(join(home, "config.json"), "utf8")).toBe(afterRetiredSet);
     expect(persistedConfig(home).providers.primary?.defaultModel).toBe("old");
 
@@ -273,6 +285,10 @@ describe("model continuity end to end", () => {
     });
     const afterTransientSet = readFileSync(join(home, "config.json"), "utf8");
     expect(afterTransientSet).not.toBe(afterRetiredSet);
+    expect(persistedConfig(home).modelContinuity?.["primary/current"]).toEqual({
+      fallbacks: ["fallback/new"],
+      automatic: "transient",
+    });
 
     primaryMode = "unavailable";
     now = 1_000;
@@ -291,12 +307,12 @@ describe("model continuity end to end", () => {
     expect((await messages(proxy, "primary/current")).status).toBe(401);
 
     expect(calls).toEqual([
-      { upstream: "fallback", model: "new" },
-      { upstream: "primary", model: "current" },
-      { upstream: "fallback", model: "new" },
-      { upstream: "fallback", model: "new" },
-      { upstream: "primary", model: "current" },
-      { upstream: "primary", model: "current" },
+      { upstream: "fallback", model: "new", apiKey: "continuity-e2e-fallback-key" },
+      { upstream: "primary", model: "current", apiKey: "continuity-e2e-primary-key" },
+      { upstream: "fallback", model: "new", apiKey: "continuity-e2e-fallback-key" },
+      { upstream: "fallback", model: "new", apiKey: "continuity-e2e-fallback-key" },
+      { upstream: "primary", model: "current", apiKey: "continuity-e2e-primary-key" },
+      { upstream: "primary", model: "current", apiKey: "continuity-e2e-primary-key" },
     ]);
     expect(readFileSync(join(home, "config.json"), "utf8")).toBe(afterTransientSet);
     expect(persistedConfig(home)).toMatchObject({

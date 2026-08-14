@@ -27,7 +27,7 @@ The continuity inventory reports every model setting that currently affects exec
 
 The inventory excludes model metadata and permission lists such as `disabledModels`, `userModels`, fixed allowlists, capability maps, and wire model ids. It also excludes typed fields that no runtime path reads. The feature must not activate dormant `shadowCompare.secondary` or `searchProviders.*.model` behavior.
 
-All inventoried references support diagnosis and an explicit permanent replacement. Automatic fallback applies only to ordinary routed model requests. It does not apply to:
+All inventoried references support diagnosis. References with mutable configuration owners support an explicit permanent replacement. Automatic fallback applies only to ordinary routed model requests. It does not apply to:
 
 - the auto-mode classifier, which remains pinned to one explicit target;
 - model-mixing internal coordinator, panel, judge, synthesizer, or pipeline calls;
