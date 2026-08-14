@@ -355,6 +355,48 @@ describe("model continuity reference inventory", () => {
       "mix-agent:0",
     ]);
   });
+
+  test("subagent owners resolve native ids and preserve unresolvable indexes", () => {
+    const config: FrogConfig = {
+      port: 3764,
+      defaultProvider: "missing",
+      providers: {
+        work: {
+          adapter: "anthropic",
+          baseUrl: "https://work.invalid",
+          models: ["native", "qualified", "new"],
+        },
+      },
+      subagentModels: ["native", "work/qualified", "unresolvable"],
+    };
+    const input = {
+      config,
+      models: [
+        { namespaced: "work/native" },
+        { namespaced: "work/qualified" },
+        { namespaced: "work/new" },
+      ],
+      retiredTargets: new Set<string>(),
+      aliases: [],
+    };
+
+    expect(collectModelContinuityReferences(input)
+      .filter(row => row.kind === "subagent")
+      .map(row => ({ id: row.id, primary: row.primary, status: row.status }))).toEqual([
+      { id: "subagent:0", primary: "work/native", status: "ready" },
+      { id: "subagent:1", primary: "work/qualified", status: "ready" },
+      { id: "subagent:2", primary: "unresolvable", status: "policy_invalid" },
+    ]);
+    expect(replaceModelContinuityReference({
+      config,
+      referenceId: "subagent:2",
+      expectedPrimary: "unresolvable",
+      replacement: "work/new",
+      models: input.models,
+      validateTarget: validateReplacementTarget,
+    })).toEqual({ ok: true });
+    expect(config.subagentModels).toEqual(["native", "work/qualified", "work/new"]);
+  });
 });
 
 function replacementConfig(): FrogConfig {
@@ -397,9 +439,27 @@ function replacementConfig(): FrogConfig {
   };
 }
 
+const REPLACEMENT_MODELS: ModelContinuityValidationInput["models"] = [
+  { namespaced: "work/old" },
+  { namespaced: "work/new" },
+  { namespaced: "codex/old" },
+  { namespaced: "codex/new" },
+  { namespaced: "codex/live" },
+];
+
+function replacementOwnerSnapshot(config: FrogConfig): Record<string, string> {
+  return Object.fromEntries(collectModelContinuityReferences({
+    config,
+    models: REPLACEMENT_MODELS,
+    retiredTargets: new Set(),
+    aliases: [],
+  }).filter(row => row.kind !== "gateway-alias").map(row => [row.id, row.primary]));
+}
+
 const VALID_REPLACEMENT_TARGETS: Record<string, true> = {
   "work/new": true,
   "codex/new": true,
+  "codex/live": true,
 };
 const validateReplacementTarget = (target: string): string | null =>
   VALID_REPLACEMENT_TARGETS[target] ? null : `unknown model target: ${target}`;
@@ -409,12 +469,14 @@ function replace(
   referenceId: string,
   expectedPrimary: string,
   replacement: string,
+  models: ModelContinuityValidationInput["models"] = REPLACEMENT_MODELS,
 ) {
   return replaceModelContinuityReference({
     config,
     referenceId,
     expectedPrimary,
     replacement,
+    models,
     validateTarget: validateReplacementTarget,
   });
 }
@@ -444,27 +506,99 @@ describe("model continuity permanent replacement", () => {
     expect(config.modelMixing?.agents?.[0]).toEqual({ provider: "work", model: "old" });
   });
 
+  test("returns stale conflict when a previously listed owner was removed", () => {
+    const deletedIndexConfig = replacementConfig();
+    deletedIndexConfig.modelMixing!.agents!.splice(1, 1);
+    expect(replace(
+      deletedIndexConfig,
+      "mix-agent:1",
+      "codex/old",
+      "work/new",
+    )).toEqual({
+      ok: false,
+      status: 409,
+      error: "model reference changed; reload and retry",
+    });
+
+    const removedSingletonConfig = replacementConfig();
+    delete removedSingletonConfig.autoModeClassifier;
+    expect(replace(
+      removedSingletonConfig,
+      "classifier",
+      "work/old",
+      "work/new",
+    )).toEqual({
+      ok: false,
+      status: 409,
+      error: "model reference changed; reload and retry",
+    });
+  });
+
   test("provider default replacement stays inside its configured provider", () => {
     const config = replacementConfig();
+    const before = replacementOwnerSnapshot(config);
 
     expect(replace(config, "provider-default:work", "work/old", "codex/new").ok).toBeFalse();
-    expect(config.providers.work.defaultModel).toBe("old");
+    expect(replacementOwnerSnapshot(config)).toEqual(before);
     expect(replace(config, "provider-default:work", "work/old", "work/new").ok).toBeTrue();
-    expect(config.providers.work.defaultModel).toBe("new");
+    expect(replacementOwnerSnapshot(config)).toEqual({
+      ...before,
+      "provider-default:work": "work/new",
+    });
   });
 
   test("classifier replacement reuses strict classifier validation", () => {
     const config = replacementConfig();
     config.providers.codex.models = ["old"];
+    const before = replacementOwnerSnapshot(config);
 
-    expect(replace(config, "classifier", "work/old", "codex/new")).toMatchObject({
+    expect(replace(
+      config,
+      "classifier",
+      "work/old",
+      "codex/new",
+      [{ namespaced: "codex/old" }],
+    )).toMatchObject({
       ok: false,
       status: 400,
     });
-    expect(config.autoModeClassifier).toEqual({ provider: "work", model: "old" });
+    expect(replacementOwnerSnapshot(config)).toEqual(before);
     config.providers.codex.models.push("new");
-    expect(replace(config, "classifier", "work/old", "codex/new").ok).toBeTrue();
-    expect(config.autoModeClassifier).toEqual({ provider: "codex", model: "new" });
+    expect(replace(
+      config,
+      "classifier",
+      "work/old",
+      "codex/new",
+      [{ namespaced: "codex/old" }],
+    ).ok).toBeTrue();
+    expect(replacementOwnerSnapshot(config)).toEqual({
+      ...before,
+      classifier: "codex/new",
+    });
+  });
+
+  test("classifier replacement rejects disabled targets and accepts effective live-only models", () => {
+    const disabledConfig = replacementConfig();
+    disabledConfig.disabledModels = ["codex/new"];
+    expect(replace(
+      disabledConfig,
+      "classifier",
+      "work/old",
+      "codex/new",
+    )).toMatchObject({ ok: false, status: 400 });
+    expect(disabledConfig.autoModeClassifier).toEqual({ provider: "work", model: "old" });
+
+    const liveConfig = replacementConfig();
+    liveConfig.providers.codex.models = ["old"];
+    liveConfig.providers.codex.liveModels = true;
+    expect(replace(
+      liveConfig,
+      "classifier",
+      "work/old",
+      "codex/live",
+      [{ namespaced: "codex/live" }],
+    )).toEqual({ ok: true });
+    expect(liveConfig.autoModeClassifier).toEqual({ provider: "codex", model: "live" });
   });
 
   test.each([
@@ -481,19 +615,13 @@ describe("model continuity permanent replacement", () => {
     ["image-helper", "work/old", "codex/new"],
   ])("replaces only the exact %s owner", (referenceId, expectedPrimary, replacement) => {
     const config = replacementConfig();
+    const before = replacementOwnerSnapshot(config);
 
     expect(replace(config, referenceId, expectedPrimary, replacement)).toEqual({ ok: true });
-    expect(collectModelContinuityReferences({
-      config,
-      models: [
-        { namespaced: "work/old" },
-        { namespaced: "work/new" },
-        { namespaced: "codex/old" },
-        { namespaced: "codex/new" },
-      ],
-      retiredTargets: new Set(),
-      aliases: [],
-    }).find(row => row.id === referenceId)?.primary).toBe(replacement);
+    expect(replacementOwnerSnapshot(config)).toEqual({
+      ...before,
+      [referenceId]: replacement,
+    });
   });
 
   test("gateway aliases direct permanent changes to route policy", () => {

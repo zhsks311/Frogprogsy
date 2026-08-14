@@ -1,6 +1,10 @@
-import { validateClassifierModel } from "./classifier-settings";
+import {
+  resolveAutoModeClassifierTarget,
+  validateClassifierModel,
+} from "./classifier-settings";
 import type { ModelAliasEntry } from "./model-aliases";
 import type { SelectedModelCatalog } from "./model-catalog-runtime";
+import { routeModel } from "./router";
 import type {
   FrogConfig,
   ModelContinuityAutomatic,
@@ -69,6 +73,7 @@ export interface ReplaceModelContinuityReferenceInput {
   referenceId: string;
   expectedPrimary: string;
   replacement: string;
+  models?: readonly ModelContinuityModelRow[];
   validateTarget: (target: string) => string | null;
 }
 
@@ -147,12 +152,11 @@ export function replaceModelContinuityReference(
       error: "gateway aliases are past-session identifiers; configure a route policy instead",
     };
   }
-
   const owner = findMutableReferenceOwner(input.config, input.referenceId);
-  if (!owner) {
+  if (!owner && !isModelContinuityReferenceId(input.referenceId)) {
     return { ok: false, status: 400, error: `unknown model reference: ${input.referenceId}` };
   }
-  if (owner.primary !== input.expectedPrimary) {
+  if (!owner || owner.primary !== input.expectedPrimary) {
     return {
       ok: false,
       status: 409,
@@ -178,10 +182,27 @@ export function replaceModelContinuityReference(
   const targetError = input.validateTarget(input.replacement);
   if (targetError) return { ok: false, status: 400, error: targetError };
   if (owner.kind === "classifier") {
+    const candidateConfig: FrogConfig = {
+      ...input.config,
+      autoModeClassifier: {
+        provider: replacement.provider,
+        model: replacement.model,
+      },
+    };
+    const classifierTarget = resolveAutoModeClassifierTarget(candidateConfig);
+    if (!classifierTarget.ok) {
+      return { ok: false, status: 400, error: classifierTarget.message };
+    }
+    const effectiveModels: Array<{ provider: string; id: string }> = [];
+    for (const row of input.models ?? []) {
+      const target = qualifiedModelTarget(row.namespaced);
+      if (target) effectiveModels.push({ provider: target.provider, id: target.model });
+    }
     const classifierError = validateClassifierModel(
-      input.config,
-      replacement.provider,
-      replacement.model,
+      candidateConfig,
+      classifierTarget.provider,
+      classifierTarget.model,
+      effectiveModels,
     );
     if (classifierError) return { ok: false, status: 400, error: classifierError };
   }
@@ -218,12 +239,12 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
       "Long-context route",
     ));
   }
-  for (const [index, primary] of (config.subagentModels ?? []).entries()) {
-    if (!qualifiedModelTarget(primary)) continue;
+  for (const [index, configuredModel] of (config.subagentModels ?? []).entries()) {
+    if (typeof configuredModel !== "string") continue;
     owners.push({
       id: `subagent:${index}`,
       kind: "subagent",
-      primary,
+      primary: resolvedSubagentPrimary(config, configuredModel),
       label: `Subagent model ${index + 1}`,
     });
   }
@@ -420,11 +441,11 @@ function findMutableReferenceOwner(
   const indexed = parseIndexedReferenceId(referenceId);
   if (!indexed) return null;
   if (indexed.kind === "subagent") {
-    const primary = config.subagentModels?.[indexed.index];
-    if (!primary || !qualifiedModelTarget(primary)) return null;
+    const configuredModel = config.subagentModels?.[indexed.index];
+    if (typeof configuredModel !== "string") return null;
     return {
       kind: "subagent",
-      primary,
+      primary: resolvedSubagentPrimary(config, configuredModel),
       replace: target => {
         config.subagentModels![indexed.index] = `${target.provider}/${target.model}`;
       },
@@ -450,6 +471,15 @@ function objectReferenceOwner(
   };
 }
 
+function resolvedSubagentPrimary(config: FrogConfig, configuredModel: string): string {
+  try {
+    const route = routeModel(config, configuredModel);
+    return `${route.providerName}/${route.modelId}`;
+  } catch {
+    return configuredModel;
+  }
+}
+
 function parseIndexedReferenceId(referenceId: string): {
   kind: "subagent" | "mix-agent" | "mix-pipeline" | "mix-panel" | "mix-rule";
   index: number;
@@ -460,6 +490,24 @@ function parseIndexedReferenceId(referenceId: string): {
     kind: match[1] as "subagent" | "mix-agent" | "mix-pipeline" | "mix-panel" | "mix-rule",
     index: Number(match[2]),
   };
+}
+
+function isModelContinuityReferenceId(referenceId: string): boolean {
+  if (referenceId.startsWith("provider-default:")) {
+    return referenceId.length > "provider-default:".length;
+  }
+  if (
+    referenceId === "long-context"
+    || referenceId === "classifier"
+    || referenceId === "mix-coordinator"
+    || referenceId === "mix-judge"
+    || referenceId === "mix-synthesizer"
+    || referenceId === "web-search-helper"
+    || referenceId === "image-helper"
+  ) {
+    return true;
+  }
+  return parseIndexedReferenceId(referenceId) !== null;
 }
 
 function indexedTargets(
