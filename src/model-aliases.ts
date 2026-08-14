@@ -137,9 +137,13 @@ export function materializeModelAliases(models: AliasSourceModel[], options: { p
     const provider = routeKey.slice(0, slash);
     const model = routeKey.slice(slash + 1);
     const existingRoute = existingByRouteKey.get(routeKey);
-    const preserved = existingRoute?.status === "retired" || !options.prune
-      ? existingRoute
-      : undefined;
+    // A writer only knows that a route was rediscovered; it does not own retirement authority.
+    // Reconciliation must explicitly clear the tombstone before any publisher may reactivate it.
+    if (existingRoute?.status === "retired") {
+      keep.add(existingRoute.alias);
+      continue;
+    }
+    const preserved = !options.prune ? existingRoute : undefined;
     let alias = preserved?.alias ?? computedAlias;
     const collisionAlias = `${computedAlias}-${collisionSuffix(provider, model)}`;
     let collisionIndex = 1;

@@ -2397,7 +2397,10 @@ interface ManagementAPIDeps {
   /** Branch-B claude-grant management fixtures (keep the API off real network/Keychain/native homes in tests). */
   claudeGrants?: ClaudeGrantManagementDeps;
   /** Catalog refresh seam so provider persistence tests never fetch or write generated catalogs. */
-  refreshClaudeCodeCatalog?: (config: FrogConfig, profile?: { claudeHome?: string; profileId?: string }) => Promise<void>;
+  refreshClaudeCodeCatalog?: (
+    config: FrogConfig,
+    profile?: { claudeHome?: string; profileId?: string; retiredTargets?: ReadonlySet<string> },
+  ) => Promise<void>;
   /** Peer address of the request socket. Omitted for in-process calls (tests, direct invocation). */
   clientAddress?: string;
   /** Effective config fixture for management boundary tests. Production always uses RuntimeConfigState. */
@@ -2407,7 +2410,7 @@ interface ManagementAPIDeps {
   /** Profile refresh seam for asserting the effective config passed to Claude catalog generation. */
   refreshProfileCatalog?: (
     config: FrogConfig,
-    profile: { claudeHome: string; profileId: string },
+    profile: { claudeHome: string; profileId: string; retiredTargets?: ReadonlySet<string> },
   ) => Promise<ClaudeCodeCatalogRefreshResult>;
 }
 
@@ -2922,14 +2925,15 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
   }
   // All management mutations target persisted state; state.persist() rebuilds the effective view.
   async function refreshClaudeCodeCatalogBestEffort(profile?: { claudeHome?: string; profileId?: string }): Promise<void> {
+    const refreshOptions = { ...profile, retiredTargets: state.retiredTargets };
     if (deps.refreshClaudeCodeCatalog) {
-      await deps.refreshClaudeCodeCatalog(state.effective, profile);
+      await deps.refreshClaudeCodeCatalog(state.effective, refreshOptions);
       return;
     }
     if (claudeWritesBlocked("catalog refresh")) return;
     try {
       const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
-      await refreshClaudeCodeModelCatalog(state.effective, undefined, profile);
+      await refreshClaudeCodeModelCatalog(state.effective, undefined, refreshOptions);
     } catch {
       /* catalog absent */
     }
@@ -3443,12 +3447,17 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       let catalogPath: string | null | undefined;
       let modelReload: ClaudeModelReloadMetadata | undefined;
       if (action === "refresh") {
+        const refreshOptions = {
+          claudeHome: profile.claudeHome,
+          profileId: profile.id,
+          retiredTargets: state.retiredTargets,
+        };
         const refreshed = deps.refreshProfileCatalog
-          ? await deps.refreshProfileCatalog(state.effective, { claudeHome: profile.claudeHome, profileId: profile.id })
+          ? await deps.refreshProfileCatalog(state.effective, refreshOptions)
           : await (await import("./claude-refresh")).refreshClaudeCodeModelCatalog(
             state.effective,
             undefined,
-            { claudeHome: profile.claudeHome, profileId: profile.id },
+            refreshOptions,
           );
         catalogPath = refreshed.catalogExists ? refreshed.path : undefined;
         modelReload = claudeModelReloadMetadata(profile.id, {
@@ -4381,10 +4390,13 @@ export function buildAnthropicModelsListFromAliases(aliasEntries: ModelAliasEntr
 export function buildAnthropicModelsList(
   nativeModels: { provider: string; model: string }[],
   routedModels: Pick<CatalogModel, "provider" | "id">[],
+  retiredTargets: ReadonlySet<string> = new Set(),
 ): Record<string, unknown> {
   const aliasEntries = materializeModelAliases([
-    ...nativeModels,
-    ...routedModels.map(m => ({ provider: m.provider, model: m.id })),
+    ...nativeModels.filter(model => !retiredTargets.has(`${model.provider}/${model.model}`)),
+    ...routedModels
+      .filter(model => !retiredTargets.has(`${model.provider}/${model.id}`))
+      .map(model => ({ provider: model.provider, model: model.id })),
   ]);
   return buildAnthropicModelsListFromAliases(aliasEntries);
 }
@@ -4520,11 +4532,16 @@ export async function startServer(
         const view = await effectiveModelView(config, { profileId, headers: req.headers });
         if (profileId) state.save();
         const { buildCatalogEntries, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents } = await import("./claude-catalog");
-        const nativeSlugs = nativeOpenAiSlugs().filter(slug => !isNativeSlugHidden(config, slug));
+        const nativeSlugs = nativeOpenAiSlugs()
+          .filter(slug => !isNativeSlugHidden(config, slug))
+          .filter(slug => !state.retiredTargets.has(`openai/${slug}`));
         // Picker/export readiness filter: hide any provider whose configured credential is not ready
-        // (`authReady === false`) from BOTH Claude Code catalog shapes. Management/doctor keep the full
-        // authReady-tagged registry via /api/models so login and key/grant repair remain visible.
-        const goOrdered = orderForSubagents(view.enabledModels.filter(m => m.authReady !== false), view.featured);
+        // (`authReady === false`) and every catalog-retired target from BOTH Claude Code catalog shapes.
+        // Management/doctor keep the full registry so login, key/grant, and continuity repair remain visible.
+        const activeModels = view.enabledModels
+          .filter(model => model.authReady !== false)
+          .filter(model => !state.retiredTargets.has(`${model.provider}/${model.id}`));
+        const goOrdered = orderForSubagents(activeModels, view.featured);
         if (url.searchParams.has("client_version")) {
           // Claude Code client → Claude Code catalog shape: native gpt + namespaced routed models,
           // cloned from a native template so required fields (base_instructions, etc.) are present.
@@ -4536,7 +4553,7 @@ export async function startServer(
         const nativeModels = config.providers.openai
           ? nativeSlugs.map(model => ({ provider: "openai", model }))
           : [];
-        return jsonResponse(buildAnthropicModelsList(nativeModels, goOrdered));
+        return jsonResponse(buildAnthropicModelsList(nativeModels, goOrdered, state.retiredTargets));
       }
 
       if (url.pathname === "/v1/messages/count_tokens" && req.method === "POST") {

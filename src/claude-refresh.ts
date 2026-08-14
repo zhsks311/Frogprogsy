@@ -275,7 +275,7 @@ function gatewaySyncFailureResult(
 
 export async function syncClaudeCodeGatewayModelsCache(
   config: FrogConfig,
-  options: { claudeHome?: string } = {},
+  options: { claudeHome?: string; retiredTargets?: ReadonlySet<string> } = {},
   deps: GatewayCacheDeps = defaultGatewayCacheDeps,
 ): Promise<ClaudeCodeGatewayModelsCacheSyncResult> {
   const cachePath = claudeGatewayModelsCachePath(options.claudeHome);
@@ -283,22 +283,26 @@ export async function syncClaudeCodeGatewayModelsCache(
   let modelCount: number | undefined;
   try {
     const gathered = await deps.gatherRoutedModels(config);
-    // Materialize over the FULL collision universe (configured native OpenAI slugs + EVERY gathered
-    // routed model) WITHOUT prune: this is a subset publisher, so it must never delete the canonical
-    // aliases owned by syncCatalogModels, and alias identity is computed over the full universe (never
-    // the visible subset) so a hidden collision peer can't silently change a visible alias.
+    const activeGathered = gathered
+      .filter(model => options.retiredTargets?.has(`${model.provider}/${model.id}`) !== true);
+    // Materialize over the FULL active collision universe (non-retired native OpenAI slugs + EVERY
+    // non-retired gathered routed model) WITHOUT prune: this subset publisher never deletes the
+    // canonical aliases owned by syncCatalogModels. Tombstones are excluded before materialization:
+    // live discovery cannot reactivate or synthesize an alias for a catalog-retired route.
     const nativeAliasSources = config.providers.openai
-      ? nativeOpenAiSlugs().map(model => ({ provider: "openai", model }))
+      ? nativeOpenAiSlugs()
+        .filter(model => options.retiredTargets?.has(`openai/${model}`) !== true)
+        .map(model => ({ provider: "openai", model }))
       : [];
     const aliases = materializeModelAliases([
       ...nativeAliasSources,
-      ...gathered.map(model => ({ provider: model.provider, model: model.id })),
+      ...activeGathered.map(model => ({ provider: model.provider, model: model.id })),
     ]);
     // Readiness/disabled filter selects VISIBILITY only, not identity: publish the canonical aliases
     // for exactly the authReady + enabled routed routeKeys. `authReady === false` means the configured
     // OAuth/key/grant credential is not resolvable, so those models stay out of the picker/cache.
     const visibleRouteKeys = new Set(
-      gathered
+      activeGathered
         .filter(model => model.authReady !== false)
         .filter(model => isGatewayModelEnabled(config, model.provider, model.id))
         .map(model => `${model.provider}/${model.id}`),
@@ -349,7 +353,7 @@ export async function syncClaudeCodeGatewayModelsCache(
 export async function refreshClaudeCodeModelCatalog(
   effectiveConfig: FrogConfig,
   deps: RefreshDeps = defaultDeps,
-  options: { claudeHome?: string; profileId?: string } = {},
+  options: { claudeHome?: string; profileId?: string; retiredTargets?: ReadonlySet<string> } = {},
 ): Promise<ClaudeCodeCatalogRefreshResult> {
   const result = await deps.syncCatalogModels(effectiveConfig, options);
   let gatewayCache: ClaudeCodeGatewayModelsCacheSyncResult;

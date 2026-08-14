@@ -723,16 +723,22 @@ export function orderForSubagents(goModels: CatalogModel[], featured?: string[])
  *  - the catalog is backed up to ~/.frogprogsy/catalog-backup.json before writing.
  * No-op if the catalog file does not exist.
  */
-export async function syncCatalogModels(config: FrogConfig, options: { claudeHome?: string; profileId?: string } = {}): Promise<{ added: number; path: string }> {
+export async function syncCatalogModels(
+  config: FrogConfig,
+  options: { claudeHome?: string; profileId?: string; retiredTargets?: ReadonlySet<string> } = {},
+): Promise<{ added: number; path: string }> {
   const catalogPath = readClaudeCodeCatalogPath(options.claudeHome);
 
   // Canonical full-registry alias writer: runs on EVERY call — even with no catalog file — because
   // alias identity is the single source of route resolution and is independent of picker visibility.
-  // Gather every routed model from the management registry, add the configured native OpenAI slugs,
-  // and materialize ONCE with prune so stale aliases are dropped and no subset publisher re-prunes.
-  const goModels = await gatherRoutedModels(config);
+  // Gather every non-retired routed model from the management registry, add non-retired native
+  // OpenAI slugs, and materialize ONCE with prune so stale aliases are dropped without exposing tombstones.
+  const goModels = (await gatherRoutedModels(config))
+    .filter(model => options.retiredTargets?.has(`${model.provider}/${model.id}`) !== true);
   const nativeAliasSources = config.providers.openai
-    ? nativeOpenAiSlugs().map(model => ({ provider: "openai", model }))
+    ? nativeOpenAiSlugs()
+      .filter(model => options.retiredTargets?.has(`openai/${model}`) !== true)
+      .map(model => ({ provider: "openai", model }))
     : [];
   materializeModelAliases(
     [...nativeAliasSources, ...goModels.map(m => ({ provider: m.provider, model: m.id }))],

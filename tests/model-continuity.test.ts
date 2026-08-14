@@ -13,7 +13,7 @@ import {
 } from "../src/model-continuity";
 import { listPersistedModelAliases, materializeModelAliases, reconcileRetiredModelAliases, resolvePersistedModelAlias, type ModelAliasEntry } from "../src/model-aliases";
 import { createRuntimeConfigState } from "../src/runtime-config-state";
-import { __requestLogTest } from "../src/server";
+import { __requestLogTest, startServer } from "../src/server";
 import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
 import type { FrogConfig, ModelContinuityAutomatic } from "../src/types";
 
@@ -174,6 +174,88 @@ describe("model retirement identity", () => {
       }
     },
   );
+
+  test("live /v1/models discovery does not publish a catalog-retired target", async () => {
+    const frogHome = mkdtempSync(join(tmpdir(), "frogp-retired-models-endpoint-"));
+    const previousFrogHome = process.env.FROGPROGSY_HOME;
+    const originalFetch = globalThis.fetch;
+    process.env.FROGPROGSY_HOME = frogHome;
+    try {
+      const providerName = "work-live-endpoint";
+      const [retired] = materializeModelAliases(
+        [{ provider: providerName, model: "claude-old" }],
+        { prune: true },
+      );
+      const config: FrogConfig = {
+        port: 0,
+        hostname: "127.0.0.1",
+        defaultProvider: providerName,
+        providers: {
+          [providerName]: {
+            adapter: "openai-chat",
+            baseUrl: "https://work-live-endpoint.invalid/v1",
+            apiKey: "test-key",
+            catalogProviderId: "anthropic",
+            liveModels: true,
+          },
+        },
+        subagentModels: [],
+      };
+      type CapturedFetch = (
+        request: Request,
+        server: { requestIP(request: Request): { address: string } },
+      ) => Promise<Response>;
+      let capturedFetch: CapturedFetch | undefined;
+      await startServer(0, {
+        createRuntimeConfigState: () => createRuntimeConfigState({
+          loadConfig: () => config,
+          saveConfig: () => {},
+          refreshCatalog: async () => selectedCatalog(),
+          getConfigPath: () => join(frogHome, "config.json"),
+          configExists: () => false,
+        }),
+        serve: ((options: unknown) => {
+          if (!options || typeof options !== "object" || !("fetch" in options) || typeof options.fetch !== "function") {
+            throw new Error("Bun serve options did not provide a fetch handler");
+          }
+          const fetchHandler = options.fetch as CapturedFetch;
+          capturedFetch = fetchHandler;
+          return {
+            stop() {},
+            url: new URL("http://127.0.0.1:3764"),
+          };
+        }) as unknown as typeof Bun.serve,
+      });
+      if (!capturedFetch) throw new Error("server fetch handler was not captured");
+      globalThis.fetch = (async () => new Response(JSON.stringify({
+        data: [{ id: "claude-old" }, { id: "claude-new" }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+
+      const response = await capturedFetch(
+        new Request("http://127.0.0.1/v1/models"),
+        { requestIP: () => ({ address: "127.0.0.1" }) },
+      );
+      const body = await response.json() as {
+        data: Array<{ id: string; display_name: string }>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(body.data.map(model => model.display_name)).toContain(`${providerName}/claude-new`);
+      expect(body.data.map(model => model.display_name)).not.toContain(`${providerName}/claude-old`);
+      expect(resolvePersistedModelAlias(retired!.alias)).toMatchObject({
+        routeKey: `${providerName}/claude-old`,
+        status: "retired",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (previousFrogHome === undefined) delete process.env.FROGPROGSY_HOME;
+      else process.env.FROGPROGSY_HOME = previousFrogHome;
+      rmSync(frogHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("retired request continuity preflight", () => {

@@ -9,7 +9,7 @@ import {
   syncClaudeCodeGatewayModelsCache,
 } from "../src/claude-refresh";
 import type { CatalogModel } from "../src/claude-catalog";
-import type { ModelAliasEntry } from "../src/model-aliases";
+import { materializeModelAliases, reconcileRetiredModelAliases, resolvePersistedModelAlias, type ModelAliasEntry } from "../src/model-aliases";
 import type { FrogConfig } from "../src/types";
 
 const config = {
@@ -183,6 +183,32 @@ describe("Claude Code catalog refresh", () => {
         { id: "claude-frogp-kimi-kimi-k2-5", display_name: "kimi/kimi-k2.5" },
       ]);
       expect(cache.models.some(m => m.display_name === "codex/gpt-locked")).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("live discovery cannot republish a retired model through the gateway cache", async () => {
+    const { claudeHome, cachePath, cleanup } = makeHomes();
+    try {
+      const [retired] = materializeModelAliases([{ provider: "work", model: "old" }], { prune: true });
+      const retiredTargets = new Set(["work/old"]);
+      reconcileRetiredModelAliases(retiredTargets);
+      const result = await syncClaudeCodeGatewayModelsCache(config, { claudeHome, retiredTargets }, {
+        gatherRoutedModels: async () => [
+          { provider: "work", id: "old", authReady: true },
+          { provider: "work", id: "new", authReady: true },
+        ] as CatalogModel[],
+      });
+
+      expect(result).toMatchObject({ status: "written", modelCount: 1 });
+      expect(JSON.parse(readFileSync(cachePath, "utf8"))).toMatchObject({
+        models: [{ display_name: "work/new" }],
+      });
+      expect(resolvePersistedModelAlias(retired!.alias)).toMatchObject({
+        routeKey: "work/old",
+        status: "retired",
+      });
     } finally {
       cleanup();
     }

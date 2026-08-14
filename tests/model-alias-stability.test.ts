@@ -409,13 +409,21 @@ describe("Claude-visible model aliases", () => {
     }
   });
 
-  test.each([false, true])("canonical=%s writer reuses a tombstone alias when its route becomes active again", prune => {
+  test.each([false, true])("canonical=%s writer hides a tombstone until reconciliation makes its route active", prune => {
     const homes = makeHomes();
     try {
       const [old] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune: true });
       reconcileRetiredModelAliases(new Set(["a/b-c"]));
-      const [activeAgain] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune });
+      const whileRetired = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune });
 
+      expect(whileRetired).toEqual([]);
+      expect(resolvePersistedModelAlias(old!.alias)).toMatchObject({
+        routeKey: "a/b-c",
+        status: "retired",
+      });
+
+      reconcileRetiredModelAliases(new Set());
+      const [activeAgain] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune });
       expect(activeAgain).toMatchObject({
         alias: old!.alias,
         routeKey: "a/b-c",
@@ -426,6 +434,62 @@ describe("Claude-visible model aliases", () => {
         status: "active",
       });
     } finally {
+      homes.cleanup();
+    }
+  });
+
+  test("live discovery cannot republish a retired model through canonical catalog sync", async () => {
+    const homes = makeHomes();
+    const originalFetch = globalThis.fetch;
+    try {
+      const retiredTargets = new Set(["work-fix-round/old"]);
+      const [retired] = materializeModelAliases(
+        [{ provider: "work-fix-round", model: "old" }],
+        { prune: true },
+      );
+      reconcileRetiredModelAliases(retiredTargets);
+      writeFileSync(join(homes.claudeHome, "frogprogsy-catalog.json"), JSON.stringify({
+        models: [{
+          slug: "gpt-5.5",
+          display_name: "gpt-5.5",
+          priority: 1,
+          base_instructions: "Native model fixture",
+        }],
+      }));
+      globalThis.fetch = (async () => new Response(JSON.stringify({
+        data: [{ id: "old" }, { id: "new" }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+      const liveConfig: FrogConfig = {
+        port: 10100,
+        defaultProvider: "work-fix-round",
+        providers: {
+          "work-fix-round": {
+            adapter: "openai-chat",
+            baseUrl: "https://work-fix-round.invalid/v1",
+            apiKey: "test-key",
+            liveModels: true,
+          },
+        },
+      };
+
+      const result = await syncCatalogModels(liveConfig, {
+        claudeHome: homes.claudeHome,
+        retiredTargets,
+      });
+      const catalog = JSON.parse(readFileSync(result.path, "utf8")) as {
+        models: Array<{ slug: string }>;
+      };
+      expect(catalog.models.map(model => model.slug)).toContain("work-fix-round/new");
+      expect(catalog.models.map(model => model.slug)).not.toContain("work-fix-round/old");
+      expect(resolvePersistedModelAlias(retired!.alias)).toMatchObject({
+        routeKey: "work-fix-round/old",
+        status: "retired",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
       homes.cleanup();
     }
   });
