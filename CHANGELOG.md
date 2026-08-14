@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.0.3
+## 0.0.3-preview.1
 
 ### Added
 
