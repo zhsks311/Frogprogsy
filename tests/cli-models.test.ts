@@ -269,4 +269,70 @@ describe("frogp models", () => {
       rmSync(home, { recursive: true, force: true });
     }
   }, 30_000);
+
+  test.each([
+    ["claude refresh", ["claude", "refresh", "cp_default"]],
+    ["claude reload-models", ["claude", "reload-models", "cp_default"]],
+  ])("%s preserves migration and injected profile metadata together", async (_name, argv) => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-cli-migration-"));
+    const claudeHome = join(home, "claude");
+    try {
+      mkdirSync(claudeHome, { recursive: true });
+      writeFileSync(join(home, "config.json"), JSON.stringify({
+        port: 9,
+        defaultProvider: "ollama",
+        providers: {
+          ollama: {
+            adapter: "openai-chat",
+            baseUrl: "http://localhost:11434/v1/",
+            models: ["local-user-model"],
+          },
+        },
+        claudeProfiles: {
+          schemaVersion: 1,
+          defaultProfileId: "cp_default",
+          profiles: [{
+            id: "cp_default",
+            name: "Default",
+            claudeHome,
+            authState: "not_seen",
+          }],
+        },
+      }));
+      writeFileSync(join(claudeHome, "frogprogsy-catalog.json"), JSON.stringify({
+        models: [{
+          slug: "gpt-5.5",
+          display_name: "gpt-5.5",
+          priority: 1,
+          base_instructions: "Native model fixture",
+        }],
+      }));
+
+      const result = await runCliAsync(argv, home);
+      expect(result.status).toBe(0);
+      const persisted = JSON.parse(readFileSync(join(home, "config.json"), "utf8")) as {
+        modelCatalogConfigVersion?: number;
+        providers: Record<string, {
+          catalogProviderId?: string;
+          models?: string[];
+          userModels?: string[];
+        }>;
+        claudeProfiles: {
+          profiles: Array<{ id: string; injected?: boolean; lastInjectedAt?: string }>;
+        };
+      };
+      const profile = persisted.claudeProfiles.profiles.find(item => item.id === "cp_default");
+
+      expect(persisted.modelCatalogConfigVersion).toBe(1);
+      expect(persisted.providers.ollama).toMatchObject({
+        catalogProviderId: "ollama",
+        userModels: ["local-user-model"],
+      });
+      expect(persisted.providers.ollama.models).toBeUndefined();
+      expect(profile).toMatchObject({ injected: true });
+      expect(profile?.lastInjectedAt).toBeString();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

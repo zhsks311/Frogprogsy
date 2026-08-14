@@ -1564,24 +1564,25 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         : undefined;
       const persistedConfig = runtimeState?.persisted ?? config;
       const effectiveConfig = runtimeState?.effective ?? config;
+      const refreshedProfile = resolveClaudeProfile(persistedConfig, parsed.values.slice(1).join(" ") || undefined);
       let catalogPath: string | null | undefined;
       let refreshed: ClaudeCodeCatalogRefreshResult | undefined;
       if (shouldRefresh) {
         const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
         if (!runtimeState) throw new Error("model catalog refresh state was not selected");
         refreshed = await refreshClaudeCodeModelCatalog(effectiveConfig, undefined, {
-          claudeHome: profile.claudeHome,
-          profileId: profile.id,
+          claudeHome: refreshedProfile.claudeHome,
+          profileId: refreshedProfile.id,
           retiredTargets: runtimeState.retiredTargets,
         });
         catalogPath = refreshed.catalogExists ? refreshed.path : null;
       }
-      const result = await (await import("./claude-inject")).injectClaudeCodeConfig(persistedConfig.port ?? DEFAULT_PORT, persistedConfig, { catalogPath, claudeHome: profile.claudeHome, profileId: profile.id, includeAuthToken: parsed.includeAuthToken });
+      const result = await (await import("./claude-inject")).injectClaudeCodeConfig(persistedConfig.port ?? DEFAULT_PORT, persistedConfig, { catalogPath, claudeHome: refreshedProfile.claudeHome, profileId: refreshedProfile.id, includeAuthToken: parsed.includeAuthToken });
       if (!result.success) {
         console.error(`❌ ${result.message}`);
         process.exit(1);
       }
-      markClaudeProfileInjected(persistedConfig, profile.id, true);
+      markClaudeProfileInjected(persistedConfig, refreshedProfile.id, true);
       saveConfig(persistedConfig);
       syncLaunchers(persistedConfig);
       if (!isReloadModels) {
@@ -1593,8 +1594,8 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
       const healthy = await proxyHealthy(port);
       const lines = [
         result.message,
-        `Model reload prepared for ${profile.name} (${profile.id}).`,
-        `Claude Code home: ${profile.claudeHome}`,
+        `Model reload prepared for ${refreshedProfile.name} (${refreshedProfile.id}).`,
+        `Claude Code home: ${refreshedProfile.claudeHome}`,
         `Gateway cache: ${refreshed?.gatewayCache.status ?? "unknown"}${refreshed?.gatewayCache.modelCount !== undefined ? ` (${refreshed.gatewayCache.modelCount} models)` : ""}`,
         `Catalog cache: ${refreshed?.cacheSynced ? "synced" : "not synced"}`,
         ...((refreshed?.warnings ?? []).map(warning => `Warning: ${warning}`)),
