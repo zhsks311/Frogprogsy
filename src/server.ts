@@ -1081,6 +1081,13 @@ async function handleMessages(
       };
       recordLogPhase(logCtx, "upstream_connect", upstreamResponse.ok ? "ok" : "error", upstreamResponse.ok ? undefined : "provider_non_2xx", upstreamStarted);
     } catch (err) {
+      if (options.abortSignal?.aborted) {
+        upstream.abort();
+        recordLogPhase(logCtx, "upstream_connect", "error", "client_cancel", upstreamStarted);
+        recordAttemptLog(logCtx, attempt, "error", "client_cancel");
+        finalizeRequestLog(logCtx, "client_cancel", 499, { kind: "internal", code: "client_cancel" });
+        return formatAnthropicErrorResponse(499, "api_error", "Client request cancelled");
+      }
       upstream.abort();
       const timeout = isUpstreamConnectTimeout(err);
       const code = timeout ? "connect_timeout" : "upstream_unreachable";

@@ -64,3 +64,31 @@
 ### 우려
 
 요청 제한에 따라 전체 테스트, 포맷터, 린터, 전체 typecheck, GUI build는 실행하지 않았습니다.
+
+## 최종 검토 수정 round 2
+
+### 상태
+
+완료. primary 연결 대기 중 client abort가 연속성 실패로 오인되지 않도록 분리했습니다.
+
+### 변경
+
+- parent/client abort 신호가 실제로 취소된 fetch rejection은 header timeout이나 연결 실패보다 먼저 `client_cancel`로 처리합니다.
+- client cancel은 fallback 진행과 30초 회로 변경을 하지 않습니다.
+- 로그에는 고정된 `client_cancel` 코드와 499 상태만 남기며 원본 abort reason은 저장하거나 응답하지 않습니다.
+- 취소 직후 독립 요청이 같은 primary를 다시 호출해 성공하는 회귀 테스트를 추가했습니다.
+
+### 실행 명령과 실제 결과
+
+`bun test --isolate ./tests/model-continuity-runtime.test.ts ./tests/provider-fallback-chain.test.ts ./tests/request-log-lifecycle.test.ts`
+
+- 결과: 종료 코드 0
+- 통과: 69
+- 실패: 0
+- 검증식: 234
+- 실행 파일: 3개
+- 관찰: 취소 요청은 499/`client_cancel`, fallback 호출 0회, 회로 snapshot 빈 배열이었고 다음 독립 요청은 primary 1회 호출로 200을 반환했습니다.
+
+### 우려
+
+요청 제한에 따라 전체 테스트, 포맷터, 린터, 전체 typecheck, GUI build는 실행하지 않았습니다.

@@ -70,6 +70,7 @@ async function invokeMessages(
     continuityCircuit?: ContinuityCircuit;
     now?: () => number;
     retiredTargets?: ReadonlySet<string>;
+    abortSignal?: AbortSignal;
   } = {},
   headers = new Headers(),
 ): Promise<Response> {
@@ -972,6 +973,69 @@ describe("provider fallback chain", () => {
       });
       expect(response.status).toBe(200);
       expect(calls).toEqual(["https://primary.test/v1/messages"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("client cancellation neither falls back nor opens the continuity circuit", async () => {
+    const cfg = baseConfig();
+    cfg.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: ["fallback/fallback-other"],
+        automatic: "transient",
+      },
+    };
+    const circuit = new ContinuityCircuit();
+    const client = new AbortController();
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    let firstRequest = true;
+    globalThis.fetch = (async (url, init) => {
+      calls.push(String(url));
+      if (!firstRequest) return anthropicOk("primary recovered");
+      firstRequest = false;
+      return await new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        queueMicrotask(() => client.abort(new DOMException("PRIVATE abort detail", "AbortError")));
+      });
+    }) as typeof fetch;
+
+    try {
+      const cancelled = await invokeMessages(cfg, messagesBody(), {
+        abortSignal: client.signal,
+        continuityCircuit: circuit,
+        now: () => 1_000,
+      });
+      expect(cancelled.status).toBe(499);
+      expect(calls).toEqual(["https://primary.test/v1/messages"]);
+      expect(circuit.snapshot(1_001)).toEqual([]);
+      let [entry] = __requestLogTest.requestLogSnapshot();
+      expect(entry.lifecycle).toBe("client_cancel");
+      expect(entry.error).toEqual({ kind: "internal", code: "client_cancel" });
+      expect(JSON.stringify(await cancelled.json())).not.toContain("PRIVATE abort detail");
+      expect(JSON.stringify(entry)).not.toContain("PRIVATE abort detail");
+
+      __requestLogTest.clear();
+      const recovered = await invokeMessages(cfg, messagesBody(), {
+        continuityCircuit: circuit,
+        now: () => 2_000,
+      });
+      expect(recovered.status).toBe(200);
+      expect(calls).toEqual([
+        "https://primary.test/v1/messages",
+        "https://primary.test/v1/messages",
+      ]);
+      [entry] = __requestLogTest.requestLogSnapshot();
+      expect(entry.attempts).toContainEqual({
+        provider: "primary",
+        model: "primary-model",
+        source: "primary",
+        keyIndex: 0,
+        status: "ok",
+        upstreamStatus: 200,
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }
