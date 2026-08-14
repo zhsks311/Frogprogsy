@@ -464,8 +464,8 @@ describe("model continuity UX", () => {
         report: parseModelContinuityReport(STUB_CONTINUITY_REPORT),
         selectableModels: ["work/new", "codex/gpt-5.5", "work/backup"],
         t: tKo,
-        onSet: async () => true,
-        onReplace: async () => true,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
       }),
     );
 
@@ -480,8 +480,8 @@ describe("model continuity UX", () => {
         report: parseModelContinuityReport(STUB_CONTINUITY_REPORT),
         selectableModels: ["work/new", "codex/gpt-5.5", "work/backup"],
         t: tKo,
-        onSet: async () => true,
-        onReplace: async () => true,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
       }),
     );
     const attention = markup.indexOf("기본 모델이 종료됐습니다");
@@ -505,8 +505,8 @@ describe("model continuity UX", () => {
         report,
         selectableModels: ["work/classifier", "work/new"],
         t: tKo,
-        onSet: async () => true,
-        onReplace: async () => true,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
       }),
     );
 
@@ -523,8 +523,8 @@ describe("model continuity UX", () => {
         report: parseModelContinuityReport(STUB_CONTINUITY_REPORT),
         selectableModels: ["work/new", "codex/gpt-5.5", "work/backup"],
         t: tKo,
-        onSet: async () => true,
-        onReplace: async () => true,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
       }),
     );
     const labels = [

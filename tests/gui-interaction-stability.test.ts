@@ -154,7 +154,7 @@ describe("GUI interaction stability", () => {
       { fallbacks: ["work/new", "codex/backup"], automatic: "all" },
       async action => {
         actions.push(action);
-        return false;
+        return "failed";
       },
     );
 
@@ -167,6 +167,28 @@ describe("GUI interaction stability", () => {
     }]);
     expect(view).toEqual({ fallbacks: ["work/saved"], automatic: "off" });
   });
+  test("Models superseded save leaves the local draft untouched", async () => {
+    const reference = Models.parseModelContinuityReport({
+      policies: {},
+      references: [{
+        id: "provider-default:work",
+        kind: "provider-default",
+        primary: "work/old",
+        status: "retired",
+        automaticEligible: true,
+        policy: { fallbacks: ["work/saved"], automatic: "off" },
+        supportStatus: "validated",
+      }],
+      circuits: [],
+    }).references[0];
+
+    expect(await saveModelContinuityPolicy(
+      reference,
+      { fallbacks: ["work/draft"], automatic: "all" },
+      async () => "superseded",
+    )).toBeNull();
+  });
+
 
   test("Models permanent replacement requires confirmation and sends expectedPrimary", async () => {
     const reference = Models.parseModelContinuityReport({
@@ -191,9 +213,9 @@ describe("GUI interaction stability", () => {
       () => false,
       async action => {
         actions.push(action);
-        return true;
+        return "applied";
       },
-    )).toBe(false);
+    )).toBe("failed");
     expect(actions).toHaveLength(0);
 
     expect(await confirmModelContinuityReplacement(
@@ -202,9 +224,9 @@ describe("GUI interaction stability", () => {
       () => true,
       async action => {
         actions.push(action);
-        return true;
+        return "applied";
       },
-    )).toBe(true);
+    )).toBe("applied");
     expect(actions).toEqual([{
       action: "replace",
       referenceId: "classifier",
@@ -227,7 +249,7 @@ describe("GUI interaction stability", () => {
         expectedPrimary: "work/old",
         replacement: "work/new",
       },
-      async () => { reloads += 1; return true; },
+      async () => { reloads += 1; return "applied"; },
     );
 
     expect(reloads).toBe(1);
@@ -235,6 +257,7 @@ describe("GUI interaction stability", () => {
       ok: false,
       stale: true,
       reloadFailed: false,
+      superseded: false,
       message: "model reference changed; reload and retry",
     });
   });
@@ -251,13 +274,14 @@ describe("GUI interaction stability", () => {
         expectedPrimary: "work/old",
         replacement: "work/new",
       },
-      async () => false,
+      async () => "failed",
     );
 
     expect(result).toEqual({
       ok: false,
       stale: false,
       reloadFailed: true,
+      superseded: false,
       message: "model reference changed; reload and retry",
     });
   });
@@ -301,13 +325,82 @@ describe("GUI interaction stability", () => {
     });
 
     resolveSecond(Response.json(reportFor("work/newest")));
-    await second;
+    expect(await second).toBe("applied");
     resolveFirst(Response.json(reportFor("work/stale")));
-    await first;
+    expect(await first).toBe("superseded");
 
     expect(shownPrimary).toBe("work/newest");
     expect(failures).toBe(0);
     expect(settled).toBe(1);
+  });
+
+  test("Models superseded stale recovery preserves the newer explicit refresh report and status", async () => {
+    let resolveRecovery!: (response: Response) => void;
+    let markRecoveryStarted!: () => void;
+    const recoveryStarted = new Promise<void>(resolve => { markRecoveryStarted = resolve; });
+    const recoveryResponse = new Promise<Response>(resolve => { resolveRecovery = resolve; });
+    let latestRequest = 0;
+    let shownPrimary = "";
+    let visibleStatus = "initial";
+    const reportFor = (primary: string) => ({
+      policies: {},
+      references: [{
+        id: "provider-default:work",
+        kind: "provider-default",
+        primary,
+        status: "ready",
+        automaticEligible: true,
+        policy: { fallbacks: [], automatic: "off" },
+        supportStatus: "validated",
+      }],
+      circuits: [],
+    });
+    const load = (response: Promise<Response>) => {
+      const requestId = ++latestRequest;
+      return loadModelContinuityReport(
+        async () => response,
+        "/frogp",
+        () => requestId === latestRequest,
+        {
+          success: report => {
+            shownPrimary = report.references[0]?.primary ?? "";
+            visibleStatus = "";
+          },
+          failure: () => { visibleStatus = "load failed"; },
+          settled: () => {},
+        },
+      );
+    };
+    const staleAction = postModelContinuityAction(
+      async () => Response.json({ error: "stale reference" }, { status: 409 }),
+      "/frogp",
+      {
+        action: "replace",
+        referenceId: "provider-default:work",
+        expectedPrimary: "work/old",
+        replacement: "work/new",
+      },
+      () => {
+        markRecoveryStarted();
+        return load(recoveryResponse);
+      },
+    );
+    await recoveryStarted;
+    const explicitRefresh = load(Promise.resolve(Response.json(reportFor("work/newest"))));
+    expect(await explicitRefresh).toBe("applied");
+    visibleStatus = "newest report shown";
+    resolveRecovery(Response.json(reportFor("work/stale")));
+    const actionResult = await staleAction;
+
+    expect(actionResult).toEqual({
+      ok: false,
+      stale: false,
+      reloadFailed: false,
+      superseded: true,
+      message: "stale reference",
+    });
+    expect(shownPrimary).toBe("work/newest");
+    expect(visibleStatus).toBe("newest report shown");
   });
 
   test("Models model polling excludes continuity and model loading does not await it", () => {

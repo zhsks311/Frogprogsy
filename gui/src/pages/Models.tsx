@@ -327,22 +327,26 @@ export function updateModelContinuityFallback(
   return slots.filter(Boolean);
 }
 
+export type ModelContinuityLoadResult = "applied" | "failed" | "superseded";
+export type ModelContinuityActionResult = "applied" | "failed" | "superseded";
 
 export async function saveModelContinuityPolicy(
   reference: ModelContinuityReference,
   draft: ModelContinuityPolicy,
-  send: (action: ModelContinuitySetAction) => Promise<boolean>,
-): Promise<ModelContinuityPolicy> {
+  send: (action: ModelContinuitySetAction) => Promise<ModelContinuityActionResult>,
+): Promise<ModelContinuityPolicy | null> {
   try {
-    if (await send({
+    const result = await send({
       action: "set",
       primary: reference.primary,
       referenceId: reference.id,
       fallbacks: [...draft.fallbacks],
       automatic: draft.automatic,
-    })) {
+    });
+    if (result === "applied") {
       return { fallbacks: [...draft.fallbacks], automatic: draft.automatic };
     }
+    if (result === "superseded") return null;
   } catch {
     // The caller owns the visible error; restore the last server-confirmed policy below.
   }
@@ -353,9 +357,9 @@ export async function confirmModelContinuityReplacement(
   reference: ModelContinuityReference,
   replacement: string,
   confirm: () => boolean,
-  send: (action: ModelContinuityReplaceAction) => Promise<boolean>,
-): Promise<boolean> {
-  if (!replacement || !confirm()) return false;
+  send: (action: ModelContinuityReplaceAction) => Promise<ModelContinuityActionResult>,
+): Promise<ModelContinuityActionResult> {
+  if (!replacement || !confirm()) return "failed";
   return send({
     action: "replace",
     referenceId: reference.id,
@@ -370,8 +374,8 @@ export async function postModelContinuityAction(
   request: ModelContinuityRequest,
   apiBase: string,
   action: ModelContinuityAction,
-  reloadStale: () => Promise<boolean> | boolean,
-): Promise<{ ok: boolean; stale: boolean; reloadFailed: boolean; message: string }> {
+  reloadStale: () => Promise<ModelContinuityLoadResult> | ModelContinuityLoadResult,
+): Promise<{ ok: boolean; stale: boolean; reloadFailed: boolean; superseded: boolean; message: string }> {
   try {
     const response = await request(`${apiBase}/api/model-continuity`, {
       method: "POST",
@@ -382,11 +386,17 @@ export async function postModelContinuityAction(
     const message = typeof body.error === "string" ? body.error : "";
     if (response.status === 409) {
       const reloaded = await reloadStale();
-      return { ok: false, stale: reloaded, reloadFailed: !reloaded, message };
+      return {
+        ok: false,
+        stale: reloaded === "applied",
+        reloadFailed: reloaded === "failed",
+        superseded: reloaded === "superseded",
+        message,
+      };
     }
-    return { ok: response.ok, stale: false, reloadFailed: false, message };
+    return { ok: response.ok, stale: false, reloadFailed: false, superseded: false, message };
   } catch {
-    return { ok: false, stale: false, reloadFailed: false, message: "" };
+    return { ok: false, stale: false, reloadFailed: false, superseded: false, message: "" };
   }
 }
 
@@ -401,17 +411,18 @@ export async function loadModelContinuityReport(
   apiBase: string,
   isLatest: () => boolean,
   callbacks: ModelContinuityLoadCallbacks,
-): Promise<boolean> {
+): Promise<ModelContinuityLoadResult> {
   try {
     const response = await request(`${apiBase}/api/model-continuity`);
     if (!response.ok) throw new Error("model continuity load failed");
     const report = parseModelContinuityReport(await response.json());
-    if (!isLatest()) return false;
+    if (!isLatest()) return "superseded";
     callbacks.success(report);
-    return true;
+    return "applied";
   } catch {
-    if (isLatest()) callbacks.failure();
-    return false;
+    if (!isLatest()) return "superseded";
+    callbacks.failure();
+    return "failed";
   } finally {
     if (isLatest()) callbacks.settled();
   }
@@ -485,8 +496,8 @@ function ContinuityReferenceCard({
   reference: ModelContinuityReference;
   selectableModels: readonly string[];
   t: TFn;
-  onSet: (action: ModelContinuitySetAction) => Promise<boolean>;
-  onReplace: (action: ModelContinuityReplaceAction) => Promise<boolean>;
+  onSet: (action: ModelContinuitySetAction) => Promise<ModelContinuityActionResult>;
+  onReplace: (action: ModelContinuityReplaceAction) => Promise<ModelContinuityActionResult>;
 }) {
   const [draft, setDraft] = useState<ModelContinuityPolicy>({
     fallbacks: [...reference.policy.fallbacks],
@@ -506,7 +517,8 @@ function ContinuityReferenceCard({
     if (saving) return;
     setSaving(true);
     try {
-      setDraft(await saveModelContinuityPolicy(reference, draft, onSet));
+      const saved = await saveModelContinuityPolicy(reference, draft, onSet);
+      if (saved) setDraft(saved);
     } finally {
       setSaving(false);
     }
@@ -522,7 +534,7 @@ function ContinuityReferenceCard({
         () => window.confirm(t("models.continuity.replaceConfirm", { purpose, model: replacement })),
         onReplace,
       );
-      if (replaced) setReplacement("");
+      if (replaced === "applied") setReplacement("");
     } finally {
       setSaving(false);
     }
@@ -665,8 +677,8 @@ export function ModelContinuityPanel({
   report: ModelContinuityReport;
   selectableModels?: readonly string[];
   t: TFn;
-  onSet: (action: ModelContinuitySetAction) => Promise<boolean>;
-  onReplace: (action: ModelContinuityReplaceAction) => Promise<boolean>;
+  onSet: (action: ModelContinuitySetAction) => Promise<ModelContinuityActionResult>;
+  onReplace: (action: ModelContinuityReplaceAction) => Promise<ModelContinuityActionResult>;
 }) {
   const attention = report.references.filter(reference => reference.status !== "ready");
   const automatic = report.references.filter(reference =>
@@ -856,7 +868,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     }
   };
 
-  const loadContinuity = async (): Promise<boolean> => {
+  const loadContinuity = async (): Promise<ModelContinuityLoadResult> => {
     const requestId = ++continuityLoadSeqRef.current;
     setContinuityLoading(true);
     return loadModelContinuityReport(
@@ -1029,7 +1041,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
   const submitContinuityAction = async (
     action: ModelContinuityAction,
     successMessage: TKey,
-  ): Promise<boolean> => {
+  ): Promise<ModelContinuityActionResult> => {
     setContinuityStatus("");
     const result = await postModelContinuityAction(
       (input, init) => fetch(input, init),
@@ -1043,12 +1055,14 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
         loadContinuity(),
         loadFeatured(true),
       ]);
-      if (continuityReloaded) {
+      if (continuityReloaded === "superseded") return "superseded";
+      if (continuityReloaded === "applied") {
         setContinuityOk(true);
         setContinuityStatus(t(successMessage));
       }
-      return true;
+      return "applied";
     }
+    if (result.superseded) return "superseded";
     setContinuityOk(false);
     if (result.reloadFailed) {
       setContinuityStatus(t("models.continuity.loadFailed"));
@@ -1059,7 +1073,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     } else {
       setContinuityStatus(t("models.continuity.saveFailed"));
     }
-    return false;
+    return "failed";
   };
 
 
