@@ -461,7 +461,7 @@ describe("effective model catalog config", () => {
     expect(provider.modelReasoningEfforts?.["__proto__"]).toEqual(["low"]);
   });
 
-  test("retired managed default만 catalog default로 교체하고 사용자 default 경계를 보존한다", () => {
+  test("retired managed default를 명시적 정책 없이 교체하지 않고 사용자 default 경계를 보존한다", () => {
     const document = bundledCatalog();
     const managed = document.providers.find(provider => provider.id === "umans")!;
     managed.retiredModels = ["umans-glm-5.1"];
@@ -483,7 +483,7 @@ describe("effective model catalog config", () => {
 
     const effective = buildEffectiveConfig(persisted, selectedCatalog(document));
 
-    expect(effective.providers.umans.defaultModel).toBe("umans-coder");
+    expect(effective.providers.umans.defaultModel).toBe("umans-glm-5.1");
     expect(effective.providers.umans.models).toContain("umans-glm-5.1");
     expect(effective.providers.umans.userModels).toEqual(["user-added", "umans-glm-5.1"]);
     expect(effective.providers.custom.defaultModel).toBe("umans-glm-5.1");

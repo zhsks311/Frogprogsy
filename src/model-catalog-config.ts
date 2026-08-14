@@ -351,7 +351,6 @@ function mergeManagedProvider(
   const managed = catalogProviderConfig(catalogProvider);
   const effective = { ...managed, ...persisted } as FrogProviderConfig;
   const managedModelIds = new Set(managed.models ?? []);
-  const retiredModelIds = new Set(catalogProvider.retiredModels ?? []);
   const persistedUserModels = uniqueStrings(persisted.userModels ?? []);
   effective.models = uniqueStrings([
     ...(managed.models ?? []),
@@ -360,11 +359,6 @@ function mergeManagedProvider(
   const effectiveUserModels = persistedUserModels.filter(model => !managedModelIds.has(model));
   if (effectiveUserModels.length > 0) effective.userModels = effectiveUserModels;
   else delete effective.userModels;
-
-  if (persisted.defaultModel !== undefined && retiredModelIds.has(persisted.defaultModel)) {
-    if (managed.defaultModel !== undefined) effective.defaultModel = managed.defaultModel;
-    else delete effective.defaultModel;
-  }
 
   if (supportsWireModelIds(persisted.adapter) && managed.modelWireIds !== undefined) {
     effective.modelWireIds = managed.modelWireIds;
