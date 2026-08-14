@@ -227,7 +227,7 @@ function printSubcommandUsage(name: string | undefined): boolean {
   frogp models continuity set <provider/model> --fallback <provider/model>... --auto off|retired|transient|all
   frogp models continuity replace <reference-id> <provider/model>
 
-List routed models or inspect and change model continuity through the running proxy.`);
+These commands require a RUNNING proxy. If the proxy is stopped, run \`frogp start\` first. Use \`--json\` for machine-readable output.`);
       break;
     case "login":
       console.log("Usage: frogp login [--list|<provider>]\n\nOAuth or API-key login for a provider. --list shows available OAuth and API-key providers.");
