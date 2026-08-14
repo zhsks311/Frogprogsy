@@ -62,6 +62,7 @@ The optional top-level `modelContinuity` map uses the exact ordinary route targe
 - `all`: enable both conditions.
 
 Absent configuration is `off`. A sequence contains at most three exact `provider/model` targets. Validation rejects an unconfigured provider, the primary target itself, duplicates, hidden models, retired fallback targets, and more than three targets. A provider-discovered target is allowed with a warning that the managed catalog has not validated it.
+Policy validation may report missing authentication, but it does not reject a configured fallback solely from a management-time authentication snapshot: forwarded credentials are request-dependent. Automatic resolution performs normal authentication for each exact candidate and skips a candidate that is unusable for that request.
 
 The existing `fallbackProviders` setting remains independent. It never contributes a continuity candidate. The existing effective-config behavior that silently replaces a retired managed provider default with the catalog default must be removed; only the user's continuity sequence may replace a retired target.
 
@@ -72,6 +73,7 @@ The existing `fallbackProviders` setting remains independent. It never contribut
 Reference ids identify configuration owners for diagnosis and permanent replacement. They are not runtime fallback keys. The runtime cannot always infer whether a direct Claude Code request originated from a provider default, a featured subagent choice, or another setting that names the same model.
 
 A permanent replacement request includes the reference id and the target observed by the caller. The server rejects the write when the current target differs. The server then uses the existing owner-specific validation, config save, and catalog refresh path. It must not perform arbitrary JSON-path mutation.
+Owner semantics constrain permanent replacement. A provider's `defaultModel` may change only to another model at that same configured provider; changing the global default provider remains the existing provider-management action. Owners that already store both provider and model may replace both fields. A gateway-alias tombstone has no mutable config owner, so users respond by setting a route policy rather than rewriting past Claude Code session state.
 
 The dashboard adds one section to the existing Models page. Problems appear first. Each problem states the affected feature, current target, reason, and primary action. Eligible ordinary route targets also expose the ordered fallback sequence and automatic mode. Normal references remain collapsed. No new top-level page, history store, or background worker is added.
 
@@ -100,6 +102,8 @@ A catalog-confirmed retired gateway alias becomes a tombstone in the existing al
 - `retired` or `all` resolves the first valid explicit fallback.
 
 Unknown or fabricated gateway aliases remain typed 404 errors. A tombstone does not make an arbitrary unknown alias routable.
+Startup and runtime rebuilds reconcile tombstone status against the current selected catalog and configured provider identities. An alias entry that is no longer confirmed retired cannot remain authoritative merely because an older registry write marked it retired.
+Tombstone aliases are reserved identities. Active alias generation must include those reservations in collision handling so a newly active route can never overwrite or rename an alias held by an existing retired-model session.
 
 ## Ordinary request fallback
 
@@ -115,7 +119,7 @@ Transient fallback is limited to failures known before a successful upstream res
 - HTTP 429; and
 - HTTP 5xx.
 
-HTTP 400/401/402/403, context-limit errors, tool or schema errors, adapter parse errors, SSE error strings inside an HTTP 200 response, and any failure after client-visible text, thinking, or tool output do not trigger continuity fallback. FrogProgsy must not classify a free-form error message by substring.
+HTTP 400/401/402/403, context-limit errors, tool or schema errors, adapter parse errors, SSE error strings inside an HTTP 200 response, and any failure after client-visible text, thinking, or tool output do not trigger continuity fallback. For a non-success HTTP response, only an exact structured error `code` or `type` may identify a context-limit error; FrogProgsy must not classify a free-form error message by substring.
 
 A single in-memory map records a 30-second open circuit for an exact configured provider/model target. Lookups remove expired entries. A successful primary request clears its entry. No timer, persistence file, manual retry action, or health poller is required.
 
