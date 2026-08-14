@@ -9,7 +9,10 @@ async function read(path: string): Promise<string> {
 
 describe("model catalog publication workflows", () => {
   test("runtime and publication use the repository's actual Pages base path", async () => {
-    const pkg = JSON.parse(await read("package.json")) as { repository: { url: string } };
+    const pkg = JSON.parse(await read("package.json")) as {
+      repository: { url: string };
+      homepage: string;
+    };
     const repository = new URL(pkg.repository.url.replace(/^git\+/, ""));
     const [owner, repositoryNameWithSuffix] = repository.pathname.slice(1).split("/");
     const repositoryName = repositoryNameWithSuffix!.replace(/\.git$/, "");
@@ -19,6 +22,7 @@ describe("model catalog publication workflows", () => {
     const deployWorkflow = await read(".github/workflows/deploy-docs.yml");
     const releaseWorkflow = await read(".github/workflows/release.yml");
 
+    expect(pkg.homepage).toBe(`${pagesBaseUrl}/`);
     expect(MODEL_CATALOG_REMOTE_URL).toBe(catalogUrl);
     expect(docsConfig).toContain(`basePath: "/${repositoryName}"`);
     expect(docsConfig).toContain(`assetPrefix: "/${repositoryName}"`);
