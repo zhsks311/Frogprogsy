@@ -40,3 +40,35 @@
 ## 우려
 
 전체 suite, formatter, linter, 전체 typecheck, GUI build는 요청에 따라 실행하지 않았습니다. 이 워크트리에서는 Bun CLI child의 cold startup이 간헐적으로 기존 5초·15초·30초 제한을 넘어 중간 focused 실행이 실패했지만 timeout을 변경하지 않았습니다. Transpiler cache가 준비된 뒤 요청된 최종 focused 명령은 원래 제한 그대로 통과했습니다.
+
+## 검토 수정 round 1
+
+### 상태
+
+완료. Fallback이 없는 retired reference에도 바로 실행할 수 있는 다음 행동을 추가했습니다.
+
+### 변경
+
+- Retired reference의 fallback이 비어 있으면 placeholder가 든 가짜 교체 명령 대신 `Next: frogp models`를 출력합니다.
+- 실제 CLI child와 stub proxy를 쓰는 회귀 테스트가 빈 fallback, 기본 `automatic: off`, reference id 비노출, 실행 가능한 다음 명령을 검증합니다.
+
+### 실행 명령과 실제 결과
+
+1. RED: `bun test --isolate ./tests/cli-models.test.ts -t "retired reference without a fallback"`
+   - 결과: 종료 코드 1, 0 pass / 1 fail. 영향 설명 뒤에 실행 가능한 다음 행동이 없음을 재현했습니다.
+2. GREEN: 같은 단일 테스트 명령
+   - 결과: 종료 코드 0, 1 pass / 0 fail / 7 expect.
+3. 기존 사람용/JSON 출력 회귀:
+   `bun test --isolate ./tests/cli-models.test.ts -t "models continuity prints problem|models continuity --json|retired reference without a fallback"`
+   - 결과: 종료 코드 0, 3 pass / 0 fail / 22 expect.
+4. 최종 focused gate:
+   `bun test --isolate ./tests/cli-models.test.ts ./tests/model-continuity-api.test.ts`
+   - 결과: 종료 코드 0, 36 pass / 0 fail / 251 expect, 2개 파일.
+
+### 커밋
+
+`fix: keep retired continuity reports actionable`
+
+### 우려
+
+전체 suite, formatter, linter, 전체 typecheck, GUI build는 요청에 따라 실행하지 않았습니다. Timeout 값은 변경하지 않았습니다.

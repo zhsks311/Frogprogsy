@@ -1185,8 +1185,12 @@ function renderHumanModelContinuity(report: CliModelContinuityReport, paint: boo
       console.log(`  Impact: ${reference.label} has an invalid continuity policy.`);
     }
     const replacement = reference.policy.fallbacks[0];
-    if (reference.status === "retired" && replacement) {
-      console.log(`  Replace: frogp models continuity replace ${reference.id} ${replacement}`);
+    if (reference.status === "retired") {
+      if (replacement) {
+        console.log(`  Replace: frogp models continuity replace ${reference.id} ${replacement}`);
+      } else {
+        console.log("  Next: frogp models");
+      }
     } else if (reference.status === "authentication_required") {
       console.log(`  Sign in: frogp login ${reference.primary.split("/", 1)[0]}`);
     } else if (reference.status === "policy_invalid") {

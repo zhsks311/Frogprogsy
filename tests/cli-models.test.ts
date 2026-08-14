@@ -51,6 +51,23 @@ const STUB_CONTINUITY_REPORT = {
   ],
 };
 
+const STUB_RETIRED_WITHOUT_FALLBACK_REPORT = {
+  policies: {},
+  references: [
+    {
+      id: "provider-default:work",
+      kind: "provider-default",
+      primary: "work/old",
+      status: "retired",
+      automaticEligible: true,
+      policy: { fallbacks: [], automatic: "off" },
+      supportStatus: "validated",
+      label: "Provider default",
+    },
+  ],
+  circuits: [],
+};
+
 function runCli(argv: string[], frogHome: string, extraEnv: Record<string, string> = {}) {
   const claudeHome = join(frogHome, "claude");
   mkdirSync(claudeHome, { recursive: true });
@@ -88,7 +105,11 @@ function writeRunningState(frogHome: string, port: number) {
   writeFileSync(join(frogHome, "frogp.port"), String(port), "utf8");
 }
 
-function startStubProxy(options: { statusAvailable?: boolean; rejectSetPrimary?: string } = {}) {
+function startStubProxy(options: {
+  statusAvailable?: boolean;
+  rejectSetPrimary?: string;
+  continuityReport?: unknown;
+} = {}) {
   const actions: Array<Record<string, unknown>> = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -111,7 +132,7 @@ function startStubProxy(options: { statusAvailable?: boolean; rejectSetPrimary?:
         });
       }
       if (url.pathname === "/api/model-continuity" && req.method === "GET") {
-        return Response.json(STUB_CONTINUITY_REPORT);
+        return Response.json(options.continuityReport ?? STUB_CONTINUITY_REPORT);
       }
       if (url.pathname === "/api/model-continuity" && req.method === "POST") {
         const action = await req.json() as Record<string, unknown>;
@@ -243,6 +264,27 @@ describe("frogp models", () => {
       expect(result.stdout).not.toContain("subagent:0");
       expect(result.stdout).toContain("[http_5xx] work/old");
       expect(result.stdout).toContain(new Date(STUB_CIRCUIT_RETRY_AT).toISOString());
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("retired reference without a fallback shows an executable model discovery action", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const { server, port } = startStubProxy({
+      continuityReport: STUB_RETIRED_WITHOUT_FALLBACK_REPORT,
+    });
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync(["models", "continuity"], home);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("[retired] Provider default · work/old");
+      expect(result.stdout).toContain("Fallbacks: none");
+      expect(result.stdout).toContain("Next: frogp models");
+      expect(result.stdout).not.toContain("<provider/model>");
+      expect(result.stdout).not.toContain("provider-default:work");
     } finally {
       server.stop(true);
       rmSync(home, { recursive: true, force: true });
