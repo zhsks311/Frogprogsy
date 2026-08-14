@@ -14,6 +14,89 @@ import type {
 export const MAX_CONTINUITY_FALLBACKS = 3;
 export const CONTINUITY_CIRCUIT_MS = 30_000;
 
+export type ContinuityReason =
+  | "retired"
+  | "connect_failure"
+  | "connect_timeout"
+  | "http_404"
+  | "http_410"
+  | "http_429"
+  | "http_5xx"
+  | "circuit_open";
+
+export interface ContinuityCircuitSnapshot {
+  target: string;
+  reason: ContinuityReason;
+  until: number;
+}
+
+export class ContinuityCircuit {
+  readonly #entries = new Map<string, { until: number; reason: ContinuityReason }>();
+
+  isOpen(target: string, now: number): boolean {
+    const entry = this.#entries.get(target);
+    if (!entry) return false;
+    if (entry.until <= now) {
+      this.#entries.delete(target);
+      return false;
+    }
+    return true;
+  }
+
+  open(target: string, reason: ContinuityReason, now: number): void {
+    this.#entries.set(target, { until: now + CONTINUITY_CIRCUIT_MS, reason });
+  }
+
+  succeed(target: string): void {
+    this.#entries.delete(target);
+  }
+
+  snapshot(now: number): ContinuityCircuitSnapshot[] {
+    const snapshot: ContinuityCircuitSnapshot[] = [];
+    for (const [target, entry] of this.#entries) {
+      if (!this.isOpen(target, now)) continue;
+      snapshot.push({ target, reason: entry.reason, until: entry.until });
+    }
+    return snapshot;
+  }
+}
+
+export function continuityCandidates(
+  primary: string,
+  policy: ModelContinuityPolicy,
+  retiredTargets: ReadonlySet<string>,
+  circuit: ContinuityCircuit,
+  now: number,
+): string[] {
+  return [primary, ...policy.fallbacks].filter(
+    target => !retiredTargets.has(target) && !circuit.isOpen(target, now),
+  );
+}
+
+const STRUCTURED_CONTEXT_LIMIT_VALUES: Record<string, true> = {
+  context_length_exceeded: true,
+  context_window_exceeded: true,
+  context_limit_exceeded: true,
+};
+
+export function isContinuityEligibleHttpFailure(
+  status: number,
+  details: { type: string; code?: string | null },
+): ContinuityReason | null {
+  if (
+    STRUCTURED_CONTEXT_LIMIT_VALUES[details.type] === true
+    || (details.code !== null && details.code !== undefined
+      && STRUCTURED_CONTEXT_LIMIT_VALUES[details.code] === true)
+  ) {
+    return null;
+  }
+  if (status === 404) return "http_404";
+  if (status === 410) return "http_410";
+  if (status === 429) return "http_429";
+  if (status >= 500 && status <= 599) return "http_5xx";
+  return null;
+}
+
 export interface ModelContinuityModelRow {
   namespaced: string;
   disabled?: boolean;

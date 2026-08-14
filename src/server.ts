@@ -15,7 +15,7 @@ import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, get
 import { parseRequest } from "./responses/parser";
 import { estimateMessagesInputTokens, parseMessagesRequest, buildResponsesBody } from "./messages/parser";
 import { materializeModelAliases, reconcileRetiredModelAliases, type ModelAliasEntry } from "./model-aliases";
-import { routeModel, type RouteKind } from "./router";
+import { routeModel, type RouteKind, type RouteResult } from "./router";
 import { cheapMixTarget, isModelMixingRequest, resolveMix, validMixAgents, type CoordinatorComplete, type MixTarget } from "./model-mixing";
 import { computeCallPlan } from "./model-mixing/orchestrate";
 import { applyModelMixingPatch, modelMixingSettingsSnapshot } from "./model-mixing/settings";
@@ -43,7 +43,13 @@ import { injectClaudeCodeConfig } from "./claude-inject";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
 import { buildEffectiveConfig, sanitizeCatalogProviderForPersistence } from "./model-catalog-config";
-import { buildRetiredTargetIndex } from "./model-continuity";
+import {
+  buildRetiredTargetIndex,
+  ContinuityCircuit,
+  continuityCandidates,
+  isContinuityEligibleHttpFailure,
+  type ContinuityReason,
+} from "./model-continuity";
 import { createRuntimeConfigState, type RuntimeConfigState } from "./runtime-config-state";
 import type { CatalogRuntimeStatus, SelectedModelCatalog } from "./model-catalog-runtime";
 import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage, ModelContinuityPolicy } from "./types";
@@ -52,7 +58,7 @@ import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
 import { resolveModelCapabilities, supportsImageInput, supportsNativeWebSearch } from "./model-capabilities";
 import { isOpenAIResponsesFallbackProvider } from "./fallback-openai-responses";
-import { applyParsedModelId, buildAttemptContexts, cloneParsedForAttempt, isSameProviderRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
+import { applyParsedModelId, buildAttemptContexts, cloneParsedForAttempt, isSameTargetRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
 import { redactConfigForApi, redactProviderForApi } from "./provider-redaction";
 import { effectiveKeyCandidates } from "./provider-keys";
 import { testProviderConnection as runProviderConnectionTest } from "./provider-test";
@@ -746,11 +752,22 @@ function continuityAllowsRetired(policy: ModelContinuityPolicy | undefined): boo
   return policy?.automatic === "retired" || policy?.automatic === "all";
 }
 
+interface HandleMessagesOptions {
+  abortSignal?: AbortSignal;
+  profileId?: string;
+  noKeyDnsLookup?: PublicDnsLookup;
+  retiredTargets?: ReadonlySet<string>;
+  continuityCircuit?: ContinuityCircuit;
+  now?: () => number;
+}
+
+const EMPTY_RETIRED_TARGETS: ReadonlySet<string> = new Set();
+
 async function handleMessages(
   req: Request,
   config: FrogConfig,
   logCtx: RequestLogContext,
-  options: { abortSignal?: AbortSignal; profileId?: string; noKeyDnsLookup?: PublicDnsLookup; retiredTargets?: ReadonlySet<string> } = {},
+  options: HandleMessagesOptions = {},
 ): Promise<Response> {
   const parseStarted = Date.now();
   const read = await readParsedMessagesRequest(req, logCtx, parseStarted);
@@ -763,6 +780,7 @@ async function handleMessages(
     finalizeRequestLog(logCtx, "internal_error", 404, { kind: "routing", code: "model_disabled" });
     return formatAnthropicErrorResponse(404, "invalid_request_error", `Model "${responseModelId}" is disabled.`);
   }
+  const ordinaryContinuityEligible = !isModelMixingRequest(config, parsed.modelId);
   if (isModelMixingRequest(config, parsed.modelId) && (config.modelMixing?.combine === "fusion" || config.modelMixing?.combine === "pipeline")) {
     // Buffered panel/judge/pipeline pre-final timeout only. The final streamed synthesizer is not
     // bounded by stageTimeoutMs/panelTimeoutMs; it follows client abort + SSE idle timeout.
@@ -831,17 +849,20 @@ async function handleMessages(
   await applyModelMixing(config, parsed, req.headers, options.abortSignal);
 
   const routeStarted = Date.now();
+  const continuityCircuit = options.continuityCircuit ?? new ContinuityCircuit();
+  const now = options.now ?? Date.now;
+  const retiredTargets = options.retiredTargets ?? EMPTY_RETIRED_TARGETS;
+  let primaryTarget = "";
   let attempts: AttemptContext[] = [];
   try {
-    const preflightRoute = routeModel(config, responseModelId);
-    const primaryTarget = `${preflightRoute.providerName}/${preflightRoute.modelId}`;
-    const primaryIsRetired = preflightRoute.retired === true
-      || (
-        preflightRoute.routeKind === "qualified"
-        && options.retiredTargets?.has(primaryTarget) === true
-      );
-    if (primaryIsRetired && !continuityAllowsRetired(config.modelContinuity?.[primaryTarget])) {
-      setRouteLog(logCtx, preflightRoute, preflightRoute.routeKind, preflightRoute.ambiguousCandidates);
+    const primaryRoute = resolvePrimaryRoute(config, parsed);
+    primaryTarget = `${primaryRoute.providerName}/${primaryRoute.modelId}`;
+    const policy = ordinaryContinuityEligible && primaryRoute.routeKind !== "classifier"
+      ? config.modelContinuity?.[primaryTarget]
+      : undefined;
+    const primaryIsRetired = primaryRoute.retired === true || retiredTargets.has(primaryTarget);
+    if (primaryIsRetired && !continuityAllowsRetired(policy)) {
+      setRouteLog(logCtx, primaryRoute, primaryRoute.routeKind, primaryRoute.ambiguousCandidates);
       recordLogPhase(logCtx, "route", "error", "model_retired", routeStarted);
       finalizeRequestLog(logCtx, "internal_error", 410, { kind: "routing", code: "model_retired" });
       return formatAnthropicErrorResponse(
@@ -851,14 +872,37 @@ async function handleMessages(
       );
     }
 
-    const built = buildAttemptContexts(config, parsed);
-    if (isRouteDisabled(config, built.primaryRoute.providerName, built.primaryRoute.modelId, responseModelId)) {
+    const transientPolicy = policy?.automatic === "transient" || policy?.automatic === "all";
+    const circuitOpen = transientPolicy && continuityCircuit.isOpen(primaryTarget, now());
+    const policyHandlesRequest = policy !== undefined
+      && ((primaryIsRetired && continuityAllowsRetired(policy)) || transientPolicy);
+    const candidateTargets = policyHandlesRequest
+      ? continuityCandidates(primaryTarget, policy, retiredTargets, continuityCircuit, now())
+      : [primaryTarget];
+    const skipPrimary = !candidateTargets.includes(primaryTarget);
+    if (primaryIsRetired && skipPrimary) {
+      logCtx.entry.continuityReason = "retired";
+    } else if (circuitOpen && skipPrimary) {
+      logCtx.entry.continuityReason = "circuit_open";
+    }
+
+    const continuityRoutes: RouteResult[] = [];
+    for (const target of candidateTargets) {
+      if (target === primaryTarget) continue;
+      const route = routeModel(config, target);
+      if (`${route.providerName}/${route.modelId}` === target) continuityRoutes.push(route);
+    }
+    const built = buildAttemptContexts(config, parsed, {
+      continuityRoutes,
+      suppressGenericFallback: policyHandlesRequest,
+    });
+    if (!skipPrimary && isRouteDisabled(config, built.primaryRoute.providerName, built.primaryRoute.modelId, responseModelId)) {
       recordLogPhase(logCtx, "route", "error", "model_disabled", routeStarted);
       finalizeRequestLog(logCtx, "internal_error", 404, { kind: "routing", code: "model_disabled" });
       return formatAnthropicErrorResponse(404, "invalid_request_error", `Model "${responseModelId}" is disabled.`);
     }
     attempts = built.attempts.filter(attempt =>
-      (!primaryIsRetired || attempt.source === "primary")
+      (!skipPrimary || attempt.source !== "primary")
       && !isRouteDisabled(config, attempt.providerName, attempt.modelId, responseModelId)
     );
     setRouteLog(logCtx, built.primaryRoute, built.primaryRoute.routeKind, built.primaryRoute.ambiguousCandidates);
@@ -888,12 +932,23 @@ async function handleMessages(
         recordLogPhase(logCtx, authPhase, "ok", undefined, oauthStarted);
       } catch (err) {
         recordLogPhase(logCtx, authPhase, "error", authErrorCode, oauthStarted);
+        if (attempt.source === "continuity") {
+          recordAttemptLog(logCtx, attempt, "skipped", authErrorCode);
+          attemptIndex = nextTargetAttemptIndex(attempts, attemptIndex);
+          continue;
+        }
         recordAttemptLog(logCtx, attempt, "error", authErrorCode);
         finalizeRequestLog(logCtx, "internal_error", 401, { kind: "authentication", code: authErrorCode });
         return formatAnthropicErrorResponse(401, "authentication_error", err instanceof Error ? err.message : String(err));
       }
     } else {
       recordLogPhase(logCtx, "oauth", "skipped", undefined, oauthStarted);
+    }
+
+    if (attempt.source === "continuity" && !continuityAttemptHasUsableAuth(attemptProvider, req.headers)) {
+      recordAttemptLog(logCtx, attempt, "skipped", "auth_missing");
+      attemptIndex = nextTargetAttemptIndex(attempts, attemptIndex);
+      continue;
     }
 
     const imageFallback = decideImageFallback(config, attempt.providerName, attemptProvider, attempt.modelId, attemptParsed, req.headers);
@@ -990,6 +1045,16 @@ async function handleMessages(
       recordLogPhase(logCtx, "upstream_connect", "error", code, upstreamStarted);
       recordAttemptLog(logCtx, attempt, "error", code);
       const nextIndex = nextAttemptIndexAfterConnectError(attempts, attemptIndex);
+      const continuityReason: ContinuityReason = timeout ? "connect_timeout" : "connect_failure";
+      noteContinuityTransition(
+        logCtx,
+        continuityCircuit,
+        primaryTarget,
+        attempt,
+        attempts[nextIndex],
+        continuityReason,
+        now(),
+      );
       if (nextIndex < attempts.length) {
         for (let skipped = attemptIndex + 1; skipped < nextIndex; skipped++) {
           recordAttemptLog(logCtx, attempts[skipped]!, "skipped", code);
@@ -1004,7 +1069,30 @@ async function handleMessages(
     if (!upstreamResponse.ok) {
       const err = await providerErrorDetails(upstreamResponse);
       recordAttemptLog(logCtx, attempt, "error", err.code ?? "provider_non_2xx", upstreamResponse.status);
-      const nextIndex = nextAttemptIndexAfterHttp(attempts, attemptIndex, upstreamResponse.status, err);
+      const continuityPath = hasContinuityTargetAfter(attempts, attemptIndex);
+      const continuityReason = continuityReasonForHttpTransition(
+        attempts,
+        attemptIndex,
+        upstreamResponse.status,
+        err,
+      );
+      const nextIndex = nextAttemptIndexAfterHttp(
+        attempts,
+        attemptIndex,
+        upstreamResponse.status,
+        err,
+        continuityPath,
+        continuityReason,
+      );
+      noteContinuityTransition(
+        logCtx,
+        continuityCircuit,
+        primaryTarget,
+        attempt,
+        attempts[nextIndex],
+        continuityReason,
+        now(),
+      );
       if (nextIndex < attempts.length) {
         for (let skipped = attemptIndex + 1; skipped < nextIndex; skipped++) {
           recordAttemptLog(logCtx, attempts[skipped]!, "skipped", err.code ?? "provider_non_2xx");
@@ -1016,6 +1104,7 @@ async function handleMessages(
       return formatAnthropicErrorResponse(upstreamResponse.status, err.type, err.message);
     }
 
+    if (attempt.source === "primary") continuityCircuit.succeed(primaryTarget);
     recordAttemptLog(logCtx, attempt, "ok", undefined, upstreamResponse.status);
     if (attemptParsed.stream) {
       const eventStream = observeUsageEvents(adapter.parseStream(upstreamResponse), logCtx);
@@ -1239,26 +1328,90 @@ function recordAttemptLog(ctx: RequestLogContext, attempt: AttemptContext, statu
   }
 }
 
-function nextFallbackAttemptIndex(attempts: AttemptContext[], currentIndex: number): number {
+function nextTargetAttemptIndex(attempts: AttemptContext[], currentIndex: number): number {
   const current = attempts[currentIndex]!;
-  const nextFallback = attempts.findIndex((attempt, index) => index > currentIndex && !isSameProviderRetryCandidate(current, attempt));
-  return nextFallback >= 0 ? nextFallback : attempts.length;
+  const nextTarget = attempts.findIndex(
+    (attempt, index) => index > currentIndex && !isSameTargetRetryCandidate(current, attempt),
+  );
+  return nextTarget >= 0 ? nextTarget : attempts.length;
 }
 
-function nextAttemptIndexAfterHttp(attempts: AttemptContext[], currentIndex: number, status: number, err: UpstreamErrorDetails): number {
+function hasContinuityTargetAfter(attempts: AttemptContext[], currentIndex: number): boolean {
+  const current = attempts[currentIndex]!;
+  const nextTarget = attempts[nextTargetAttemptIndex(attempts, currentIndex)];
+  return nextTarget?.source === "continuity"
+    && (current.source === "primary" || current.source === "continuity");
+}
+
+function continuityReasonForHttpTransition(
+  attempts: AttemptContext[],
+  currentIndex: number,
+  status: number,
+  err: UpstreamErrorDetails,
+): ContinuityReason | null {
+  if (!hasContinuityTargetAfter(attempts, currentIndex)) return null;
+  return isContinuityEligibleHttpFailure(status, err);
+}
+
+function nextAttemptIndexAfterHttp(
+  attempts: AttemptContext[],
+  currentIndex: number,
+  status: number,
+  err: UpstreamErrorDetails,
+  continuityPath: boolean,
+  continuityReason: ContinuityReason | null,
+): number {
+  if (continuityPath && !continuityReason) return attempts.length;
+  if (continuityReason) {
+    if (status === 429) return currentIndex + 1;
+    return nextTargetAttemptIndex(attempts, currentIndex);
+  }
   if (isTerminalProviderHttpError(status, err)) return attempts.length;
   if (status === 429) return currentIndex + 1;
-  if (status >= 500) return nextFallbackAttemptIndex(attempts, currentIndex);
+  if (status >= 500) return nextTargetAttemptIndex(attempts, currentIndex);
   return attempts.length;
 }
 
 function nextAttemptIndexAfterConnectError(attempts: AttemptContext[], currentIndex: number): number {
-  return nextFallbackAttemptIndex(attempts, currentIndex);
+  return nextTargetAttemptIndex(attempts, currentIndex);
 }
 
 function isTerminalProviderHttpError(status: number, err: UpstreamErrorDetails): boolean {
   if (status === 400 || status === 401 || status === 402 || status === 403) return true;
+  if (isContinuityEligibleHttpFailure(500, err) === null) return true;
   return classifyError(status, err.type, err.message).code === "context_length_exceeded";
+}
+
+function noteContinuityTransition(
+  ctx: RequestLogContext,
+  circuit: ContinuityCircuit,
+  primaryTarget: string,
+  current: AttemptContext,
+  next: AttemptContext | undefined,
+  reason: ContinuityReason | null,
+  now: number,
+): void {
+  if (
+    !reason
+    || next?.source !== "continuity"
+    || (current.source !== "primary" && current.source !== "continuity")
+  ) {
+    return;
+  }
+  ctx.entry.continuityReason ??= reason;
+  if (current.source === "primary") circuit.open(primaryTarget, reason, now);
+}
+
+function continuityAttemptHasUsableAuth(provider: FrogProviderConfig, headers: Headers): boolean {
+  if (provider.authMode === "forward") {
+    if (provider.adapter === "anthropic") return profileRequestHasForwardAuth(headers);
+    if (provider.adapter === "openai-responses") {
+      return isRealForwardAuthValue(headers.get("authorization"));
+    }
+    return false;
+  }
+  if (provider.authMode === "key") return effectiveKeyCandidates(provider).length > 0;
+  return true;
 }
 
 type ProviderConnectionTestCode =
@@ -1386,6 +1539,7 @@ interface RequestLogEntry {
   method: string;
   status?: number;
   durationMs?: number;
+  continuityReason?: ContinuityReason;
   request: {
     requestBytes?: number;
     stream?: boolean;
@@ -1407,7 +1561,7 @@ interface RequestLogEntry {
   attempts?: Array<{
     provider: string;
     model: string;
-    source: "primary" | "fallback";
+    source: "primary" | "fallback" | "continuity";
     keyIndex?: number;
     status: "started" | "ok" | "skipped" | "error";
     code?: string;
@@ -1471,6 +1625,7 @@ function requestLogManagementSnapshot() {
     method: entry.method,
     ...(entry.status !== undefined ? { status: entry.status } : {}),
     ...(entry.durationMs !== undefined ? { durationMs: entry.durationMs } : {}),
+    ...(entry.continuityReason !== undefined ? { continuityReason: entry.continuityReason } : {}),
     request: {
       ...(entry.request.requestBytes !== undefined ? { requestBytes: entry.request.requestBytes } : {}),
       ...(entry.request.stream !== undefined ? { stream: entry.request.stream } : {}),
@@ -4414,6 +4569,7 @@ export async function startServer(
 ): Promise<ReturnType<typeof Bun.serve>> {
   const state = await (deps.createRuntimeConfigState ?? createRuntimeConfigState)();
   reconcileRetiredModelAliases(state.retiredTargets);
+  const continuityCircuit = new ContinuityCircuit();
   const persistedConfig = state.persisted;
   const restoredOAuthProviders = (deps.restoreCredentialedOAuthProviderConfigs ?? restoreCredentialedOAuthProviderConfigs)(persistedConfig);
   const removedFixtures = dropRuntimeFixtureProviders(persistedConfig);
@@ -4588,6 +4744,7 @@ export async function startServer(
           abortSignal: req.signal,
           profileId,
           retiredTargets: state.retiredTargets,
+          continuityCircuit,
         }));
         if (profileId && response.status === 401) noteClaudeProfileRequest(persistedConfig, profileId, req.headers, "oauth_rejected");
         if (profileId) state.save();
