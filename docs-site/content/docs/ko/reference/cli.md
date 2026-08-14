@@ -104,7 +104,7 @@ Claude Code는 session을 시작하거나 resume할 때 `/v1/models`를 다시 �
 | `frogp gui` | 필요 시 relay process | Local dashboard를 엽니다. proxy가 없으면 auto-start하고 healthy 상태가 될 때까지 기다린 뒤, 실제 active listen port로 URL을 엽니다. |
 
 Dashboard는 config, route, safe request log, usage summary를 보는 운영 표면입니다. 실패 요청을 진단할 때는
-[`/ko/guides/troubleshooting/`](/frog-progsy/ko/guides/troubleshooting/)와 함께 사용합니다.
+[`/ko/guides/troubleshooting/`](/ko/guides/troubleshooting/)와 함께 사용합니다.
 
 ## Recovery
 

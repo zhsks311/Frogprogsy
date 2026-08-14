@@ -47,4 +47,4 @@ claude -m "codex/gpt-5.5" "Draft a migration plan"
 - `frogp restore` and `frogp uninstall` are recovery commands for returning Claude Code or local FrogProgsy state to a clean baseline.
 - Direct edits to `~/.frogprogsy/config.json` are covered by the configuration reference; provider catalog choices are covered by the provider guide.
 
-Next: [Request Lifecycle](/frog-progsy/getting-started/how-it-works/) or [Provider Setup](/frog-progsy/guides/providers/).
+Next: [Request Lifecycle](/getting-started/how-it-works/) or [Provider Setup](/guides/providers/).

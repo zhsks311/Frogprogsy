@@ -201,7 +201,7 @@ FrogProgsy 使用每个 provider 的 `modelCapabilities`，让 Claude Code catal
 
 ## Model mixing fields
 
-`modelMixing` 把多个提供方/模型放在 `frogp/mix` 别名后面。`enabled: true` 前禁用，且绝不充当 auto-mode 安全分类器。示例见[模型混合](/frog-progsy/zh-cn/guides/model-mixing/)指南。
+`modelMixing` 把多个提供方/模型放在 `frogp/mix` 别名后面。`enabled: true` 前禁用，且绝不充当 auto-mode 安全分类器。示例见[模型混合](/zh-cn/guides/model-mixing/)指南。
 
 | 字段 | 类型 | 作用 |
 | --- | --- | --- |
@@ -287,4 +287,4 @@ FrogProgsy 使用每个 provider 的 `modelCapabilities`，让 Claude Code catal
 
 ## Safe restore expectations
 
-`frogp restore`、`frogp stop`、`frogp uninstall` 只移除 FrogProgsy 写入的 Claude Code settings/catalog entry。它们不会删除其他 Claude Code settings、history 或 credential。设置混乱时，请按 [`/zh-cn/guides/troubleshooting/`](/frog-progsy/zh-cn/guides/troubleshooting/) 的 clean restore path 操作。
+`frogp restore`、`frogp stop`、`frogp uninstall` 只移除 FrogProgsy 写入的 Claude Code settings/catalog entry。它们不会删除其他 Claude Code settings、history 或 credential。设置混乱时，请按 [`/zh-cn/guides/troubleshooting/`](/zh-cn/guides/troubleshooting/) 的 clean restore path 操作。

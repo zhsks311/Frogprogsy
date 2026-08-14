@@ -315,7 +315,7 @@ jobs:
         env:
           DRY_RUN: ${{ inputs.dry-run }}
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
-          PAGES_CATALOG_URL: https://zhsks311.github.io/frog-progsy/catalog/v1/model-catalog.json
+          PAGES_CATALOG_URL: https://zhsks311.github.io/Frogprogsy/catalog/v1/model-catalog.json
         run: |
           set -euo pipefail
           bun run prepublishOnly

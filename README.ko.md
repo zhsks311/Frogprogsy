@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <b>한국어</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://zhsks311.github.io/frog-progsy/ko/"><b>전체 문서</b></a>
+  <a href="README.md">English</a> · <b>한국어</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://zhsks311.github.io/Frogprogsy/ko/"><b>전체 문서</b></a>
 </p>
 
 frogprogsy는 Claude Code는 그대로 두고 여러 AI 서비스와 모델을 연결해 주는 로컬 도구입니다. 먼저 대시보드에서 AI 서비스를 연결하고, Claude Code는 평소처럼 실행하세요.
@@ -107,13 +107,13 @@ FrogProgsy는 proxy를 시작할 때 검증된 최신 모델 자료를 확인합
 claude "이 프로젝트의 진입점을 설명해 줘"
 ```
 
-다른 모델로 보내거나 `provider/model` 값을 직접 쓰는 방법은 [모델 선택 규칙](https://zhsks311.github.io/frog-progsy/ko/guides/model-routing/)에서 이어서 확인하세요.
+다른 모델로 보내거나 `provider/model` 값을 직접 쓰는 방법은 [모델 선택 규칙](https://zhsks311.github.io/Frogprogsy/ko/guides/model-routing/)에서 이어서 확인하세요.
 
 ## 자동 모드 심사 모델 지정하기 (시험판)
 
 메인 모델을 GPT로 골랐다고 해서 Claude Code가 내부적으로 두 번 호출하는 자동 모드 심사 모델까지 GPT가 되는 것은 아닙니다. 두 호출은 서로 별개입니다. `0.0.2-preview.1`에서는 대시보드에서 심사에 사용할 AI 서비스와 모델 한 쌍을 정한 뒤, 이 기능이 필요한 Claude Code 홈마다 **Route auto-mode reviews**를 켤 수 있습니다. 지정된 심사 요청만 선택한 모델로 보내며, 일반 요청의 대체 경로나 Model Mixing이 심사 모델을 바꾸지 않습니다.
 
-이 동작은 Claude Code 2.1.220에서 검증했습니다. 홈 설정을 바꾼 뒤에는 Claude Code 세션을 다시 시작하거나 resume하세요. 기능을 켠 동안 메인 모델을 바꿀 때는 Claude Code 내장 `sonnet` 단축명 대신 FrogProgsy 모델 목록의 정확한 항목을 선택해야 합니다. 자세한 사용법은 [대시보드와 사용 기록](https://zhsks311.github.io/frog-progsy/ko/guides/web-dashboard/#자동-모드-심사-경로)과 [설정 파일 항목](https://zhsks311.github.io/frog-progsy/ko/reference/configuration/#자동-모드-심사-라우팅)을 참고하세요.
+이 동작은 Claude Code 2.1.220에서 검증했습니다. 홈 설정을 바꾼 뒤에는 Claude Code 세션을 다시 시작하거나 resume하세요. 기능을 켠 동안 메인 모델을 바꿀 때는 Claude Code 내장 `sonnet` 단축명 대신 FrogProgsy 모델 목록의 정확한 항목을 선택해야 합니다. 자세한 사용법은 [대시보드와 사용 기록](https://zhsks311.github.io/Frogprogsy/ko/guides/web-dashboard/#자동-모드-심사-경로)과 [설정 파일 항목](https://zhsks311.github.io/Frogprogsy/ko/reference/configuration/#자동-모드-심사-라우팅)을 참고하세요.
 
 ## Claude 구독 연결: 기본은 Forward, 선택은 Claude grant
 
@@ -136,7 +136,7 @@ grant는 frogprogsy 전용 격리 credential을 보관하는 **선택**입니다
 
 ## model-mixing 프로필
 
-이제 대시보드의 **Model Mixing** 탭에서 JSON을 직접 고치지 않고 Low, Balanced, Research 프리셋을 적용하고 `frogp/mix`를 켤 수 있습니다. 대시보드 중심 사용법과 캐비앗은 [모델 섞어 쓰기 가이드](https://zhsks311.github.io/frog-progsy/ko/guides/model-mixing/)에서 확인하세요.
+이제 대시보드의 **Model Mixing** 탭에서 JSON을 직접 고치지 않고 Low, Balanced, Research 프리셋을 적용하고 `frogp/mix`를 켤 수 있습니다. 대시보드 중심 사용법과 캐비앗은 [모델 섞어 쓰기 가이드](https://zhsks311.github.io/Frogprogsy/ko/guides/model-mixing/)에서 확인하세요.
 
 Model mixing은 켜기 전까지 아무것도 바꾸지 않는 opt-in 기능입니다. 대시보드 프리셋은 Low(답변 호출 4번, 검색 0번), Balanced(답변 호출 5번, 검색 0번), Research(답변 호출 11번, 검색 최대 3번)입니다. 프리셋을 적용해도 자동으로 켜지지 않고, Enable 토글을 별도로 확인해야 합니다. 켜면 Claude Code 모델 목록에 `frogp/mix`가 나타납니다.
 
@@ -154,11 +154,11 @@ README는 첫 성공 경로만 다룹니다. 공식 전체 문서는 docs-site�
 
 | 할 일 | 문서 |
 | --- | --- |
-| 설치와 첫 실행 파일 확인 | [frogp 설치](https://zhsks311.github.io/frog-progsy/ko/getting-started/installation/) |
-| 처음 실행 절차 자세히 보기 | [처음 실행하기](https://zhsks311.github.io/frog-progsy/ko/getting-started/quickstart/) |
-| AI 서비스, OAuth, API 키, 로컬 서버 설정 | [AI 서비스 연결](https://zhsks311.github.io/frog-progsy/ko/guides/providers/) |
-| 대시보드, 요청 기록, 사용량 확인 | [대시보드와 사용 기록](https://zhsks311.github.io/frog-progsy/ko/guides/web-dashboard/) |
-| frogp 명령, 설정 파일, 연결 방식 세부 | [frogp 명령](https://zhsks311.github.io/frog-progsy/ko/reference/cli/) · [설정 파일 항목](https://zhsks311.github.io/frog-progsy/ko/reference/configuration/) · [연결 방식 세부](https://zhsks311.github.io/frog-progsy/ko/reference/adapters/) |
+| 설치와 첫 실행 파일 확인 | [frogp 설치](https://zhsks311.github.io/Frogprogsy/ko/getting-started/installation/) |
+| 처음 실행 절차 자세히 보기 | [처음 실행하기](https://zhsks311.github.io/Frogprogsy/ko/getting-started/quickstart/) |
+| AI 서비스, OAuth, API 키, 로컬 서버 설정 | [AI 서비스 연결](https://zhsks311.github.io/Frogprogsy/ko/guides/providers/) |
+| 대시보드, 요청 기록, 사용량 확인 | [대시보드와 사용 기록](https://zhsks311.github.io/Frogprogsy/ko/guides/web-dashboard/) |
+| frogp 명령, 설정 파일, 연결 방식 세부 | [frogp 명령](https://zhsks311.github.io/Frogprogsy/ko/reference/cli/) · [설정 파일 항목](https://zhsks311.github.io/Frogprogsy/ko/reference/configuration/) · [연결 방식 세부](https://zhsks311.github.io/Frogprogsy/ko/reference/adapters/) |
 
 `frogp init`, config JSON, 서비스 목록, 부족한 기능 대신 처리 같은 고급 주제는 README의 기본 경로가 아니라 위 문서에서 관리합니다.
 

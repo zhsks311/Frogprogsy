@@ -63,4 +63,4 @@ Short ids such as `gpt-5.5` are convenient but safe only when one provider clear
 2. Decide whether the requested model was a `provider/model`, gateway alias, or short id.
 3. Check static settings: `defaultProvider`, each provider's `defaultModel`, each provider's `models[]`, and `disabledModels`.
 4. If an alias is involved, inspect `~/.frogprogsy/model-aliases.json`.
-5. If the route still does not resolve, follow the relevant fields in [Configuration](/frog-progsy/reference/configuration/).
+5. If the route still does not resolve, follow the relevant fields in [Configuration](/reference/configuration/).

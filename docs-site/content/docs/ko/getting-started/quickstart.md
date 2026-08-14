@@ -47,4 +47,4 @@ claude -m "codex/gpt-5.5" "Draft a migration plan"
 - `frogp restore`와 `frogp uninstall`은 문제가 생겼을 때 Claude Code 설정을 되돌리거나 FrogProgsy 로컬 설정을 지우는 명령입니다.
 - `~/.frogprogsy/config.json`을 직접 고치는 방법은 설정 문서에서, AI 서비스 목록 선택은 연결 가이드에서 다룹니다.
 
-다음: [요청 흐름](/frog-progsy/ko/getting-started/how-it-works/) 또는 [AI 서비스 연결](/frog-progsy/ko/guides/providers/).
+다음: [요청 흐름](/ko/getting-started/how-it-works/) 또는 [AI 서비스 연결](/ko/guides/providers/).

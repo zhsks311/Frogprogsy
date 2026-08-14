@@ -98,4 +98,4 @@ Mark provider/model capabilities explicitly:
 
 ## Turning helpers off
 
-Leave `enabled` unset or set it to `false`. The fields are documented in [Configuration](/frog-progsy/reference/configuration/#capability-fallback-fields).
+Leave `enabled` unset or set it to `false`. The fields are documented in [Configuration](/reference/configuration/#capability-fallback-fields).

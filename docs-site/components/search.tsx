@@ -21,7 +21,7 @@ export function StaticSearchDialog(props: SharedProps) {
   const client = useMemo(
     () =>
       flexsearchStaticClient({
-        from: "/frog-progsy/api/search",
+        from: "/Frogprogsy/api/search",
         locale: locale ?? "",
       }),
     [locale],

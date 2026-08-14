@@ -19,7 +19,7 @@ import {
   type ModelCatalogProviderV1,
 } from "./model-catalog-schema";
 
-export const MODEL_CATALOG_REMOTE_URL = "https://zhsks311.github.io/frog-progsy/catalog/v1/model-catalog.json";
+export const MODEL_CATALOG_REMOTE_URL = "https://zhsks311.github.io/Frogprogsy/catalog/v1/model-catalog.json";
 
 const FETCH_TIMEOUT_MS = 2_000;
 const MAX_CATALOG_BYTES = 2 * 1024 * 1024;

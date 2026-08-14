@@ -37,7 +37,7 @@ Selected AI service
 
 4. **FrogProgsy chooses the destination.**
    A `provider/model` name routes directly. Otherwise FrogProgsy uses the dashboard default.
-   See [Model Routing](/frog-progsy/guides/model-routing/) for the exact priority order.
+   See [Model Routing](/guides/model-routing/) for the exact priority order.
 
 5. **FrogProgsy translates the request.**
    Each AI service has different request fields, authentication rules, and stream events. FrogProgsy handles those differences locally.
@@ -66,4 +66,4 @@ That gives you a simpler contract:
 - Claude Code CLI, app, and SDK can use the same local entry point.
 - Switching AI services does not require changing how you use Claude Code.
 - If something breaks, you inspect FrogProgsy settings and the local relay first.
-- Low-level event contracts live in [Architecture](/frog-progsy/reference/architecture/).
+- Low-level event contracts live in [Architecture](/reference/architecture/).

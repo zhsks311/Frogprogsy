@@ -1,4 +1,4 @@
-const target = "/frog-progsy/";
+const target = "/Frogprogsy/";
 
 export const metadata = {
   title: "FrogProgsy",

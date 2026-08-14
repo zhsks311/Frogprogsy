@@ -7,7 +7,7 @@ export const baseOptions: BaseLayoutProps = {
     title: (
       <span className="inline-flex items-center gap-2 font-semibold">
         <img
-          src="/frog-progsy/favicon.png"
+          src="/Frogprogsy/favicon.png"
           alt=""
           aria-hidden="true"
           className="size-7 rounded-md"
@@ -19,6 +19,6 @@ export const baseOptions: BaseLayoutProps = {
   slots: {
     themeSwitch: DocsThemeSwitch,
   },
-  githubUrl: "https://github.com/zhsks311/frog-progsy",
+  githubUrl: "https://github.com/zhsks311/Frogprogsy",
   i18n: i18nConfig,
 };

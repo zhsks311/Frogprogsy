@@ -7,8 +7,8 @@ const root = dirname(fileURLToPath(import.meta.url));
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "export",
-  basePath: "/frog-progsy",
-  assetPrefix: "/frog-progsy",
+  basePath: "/Frogprogsy",
+  assetPrefix: "/Frogprogsy",
   trailingSlash: true,
   images: {
     unoptimized: true,

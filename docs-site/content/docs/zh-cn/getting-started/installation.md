@@ -47,7 +47,7 @@ frogp start
 ```
 
 `frogp start` 会打开本地 gateway，并同步 Claude Code 使用的 FrogProgsy-owned settings 与 model catalog。
-Provider 添加、默认 provider/model 选择、第一条 `claude` 请求在 [首次 Relay 运行](/frog-progsy/zh-cn/getting-started/quickstart/) 中继续。
+Provider 添加、默认 provider/model 选择、第一条 `claude` 请求在 [首次 Relay 运行](/zh-cn/getting-started/quickstart/) 中继续。
 
 ## Docker Compose
 
@@ -76,8 +76,8 @@ Client 默认应通过 `x-frogp-local-key` 发送 relay key。如果 `forward` p
 ## 高级安装备注
 
 - `frogp init` 是需要 CLI wizard 时使用的替代配置路径。首次成功路径以 `frogp gui` dashboard 为准。
-- `frogp restore` 与 `frogp uninstall` 等恢复命令见 [CLI reference](/frog-progsy/zh-cn/reference/cli/)。
-- 必须直接编辑 JSON 的 operator 可使用 [Configuration reference](/frog-progsy/zh-cn/reference/configuration/)。
+- `frogp restore` 与 `frogp uninstall` 等恢复命令见 [CLI reference](/zh-cn/reference/cli/)。
+- 必须直接编辑 JSON 的 operator 可使用 [Configuration reference](/zh-cn/reference/configuration/)。
 - Source checkout 与 dashboard development server 只在 contributor/development workflow 中需要。
 
-下一步：[首次 Relay 运行](/frog-progsy/zh-cn/getting-started/quickstart/)。
+下一步：[首次 Relay 运行](/zh-cn/getting-started/quickstart/)。

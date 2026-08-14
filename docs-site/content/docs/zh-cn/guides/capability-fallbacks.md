@@ -98,4 +98,4 @@ Shell、patch、MCP 等真实 Claude Code tool call 不会被 loop 吞掉；出�
 
 ## 关闭 helper
 
-省略 `enabled` 或设置为 `false` 即可。完整字段见 [配置](/frog-progsy/zh-cn/reference/configuration/#capability-fallback-fields)。
+省略 `enabled` 或设置为 `false` 即可。完整字段见 [配置](/zh-cn/reference/configuration/#capability-fallback-fields)。

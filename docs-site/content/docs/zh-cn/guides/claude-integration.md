@@ -69,7 +69,7 @@ frogp providers set anthropic --auth claude-grant --grant <cg_id>
 - **provider 绑定**：登录后用 `frogp providers set <name> --auth claude-grant --grant <id>` 把某个 provider 绑到该 grant。绑定只改这个 provider 的 authMode，不碰任何 OAuth 或 API-key 登录，也不会在 grant 被删除时自动重绑。
 - **就绪状态，做了脱敏**：`frogp claude grants status` 按 grant 报告 `ok`/`none`/`unreadable`/`reauth_required`/`dangling`，不显示任何 token；`frogp doctor claude` 也会给出同样的 warning。
 - **fail-closed 刷新**：token 会在临近过期时刷新，且只写回 scoped 存储；刷新遇到 `invalid_grant` 会返回 `reauth_required`，引导你用 `CLAUDE_CONFIG_DIR=<grant-dir>` 的真实可执行文件重新登录；过期 token 绝不会被发送。frogprogsy 永远不会替你自动登录。
-- **与 Codex 并存**：绑定后的 grant 可与 Codex OAuth 在同一 session 和 model mixing 中一起使用；Codex OAuth 保持独立，grant token 只会附加到它绑定的 provider（见[模型混合](/frog-progsy/zh-cn/guides/model-mixing/)）。
+- **与 Codex 并存**：绑定后的 grant 可与 Codex OAuth 在同一 session 和 model mixing 中一起使用；Codex OAuth 保持独立，grant token 只会附加到它绑定的 provider（见[模型混合](/zh-cn/guides/model-mixing/)）。
 
 Grant 是 opt-in 的托管选择：携带订阅认证的网络请求可能触及 Anthropic 服务条款，并带来 account/quota 层面的后果。显式同意用于选择启用 grant，以及 `frogp claude auth probe-b --grant <id> --live --yes` 这类实时订阅诊断，而不是每个正常 provider 请求都弹确认。不想托管订阅、或需要纯 headless/API 认证时，Anthropic API-key provider 仍是随时可用的替代方案。删除 grant（`frogp claude grants remove <id>`）只删除 frogprogsy 自己拥有的本地 scoped credential、隔离目录和记录；它不会在 Anthropic 服务端撤销该登录，也不会登出你的 native 账户。
 

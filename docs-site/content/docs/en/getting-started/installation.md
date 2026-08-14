@@ -45,7 +45,7 @@ After installation, start the relay directly:
 frogp start
 ```
 
-`frogp start` opens the local gateway and synchronizes the FrogProgsy-owned Claude Code settings and model catalog. Provider setup, default provider/model selection, and the first `claude` request continue in [First Relay Run](/frog-progsy/getting-started/quickstart/).
+`frogp start` opens the local gateway and synchronizes the FrogProgsy-owned Claude Code settings and model catalog. Provider setup, default provider/model selection, and the first `claude` request continue in [First Relay Run](/getting-started/quickstart/).
 
 ## Docker Compose
 
@@ -74,8 +74,8 @@ Clients should send this relay key in `x-frogp-local-key`. If a `forward` provid
 ## Advanced installation notes
 
 - `frogp init` is the alternate setup path when you need a CLI wizard. The first-success path is dashboard-first with `frogp gui`.
-- Recovery commands such as `frogp restore` and `frogp uninstall` are covered in the [CLI reference](/frog-progsy/reference/cli/).
-- Operators who must edit JSON directly should use the [Configuration reference](/frog-progsy/reference/configuration/).
+- Recovery commands such as `frogp restore` and `frogp uninstall` are covered in the [CLI reference](/reference/cli/).
+- Operators who must edit JSON directly should use the [Configuration reference](/reference/configuration/).
 - Source checkouts and the dashboard development server are contributor/development workflows, not the normal install path.
 
-Next: [First Relay Run](/frog-progsy/getting-started/quickstart/).
+Next: [First Relay Run](/getting-started/quickstart/).

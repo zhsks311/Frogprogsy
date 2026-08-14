@@ -98,4 +98,4 @@ Search result는 untrusted data로 감싸고, 길이를 제한하며, URL 기준
 
 ## 대신 처리 끄기
 
-`enabled`를 생략하거나 `false`로 두면 됩니다. 전체 항목은 [설정](/frog-progsy/ko/reference/configuration/#capability-fallback-fields)에 있습니다.
+`enabled`를 생략하거나 `false`로 두면 됩니다. 전체 항목은 [설정](/ko/reference/configuration/#capability-fallback-fields)에 있습니다.

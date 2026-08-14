@@ -58,7 +58,7 @@ provider，但旧配置或手写配置可能没有。
 Anthropic 子调用有两条认证路径，请求本身不会因此改变：
 
 - **Forward（默认，零托管）**：frogprogsy 不存储 Claude token，混合流程中的 Anthropic 子调用会复用 Claude Code 发到 gateway 的真实 `Authorization` 或 `x-api-key` header。因此只有当请求来自已注入且已登录的 Claude Code home 时，Anthropic 才能在 Model Mixing 中工作；脚本或 API caller 选了 `frogp/mix` 却没有转发 Anthropic 认证 header 时，这一路子调用没有凭据，需要改用 Anthropic API-key provider。
-- **Isolated grant（可选托管）**：如果先用 `frogp claude grants add` 发放一个隔离订阅 grant，并用 `frogp providers set <name> --auth claude-grant --grant <id>` 绑定，混合流程会从该 grant 自己的 scoped 存储取 token。这带来 headless 就绪：即使 caller 没有转发 Anthropic header，被绑定的 Anthropic 子调用也能工作。凭据是隔离的——grant token 只附加到它绑定的 provider，Codex、xAI、Kimi 等其他 provider 和 fallback 都不会收到 Anthropic token，反之亦然；Codex OAuth 保持独立。发放与绑定 grant 的细节见 [Claude Code 接入](/frog-progsy/zh-cn/guides/claude-integration/)。
+- **Isolated grant（可选托管）**：如果先用 `frogp claude grants add` 发放一个隔离订阅 grant，并用 `frogp providers set <name> --auth claude-grant --grant <id>` 绑定，混合流程会从该 grant 自己的 scoped 存储取 token。这带来 headless 就绪：即使 caller 没有转发 Anthropic header，被绑定的 Anthropic 子调用也能工作。凭据是隔离的——grant token 只附加到它绑定的 provider，Codex、xAI、Kimi 等其他 provider 和 fallback 都不会收到 Anthropic token，反之亦然；Codex OAuth 保持独立。发放与绑定 grant 的细节见 [Claude Code 接入](/zh-cn/guides/claude-integration/)。
 
 内置 Low/Balanced/Research 预设是已测量的 Codex profiles。Anthropic 可以手动作为回答器、评审或合成者加入，
 但 Claude+Codex 组合质量不属于下方 F3 评估声明。
@@ -155,4 +155,4 @@ Anthropic 子调用有两条认证路径，请求本身不会因此改变：
 - 已评估的配置只混合了 Codex 系列模型。跨提供方组合（例如 Claude 与 Codex 混用）在功能上受支持，但质量尚未测量。
 - Eval server 使用隔离的 `FROGPROGSY_HOME`，并通过直接 import `startServer()` 的 eval-only `serve` helper 启动。不要用 `frogp start`，也不能改动用户 `~/.claude` 或默认 `~/.frogprogsy`。
 
-全部字段见[配置](/frog-progsy/zh-cn/reference/configuration/#model-mixing-fields)。
+全部字段见[配置](/zh-cn/reference/configuration/#model-mixing-fields)。

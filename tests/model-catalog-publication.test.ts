@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { MODEL_CATALOG_REMOTE_URL } from "../src/model-catalog-runtime";
 
 const root = new URL("../", import.meta.url);
 
@@ -7,6 +8,24 @@ async function read(path: string): Promise<string> {
 }
 
 describe("model catalog publication workflows", () => {
+  test("runtime and publication use the repository's actual Pages base path", async () => {
+    const pkg = JSON.parse(await read("package.json")) as { repository: { url: string } };
+    const repository = new URL(pkg.repository.url.replace(/^git\+/, ""));
+    const [owner, repositoryNameWithSuffix] = repository.pathname.slice(1).split("/");
+    const repositoryName = repositoryNameWithSuffix!.replace(/\.git$/, "");
+    const pagesBaseUrl = `https://${owner}.github.io/${repositoryName}`;
+    const catalogUrl = `${pagesBaseUrl}/catalog/v1/model-catalog.json`;
+    const docsConfig = await read("docs-site/next.config.mjs");
+    const deployWorkflow = await read(".github/workflows/deploy-docs.yml");
+    const releaseWorkflow = await read(".github/workflows/release.yml");
+
+    expect(MODEL_CATALOG_REMOTE_URL).toBe(catalogUrl);
+    expect(docsConfig).toContain(`basePath: "/${repositoryName}"`);
+    expect(docsConfig).toContain(`assetPrefix: "/${repositoryName}"`);
+    expect(deployWorkflow).toContain(`PAGES_CATALOG_URL: ${catalogUrl}`);
+    expect(releaseWorkflow).toContain(`PAGES_CATALOG_URL: ${catalogUrl}`);
+  });
+
   test("every main commit publishes an exact-SHA catalog to the Pages artifact", async () => {
     const workflow = await read(".github/workflows/deploy-docs.yml");
     const pushTrigger = workflow.slice(workflow.indexOf("  push:"), workflow.indexOf("  workflow_dispatch:"));

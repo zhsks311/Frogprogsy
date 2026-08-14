@@ -3,7 +3,7 @@ title: Provider Setup
 description: "Connect FrogProgsy providers through OAuth accounts, Claude header forwarding, API-key routes, local endpoints, and safe dashboard operations."
 ---
 
-This guide focuses on the operator workflow for adding a provider and choosing the default route. The field-level schema lives in the [Configuration reference](/frog-progsy/reference/configuration/).
+This guide focuses on the operator workflow for adding a provider and choosing the default route. The field-level schema lives in the [Configuration reference](/reference/configuration/).
 
 FrogProgsy treats providers as **upstream routes** behind the local `frogp` gateway. Claude Code keeps speaking Anthropic Messages; each route decides how FrogProgsy reaches upstream: adapter, base URL, auth source, optional headers, and the model list to expose.
 
@@ -18,7 +18,7 @@ Provider setup is safest from the dashboard.
 5. In **Models**, review the default provider's `defaultModel`, exposed models, and hidden entries.
 6. In **Activity**, confirm the `parse`, `route`, `oauth`/`auth`, `adapter_build`, `upstream_connect`, and `stream_bridge` phases.
 
-After the dashboard flow, use [Model Routing](/frog-progsy/guides/model-routing/) and [Dashboard & Activity](/frog-progsy/guides/web-dashboard/) to verify the live operating state.
+After the dashboard flow, use [Model Routing](/guides/model-routing/) and [Dashboard & Activity](/guides/web-dashboard/) to verify the live operating state.
 
 ## Keep model information current
 
@@ -37,7 +37,7 @@ Use `frogp models` after a restart to confirm the active source and model suppor
 | **Key-backed node** | A provider exposes an API dashboard or standard bearer key. | Literal key or `${ENV_VAR}` from `~/.frogprogsy/config.json`. | Mostly `openai-chat`; some `anthropic` |
 | **Local node** | You run Ollama, vLLM, LM Studio, or another local OpenAI-compatible server. | Usually blank or local-only key. | `openai-chat` |
 
-Advanced direct configuration is documented in the [Configuration reference](/frog-progsy/reference/configuration/).
+Advanced direct configuration is documented in the [Configuration reference](/reference/configuration/).
 
 ## AI Accounts vs Claude Code Homes
 
@@ -70,7 +70,7 @@ Operational notes:
 - Anthropic bring-through forwards only `authorization` or `x-api-key` when they are present.
 - `ANTHROPIC_AUTH_TOKEN=local-frogprogsy` is an internal Claude Code local marker and is removed before upstream traffic is sent.
 - OpenAI Responses forward mode uses a curated header set for compatible upstream and capability fallback paths.
-- Forward-compatible credentials can power [web-search and image fallbacks](/frog-progsy/guides/capability-fallbacks/).
+- Forward-compatible credentials can power [web-search and image fallbacks](/guides/capability-fallbacks/).
 
 Use this lane when FrogProgsy should route and translate without owning that provider secret.
 
@@ -86,7 +86,7 @@ claude-work "hello"
 
 ## Account sign-in lane: FrogProgsy owns refresh
 
-OAuth accounts live in `~/.frogprogsy/auth.json` and refresh before expiry. Claude subscription auth is not an OAuth lane here; keep it in Claude Code and use `frogp claude` homes for separate Claude Code config directories. Start supported sign-in from the CLI or [Dashboard & Activity](/frog-progsy/guides/web-dashboard/).
+OAuth accounts live in `~/.frogprogsy/auth.json` and refresh before expiry. Claude subscription auth is not an OAuth lane here; keep it in Claude Code and use `frogp claude` homes for separate Claude Code config directories. Start supported sign-in from the CLI or [Dashboard & Activity](/guides/web-dashboard/).
 
 ```bash
 frogp login codex        # ChatGPT/Codex account, routed through the Codex backend

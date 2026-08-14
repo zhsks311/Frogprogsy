@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>English</b> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://zhsks311.github.io/frog-progsy/"><b>Full documentation</b></a>
+  <b>English</b> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://zhsks311.github.io/Frogprogsy/"><b>Full documentation</b></a>
 </p>
 
 frogprogsy is a local provider gateway in front of Claude Code. Connect a provider in the dashboard first, then keep using Claude Code normally.
@@ -107,13 +107,13 @@ FrogProgsy checks for validated model updates when the proxy starts. Restart the
 claude "Explain this project's entry points"
 ```
 
-To route to another model or use a `provider/model` alias, continue with [model routing](https://zhsks311.github.io/frog-progsy/guides/model-routing/).
+To route to another model or use a `provider/model` alias, continue with [model routing](https://zhsks311.github.io/Frogprogsy/guides/model-routing/).
 
 ## Auto-mode review routing (preview)
 
 Choosing GPT as the main model does not automatically choose GPT for Claude Code's two internal auto-mode review calls; they are separate requests. In `0.0.2-preview.1`, choose one explicit reviewer provider/model in the dashboard, then enable **Route auto-mode reviews** for each Claude Code home that should use it. Only that reserved review route uses the selected target; ordinary provider fallback and Model Mixing do not replace it.
 
-This behavior was verified with Claude Code 2.1.220. After changing the home setting, restart or resume the Claude Code session. While the route is enabled, switch the main model with its exact FrogProgsy gateway catalog entry instead of Claude Code's built-in `sonnet` shortcut. See [Dashboard and Activity](https://zhsks311.github.io/frog-progsy/guides/web-dashboard/#auto-mode-review-route) and the [configuration reference](https://zhsks311.github.io/frog-progsy/reference/configuration/#auto-mode-review-routing).
+This behavior was verified with Claude Code 2.1.220. After changing the home setting, restart or resume the Claude Code session. While the route is enabled, switch the main model with its exact FrogProgsy gateway catalog entry instead of Claude Code's built-in `sonnet` shortcut. See [Dashboard and Activity](https://zhsks311.github.io/Frogprogsy/guides/web-dashboard/#auto-mode-review-route) and the [configuration reference](https://zhsks311.github.io/Frogprogsy/reference/configuration/#auto-mode-review-routing).
 
 ## Optional: connect a Claude subscription (dual-auth grant)
 
@@ -131,11 +131,11 @@ frogp providers set anthropic --auth claude-grant --grant <cg_id>
 - Grant custody is isolated and fail-closed: the grant token serves only its bound Anthropic provider, Codex OAuth stays a separate credential, and if refresh fails the provider returns a typed re-auth error instead of falling back to another credential.
 - You consent to a grant when you set it up (and again for any live subscription-authenticated diagnostic, via an explicit `--yes`/dashboard confirmation), not on every routed request. That consented custody hands frogprogsy a subscription token, so subscription-authenticated calls carry Anthropic ToS, account, and quota risk that no safeguard can undo. If you do not want that, use an Anthropic API-key provider instead — it also covers headless/API callers.
 
-See the [Claude Code wiring guide](https://zhsks311.github.io/frog-progsy/guides/claude-integration/) for grant readiness states, re-auth, and `frogp doctor claude`.
+See the [Claude Code wiring guide](https://zhsks311.github.io/Frogprogsy/guides/claude-integration/) for grant readiness states, re-auth, and `frogp doctor claude`.
 
 ## Model-mixing profiles
 
-You can now use the dashboard **Model Mixing** tab to apply Low, Balanced, or Research presets and enable `frogp/mix` without editing JSON. See the user guide for the dashboard-first flow and caveats: [Model Mixing guide](https://zhsks311.github.io/frog-progsy/guides/model-mixing/).
+You can now use the dashboard **Model Mixing** tab to apply Low, Balanced, or Research presets and enable `frogp/mix` without editing JSON. See the user guide for the dashboard-first flow and caveats: [Model Mixing guide](https://zhsks311.github.io/Frogprogsy/guides/model-mixing/).
 
 Model mixing is opt-in and remains off until you enable it. The dashboard presets are: Low (4 answer calls, 0 search calls), Balanced (5 answer calls, 0 search calls), and Research (11 answer calls, up to 3 search calls). Applying a preset does not enable it automatically; the Enable toggle is a separate confirmation step, and Claude Code shows the mixed route as `frogp/mix` once enabled.
 
@@ -153,11 +153,11 @@ This README only covers the first-success path. The official full documentation 
 
 | Task | Doc |
 | --- | --- |
-| Check install behavior and first-run files | [Install frogp](https://zhsks311.github.io/frog-progsy/getting-started/installation/) |
-| Walk through the first relay launch | [Launch and verify](https://zhsks311.github.io/frog-progsy/getting-started/quickstart/) |
-| Configure providers, OAuth, API keys, local endpoints | [Provider setup](https://zhsks311.github.io/frog-progsy/guides/providers/) |
-| Inspect dashboard, activity, and usage | [Dashboard and Activity](https://zhsks311.github.io/frog-progsy/guides/web-dashboard/) |
-| Read CLI, config JSON, adapter references | [CLI reference](https://zhsks311.github.io/frog-progsy/reference/cli/) · [Configuration reference](https://zhsks311.github.io/frog-progsy/reference/configuration/) · [Adapter reference](https://zhsks311.github.io/frog-progsy/reference/adapters/) |
+| Check install behavior and first-run files | [Install frogp](https://zhsks311.github.io/Frogprogsy/getting-started/installation/) |
+| Walk through the first relay launch | [Launch and verify](https://zhsks311.github.io/Frogprogsy/getting-started/quickstart/) |
+| Configure providers, OAuth, API keys, local endpoints | [Provider setup](https://zhsks311.github.io/Frogprogsy/guides/providers/) |
+| Inspect dashboard, activity, and usage | [Dashboard and Activity](https://zhsks311.github.io/Frogprogsy/guides/web-dashboard/) |
+| Read CLI, config JSON, adapter references | [CLI reference](https://zhsks311.github.io/Frogprogsy/reference/cli/) · [Configuration reference](https://zhsks311.github.io/Frogprogsy/reference/configuration/) · [Adapter reference](https://zhsks311.github.io/Frogprogsy/reference/adapters/) |
 
 Advanced topics such as `frogp init`, config JSON, provider matrices, and capability fallbacks are intentionally kept out of the README happy path and maintained in the docs above.
 

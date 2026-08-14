@@ -101,7 +101,7 @@ Claude Code 会在 session start 或 resume 时重新获取 `/v1/models`。重�
 | --- | --- | --- |
 | `frogp gui` | 必要时 relay process | 打开 local dashboard；若 proxy 不存在则 auto-start，等待其变为 healthy 后再用实际的 active listen port 打开 URL。 |
 
-Dashboard 是查看 config、route、safe request log、usage summary 的运营表面。诊断失败请求时与 [`/zh-cn/guides/troubleshooting/`](/frog-progsy/zh-cn/guides/troubleshooting/) 一起使用。
+Dashboard 是查看 config、route、safe request log、usage summary 的运营表面。诊断失败请求时与 [`/zh-cn/guides/troubleshooting/`](/zh-cn/guides/troubleshooting/) 一起使用。
 
 ## Recovery
 

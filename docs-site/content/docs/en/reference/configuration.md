@@ -204,7 +204,7 @@ If `liveModels` is `false` and `models` is empty, the provider exposes no routed
 
 ## Model mixing fields
 
-`modelMixing` puts several providers/models behind the `frogp/mix` alias. It is disabled unless `enabled: true`, and it is never the auto-mode safety classifier. See the [Model Mixing](/frog-progsy/guides/model-mixing/) guide for worked examples.
+`modelMixing` puts several providers/models behind the `frogp/mix` alias. It is disabled unless `enabled: true`, and it is never the auto-mode safety classifier. See the [Model Mixing](/guides/model-mixing/) guide for worked examples.
 
 | Field | Type | Role |
 | --- | --- | --- |
@@ -290,4 +290,4 @@ Every degraded path is loud (a warning is logged), never silent, and the Claude 
 
 ## Safe restore expectations
 
-`frogp restore`, `frogp stop`, and `frogp uninstall` remove only Claude Code settings/catalog entries that FrogProgsy wrote. They do not delete unrelated Claude Code settings, history, or credentials. If state is tangled, follow the clean restore path in [Troubleshooting](/frog-progsy/guides/troubleshooting/).
+`frogp restore`, `frogp stop`, and `frogp uninstall` remove only Claude Code settings/catalog entries that FrogProgsy wrote. They do not delete unrelated Claude Code settings, history, or credentials. If state is tangled, follow the clean restore path in [Troubleshooting](/guides/troubleshooting/).

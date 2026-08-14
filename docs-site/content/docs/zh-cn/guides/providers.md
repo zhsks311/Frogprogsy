@@ -3,7 +3,7 @@ title: Provider 设置
 description: "连接 FrogProgsy provider：OAuth accounts、Claude header native relay、API key route、local endpoint 与 safe dashboard operations。"
 ---
 
-FrogProgsy 的完整运营文档以 docs-site 的 `/zh-cn/` 路径为准。本 guide 只覆盖首次连接 provider 并选择默认 route 的 workflow；字段级完整 schema 请以 [配置参考](/frog-progsy/zh-cn/reference/configuration/) 为准。
+FrogProgsy 的完整运营文档以 docs-site 的 `/zh-cn/` 路径为准。本 guide 只覆盖首次连接 provider 并选择默认 route 的 workflow；字段级完整 schema 请以 [配置参考](/zh-cn/reference/configuration/) 为准。
 
 FrogProgsy 把 provider 视为 local `frogp` gateway 后面的 **upstream route**。Claude Code 继续发送 Anthropic Messages；每条 route 决定到 upstream 的方式：adapter、base URL、auth source、optional headers，以及要暴露的 model list。
 
@@ -18,7 +18,7 @@ Provider setup 最安全的运营方式是 dashboard。
 5. 在 **Models** 中确认 default provider 的 `defaultModel` 与暴露模型，隐藏不需要的条目。
 6. 在 **Activity** 中确认 `parse`、`route`、`oauth`/`auth`、`adapter_build`、`upstream_connect`、`stream_bridge` phase。
 
-Dashboard 操作后，也请配合 `/zh-cn/` 文档中的 [模型路由](/frog-progsy/zh-cn/guides/model-routing/) 与 [Dashboard 与 Activity](/frog-progsy/zh-cn/guides/web-dashboard/) 检查运营状态。
+Dashboard 操作后，也请配合 `/zh-cn/` 文档中的 [模型路由](/zh-cn/guides/model-routing/) 与 [Dashboard 与 Activity](/zh-cn/guides/web-dashboard/) 检查运营状态。
 
 ## 保持模型资料为最新状态
 
@@ -37,7 +37,7 @@ FrogProgsy 会在 proxy 开始接收请求前检查一次经过验证的最新�
 | **Key-backed node** | provider 提供 API dashboard 或 standard bearer key。 | literal key 或 `~/.frogprogsy/config.json` 中的 `${ENV_VAR}`。 | 多数 `openai-chat`，少数 `anthropic` |
 | **Local node** | 使用 Ollama、vLLM、LM Studio 等本地 OpenAI 兼容服务器。 | 通常 blank key 或 local-only key。 | `openai-chat` |
 
-直接编辑高级设置时的字段级 schema 见 [配置参考](/frog-progsy/zh-cn/reference/configuration/)。
+直接编辑高级设置时的字段级 schema 见 [配置参考](/zh-cn/reference/configuration/)。
 
 ## AI Accounts 与 Claude Code Homes 的区别
 
@@ -70,7 +70,7 @@ token；它只转发 incoming Claude Code request 中真实的 `Authorization` �
 - Anthropic bring-through 只 forward 实际存在的 `authorization` 或 `x-api-key`。
 - `ANTHROPIC_AUTH_TOKEN=local-frogprogsy` 是内部 Claude Code local marker，会在发送 upstream 前移除。
 - OpenAI Responses forward mode 为 compatible upstream 与 capability fallback path 使用 curated header set。
-- 有 compatible credential 时，[web search 与 image fallback](/frog-progsy/zh-cn/guides/capability-fallbacks/) 也可以运行。
+- 有 compatible credential 时，[web search 与 image fallback](/zh-cn/guides/capability-fallbacks/) 也可以运行。
 
 如果希望 FrogProgsy 负责 route 与 translate，但不拥有 provider secret，请使用这条 lane。
 
@@ -86,7 +86,7 @@ claude-work "hello"
 
 ## Account sign-in lane：FrogProgsy 负责 refresh
 
-OAuth account 存在 `~/.frogprogsy/auth.json`，并在过期前 refresh。Claude 订阅认证不是这里的 OAuth lane；请留在 Claude Code 中，需要分开的 Claude Code 配置目录时使用 `frogp claude` 目录。可从 CLI 或 [Dashboard 与 Activity](/frog-progsy/zh-cn/guides/web-dashboard/) 启动支持的登录。
+OAuth account 存在 `~/.frogprogsy/auth.json`，并在过期前 refresh。Claude 订阅认证不是这里的 OAuth lane；请留在 Claude Code 中，需要分开的 Claude Code 配置目录时使用 `frogp claude` 目录。可从 CLI 或 [Dashboard 与 Activity](/zh-cn/guides/web-dashboard/) 启动支持的登录。
 
 ```bash
 frogp login codex        # ChatGPT/Codex account，route 到 Codex backend
