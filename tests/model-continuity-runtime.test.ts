@@ -79,4 +79,36 @@ describe("model continuity runtime", () => {
       message: "structured provider error",
     })).toBeNull();
   });
+
+  test("concurrent completion order leaves the circuit in the state of the last completion", async () => {
+    const failureThenSuccess = new ContinuityCircuit();
+    let finishFailure!: () => void;
+    let finishSuccess!: () => void;
+    const failure = new Promise<void>(resolve => {
+      finishFailure = resolve;
+    }).then(() => failureThenSuccess.open("work/old", "http_5xx", 1_000));
+    const success = new Promise<void>(resolve => {
+      finishSuccess = resolve;
+    }).then(() => failureThenSuccess.succeed("work/old"));
+    finishFailure();
+    await failure;
+    finishSuccess();
+    await success;
+    expect(failureThenSuccess.isOpen("work/old", 1_001)).toBeFalse();
+
+    const successThenFailure = new ContinuityCircuit();
+    let finishEarlierSuccess!: () => void;
+    let finishLaterFailure!: () => void;
+    const earlierSuccess = new Promise<void>(resolve => {
+      finishEarlierSuccess = resolve;
+    }).then(() => successThenFailure.succeed("work/old"));
+    const laterFailure = new Promise<void>(resolve => {
+      finishLaterFailure = resolve;
+    }).then(() => successThenFailure.open("work/old", "http_5xx", 2_000));
+    finishEarlierSuccess();
+    await earlierSuccess;
+    finishLaterFailure();
+    await laterFailure;
+    expect(successThenFailure.isOpen("work/old", 2_001)).toBeTrue();
+  });
 });

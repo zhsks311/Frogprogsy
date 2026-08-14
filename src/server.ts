@@ -853,7 +853,9 @@ async function handleMessages(
   const now = options.now ?? Date.now;
   const retiredTargets = options.retiredTargets ?? EMPTY_RETIRED_TARGETS;
   let primaryTarget = "";
+  let continuityPolicyActive = false;
   let attempts: AttemptContext[] = [];
+  const preResolvedContinuityAuth = new Map<string, FrogProviderConfig>();
   try {
     const primaryRoute = resolvePrimaryRoute(config, parsed);
     primaryTarget = `${primaryRoute.providerName}/${primaryRoute.modelId}`;
@@ -876,22 +878,51 @@ async function handleMessages(
     const circuitOpen = transientPolicy && continuityCircuit.isOpen(primaryTarget, now());
     const policyHandlesRequest = policy !== undefined
       && ((primaryIsRetired && continuityAllowsRetired(policy)) || transientPolicy);
+    continuityPolicyActive = policyHandlesRequest;
     const candidateTargets = policyHandlesRequest
       ? continuityCandidates(primaryTarget, policy, retiredTargets, continuityCircuit, now())
       : [primaryTarget];
-    const skipPrimary = !candidateTargets.includes(primaryTarget);
+
+    const continuityRoutes: RouteResult[] = [];
+    for (const target of candidateTargets) {
+      if (target === primaryTarget) continue;
+      try {
+        const route = routeModel(config, target);
+        if (
+          `${route.providerName}/${route.modelId}` === target
+          && !isRouteDisabled(config, route.providerName, route.modelId, responseModelId)
+        ) {
+          continuityRoutes.push(route);
+        }
+      } catch {
+        // A stale explicit candidate is unavailable for this request; later exact targets remain usable.
+      }
+    }
+    let hasUsableContinuityCandidate = continuityRoutes.some(route =>
+      route.provider.authMode !== "oauth"
+      && route.provider.authMode !== "claude-grant"
+      && continuityAttemptHasUsableAuth(route.provider, req.headers)
+    );
+    if (circuitOpen && !primaryIsRetired && !hasUsableContinuityCandidate) {
+      for (const route of continuityRoutes) {
+        if (route.provider.authMode !== "oauth" && route.provider.authMode !== "claude-grant") continue;
+        try {
+          const resolved = await resolveProviderAuth(config, route.providerName, route.provider);
+          preResolvedContinuityAuth.set(`${route.providerName}/${route.modelId}`, resolved);
+          hasUsableContinuityCandidate = true;
+          break;
+        } catch {
+          // An open circuit may skip primary only when at least one exact candidate can authenticate now.
+        }
+      }
+    }
+    const skipPrimary = primaryIsRetired || (circuitOpen && hasUsableContinuityCandidate);
     if (primaryIsRetired && skipPrimary) {
       logCtx.entry.continuityReason = "retired";
     } else if (circuitOpen && skipPrimary) {
       logCtx.entry.continuityReason = "circuit_open";
     }
 
-    const continuityRoutes: RouteResult[] = [];
-    for (const target of candidateTargets) {
-      if (target === primaryTarget) continue;
-      const route = routeModel(config, target);
-      if (`${route.providerName}/${route.modelId}` === target) continuityRoutes.push(route);
-    }
     const built = buildAttemptContexts(config, parsed, {
       continuityRoutes,
       suppressGenericFallback: policyHandlesRequest,
@@ -914,6 +945,7 @@ async function handleMessages(
   }
 
   const connectMs = config.connectTimeoutMs ?? 30_000;
+  let lastUpstreamFailure: { status: number; details: UpstreamErrorDetails } | undefined;
   for (let attemptIndex = 0; attemptIndex < attempts.length;) {
     const attempt = attempts[attemptIndex]!;
     const attemptParsed = cloneParsedForAttempt(parsed, attempt);
@@ -927,7 +959,12 @@ async function handleMessages(
     const authErrorCode = grantAuth ? "claude_auth_missing" : "oauth_missing";
     if (attemptProvider.authMode === "oauth" || attemptProvider.authMode === "claude-grant") {
       try {
-        attemptProvider = await resolveProviderAuth(config, attempt.providerName, attemptProvider);
+        const preResolved = attempt.source === "continuity"
+          ? preResolvedContinuityAuth.get(`${attempt.providerName}/${attempt.modelId}`)
+          : undefined;
+        attemptProvider = preResolved
+          ? { ...preResolved }
+          : await resolveProviderAuth(config, attempt.providerName, attemptProvider);
         setRouteLog(logCtx, { providerName: attempt.providerName, provider: attemptProvider, modelId: attempt.modelId }, attempt.routeKind, attempt.ambiguousCandidates);
         recordLogPhase(logCtx, authPhase, "ok", undefined, oauthStarted);
       } catch (err) {
@@ -1045,8 +1082,11 @@ async function handleMessages(
       recordLogPhase(logCtx, "upstream_connect", "error", code, upstreamStarted);
       recordAttemptLog(logCtx, attempt, "error", code);
       const nextIndex = nextAttemptIndexAfterConnectError(attempts, attemptIndex);
-      const continuityReason: ContinuityReason = timeout ? "connect_timeout" : "connect_failure";
-      noteContinuityTransition(
+      const continuityReason: ContinuityReason | null = continuityPolicyActive
+        && (attempt.source === "primary" || attempt.source === "continuity")
+        ? (timeout ? "connect_timeout" : "connect_failure")
+        : null;
+      recordContinuityFailure(
         logCtx,
         continuityCircuit,
         primaryTarget,
@@ -1069,22 +1109,21 @@ async function handleMessages(
     if (!upstreamResponse.ok) {
       const err = await providerErrorDetails(upstreamResponse);
       recordAttemptLog(logCtx, attempt, "error", err.code ?? "provider_non_2xx", upstreamResponse.status);
-      const continuityPath = hasContinuityTargetAfter(attempts, attemptIndex);
-      const continuityReason = continuityReasonForHttpTransition(
-        attempts,
-        attemptIndex,
-        upstreamResponse.status,
-        err,
-      );
+      lastUpstreamFailure = { status: upstreamResponse.status, details: err };
+      const useContinuityPolicy = continuityPolicyActive
+        && (attempt.source === "primary" || attempt.source === "continuity");
+      const continuityReason = useContinuityPolicy
+        ? isContinuityEligibleHttpFailure(upstreamResponse.status, err)
+        : null;
       const nextIndex = nextAttemptIndexAfterHttp(
         attempts,
         attemptIndex,
         upstreamResponse.status,
         err,
-        continuityPath,
+        useContinuityPolicy,
         continuityReason,
       );
-      noteContinuityTransition(
+      recordContinuityFailure(
         logCtx,
         continuityCircuit,
         primaryTarget,
@@ -1142,6 +1181,18 @@ async function handleMessages(
     }
   }
 
+  if (lastUpstreamFailure) {
+    finalizeRequestLog(logCtx, "provider_non_2xx", lastUpstreamFailure.status, {
+      kind: "upstream",
+      code: "provider_non_2xx",
+      upstreamStatus: lastUpstreamFailure.status,
+    });
+    return formatAnthropicErrorResponse(
+      lastUpstreamFailure.status,
+      lastUpstreamFailure.details.type,
+      lastUpstreamFailure.details.message,
+    );
+  }
   finalizeRequestLog(logCtx, "internal_error", 502, { kind: "upstream", code: "provider_attempts_exhausted" });
   return formatAnthropicErrorResponse(502, "upstream_error", "Provider attempts exhausted");
 }
@@ -1336,32 +1387,16 @@ function nextTargetAttemptIndex(attempts: AttemptContext[], currentIndex: number
   return nextTarget >= 0 ? nextTarget : attempts.length;
 }
 
-function hasContinuityTargetAfter(attempts: AttemptContext[], currentIndex: number): boolean {
-  const current = attempts[currentIndex]!;
-  const nextTarget = attempts[nextTargetAttemptIndex(attempts, currentIndex)];
-  return nextTarget?.source === "continuity"
-    && (current.source === "primary" || current.source === "continuity");
-}
-
-function continuityReasonForHttpTransition(
-  attempts: AttemptContext[],
-  currentIndex: number,
-  status: number,
-  err: UpstreamErrorDetails,
-): ContinuityReason | null {
-  if (!hasContinuityTargetAfter(attempts, currentIndex)) return null;
-  return isContinuityEligibleHttpFailure(status, err);
-}
 
 function nextAttemptIndexAfterHttp(
   attempts: AttemptContext[],
   currentIndex: number,
   status: number,
   err: UpstreamErrorDetails,
-  continuityPath: boolean,
+  useContinuityPolicy: boolean,
   continuityReason: ContinuityReason | null,
 ): number {
-  if (continuityPath && !continuityReason) return attempts.length;
+  if (useContinuityPolicy && !continuityReason) return attempts.length;
   if (continuityReason) {
     if (status === 429) return currentIndex + 1;
     return nextTargetAttemptIndex(attempts, currentIndex);
@@ -1382,7 +1417,7 @@ function isTerminalProviderHttpError(status: number, err: UpstreamErrorDetails):
   return classifyError(status, err.type, err.message).code === "context_length_exceeded";
 }
 
-function noteContinuityTransition(
+function recordContinuityFailure(
   ctx: RequestLogContext,
   circuit: ContinuityCircuit,
   primaryTarget: string,
@@ -1391,15 +1426,11 @@ function noteContinuityTransition(
   reason: ContinuityReason | null,
   now: number,
 ): void {
-  if (
-    !reason
-    || next?.source !== "continuity"
-    || (current.source !== "primary" && current.source !== "continuity")
-  ) {
-    return;
+  if (!reason || (current.source !== "primary" && current.source !== "continuity")) return;
+  if (next?.source === "continuity") ctx.entry.continuityReason ??= reason;
+  if (current.source === "primary" && !isSameTargetRetryCandidate(current, next)) {
+    circuit.open(primaryTarget, reason, now);
   }
-  ctx.entry.continuityReason ??= reason;
-  if (current.source === "primary") circuit.open(primaryTarget, reason, now);
 }
 
 function continuityAttemptHasUsableAuth(provider: FrogProviderConfig, headers: Headers): boolean {

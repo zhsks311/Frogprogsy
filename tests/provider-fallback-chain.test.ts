@@ -719,4 +719,261 @@ describe("provider fallback chain", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("stale exact candidates are skipped independently for active and retired primaries", async () => {
+    const cfg = baseConfig();
+    cfg.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: ["claude-frogprogsy-stale", "fallback/fallback-other"],
+        automatic: "all",
+      },
+    };
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async url => {
+      calls.push(String(url));
+      return anthropicOk("ok");
+    }) as typeof fetch;
+
+    try {
+      const circuit = new ContinuityCircuit();
+      expect((await invokeMessages(cfg, messagesBody(), { continuityCircuit: circuit })).status).toBe(200);
+      expect(calls).toEqual(["https://primary.test/v1/messages"]);
+
+      calls.length = 0;
+      expect((await invokeMessages(cfg, messagesBody(), {
+        continuityCircuit: circuit,
+        retiredTargets: new Set(["primary/primary-model"]),
+      })).status).toBe(200);
+      expect(calls).toEqual(["https://fallback.test/v1/messages"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test.each([
+    ["code", { error: { code: "context_length_exceeded" } }],
+    ["type", { error: { type: "context_length_exceeded" } }],
+  ] as const)("structured context %s without a message never uses continuity", async (_field, payload) => {
+    const cfg = baseConfig();
+    cfg.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: ["fallback/fallback-other"],
+        automatic: "transient",
+      },
+    };
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async url => {
+      calls.push(String(url));
+      return String(url).startsWith("https://primary.test")
+        ? new Response(JSON.stringify(payload), {
+            status: 500,
+            headers: { "content-type": "application/json" },
+          })
+        : anthropicOk("must not fallback");
+    }) as typeof fetch;
+
+    try {
+      const response = await invokeMessages(cfg, messagesBody(), {
+        continuityCircuit: new ContinuityCircuit(),
+      });
+      expect(response.status).toBe(500);
+      expect(calls).toEqual(["https://primary.test/v1/messages"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("free-form context wording alone remains an eligible 5xx", async () => {
+    const cfg = baseConfig();
+    cfg.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: ["fallback/fallback-other"],
+        automatic: "transient",
+      },
+    };
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async url => {
+      calls.push(String(url));
+      return String(url).startsWith("https://primary.test")
+        ? new Response(JSON.stringify({
+            error: { type: "upstream_error", message: "context window exceeded" },
+          }), {
+            status: 500,
+            headers: { "content-type": "application/json" },
+          })
+        : anthropicOk("fallback");
+    }) as typeof fetch;
+
+    try {
+      const response = await invokeMessages(cfg, messagesBody(), {
+        continuityCircuit: new ContinuityCircuit(),
+      });
+      expect(response.status).toBe(200);
+      expect(calls).toEqual([
+        "https://primary.test/v1/messages",
+        "https://fallback.test/v1/messages",
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("eligible failure opens the circuit without candidates while unusable candidates keep primary safe", async () => {
+    const noCandidate = baseConfig();
+    noCandidate.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: [],
+        automatic: "transient",
+      },
+    };
+    const boundaryCircuit = new ContinuityCircuit();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      error: { type: "server_error", message: "primary down" },
+    }), {
+      status: 503,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+
+    try {
+      expect((await invokeMessages(noCandidate, messagesBody(), {
+        continuityCircuit: boundaryCircuit,
+        now: () => 1_000,
+      })).status).toBe(503);
+      expect(boundaryCircuit.isOpen("primary/primary-model", 30_999)).toBeTrue();
+      expect(boundaryCircuit.isOpen("primary/primary-model", 31_000)).toBeFalse();
+
+      const disabledCandidate = baseConfig();
+      disabledCandidate.disabledModels = ["fallback/fallback-other"];
+      disabledCandidate.modelContinuity = {
+        "primary/primary-model": {
+          fallbacks: ["fallback/fallback-other"],
+          automatic: "transient",
+        },
+      };
+      const circuit = new ContinuityCircuit();
+      let now = 1_000;
+      const calls: string[] = [];
+      globalThis.fetch = (async url => {
+        calls.push(String(url));
+        return String(url).startsWith("https://primary.test")
+          ? new Response(JSON.stringify({ error: { type: "server_error", message: "primary down" } }), {
+              status: 503,
+              headers: { "content-type": "application/json" },
+            })
+          : anthropicOk("fallback");
+      }) as typeof fetch;
+
+      expect((await invokeMessages(disabledCandidate, messagesBody(), {
+        continuityCircuit: circuit,
+        now: () => now,
+      })).status).toBe(503);
+      expect(circuit.isOpen("primary/primary-model", 1_001)).toBeTrue();
+
+      now = 2_000;
+      expect((await invokeMessages(disabledCandidate, messagesBody(), {
+        continuityCircuit: circuit,
+        now: () => now,
+      })).status).toBe(503);
+      expect(calls).toEqual([
+        "https://primary.test/v1/messages",
+        "https://primary.test/v1/messages",
+      ]);
+
+      disabledCandidate.disabledModels = [];
+      calls.length = 0;
+      now = 3_000;
+      expect((await invokeMessages(disabledCandidate, messagesBody(), {
+        continuityCircuit: circuit,
+        now: () => now,
+      })).status).toBe(200);
+      expect(calls).toEqual(["https://fallback.test/v1/messages"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("all auth-skipped continuity candidates preserve the primary upstream failure", async () => {
+    const cfg = baseConfig();
+    cfg.providers.forwarded = {
+      adapter: "anthropic",
+      authMode: "forward",
+      baseUrl: "https://forwarded.test",
+      models: ["forwarded-model"],
+    };
+    cfg.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: ["forwarded/forwarded-model"],
+        automatic: "transient",
+      },
+    };
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async url => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({
+        error: { type: "server_error", message: "primary down" },
+      }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const response = await invokeMessages(cfg, messagesBody(), {
+        continuityCircuit: new ContinuityCircuit(),
+      });
+      expect(response.status).toBe(503);
+      expect((await response.json() as { error?: { message?: string } }).error?.message).toBe("primary down");
+      expect(calls).toEqual(["https://primary.test/v1/messages"]);
+      const [entry] = __requestLogTest.requestLogSnapshot();
+      expect(entry.attempts).toContainEqual({
+        provider: "forwarded",
+        model: "forwarded-model",
+        source: "continuity",
+        status: "skipped",
+        code: "auth_missing",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("open circuit keeps primary when the only OAuth candidate cannot authenticate", async () => {
+    const cfg = baseConfig();
+    cfg.providers.oauthFallback = {
+      adapter: "anthropic",
+      authMode: "oauth",
+      baseUrl: "https://oauth-fallback.test",
+      models: ["oauth-model"],
+    };
+    cfg.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: ["oauthFallback/oauth-model"],
+        automatic: "transient",
+      },
+    };
+    const circuit = new ContinuityCircuit();
+    circuit.open("primary/primary-model", "http_5xx", 1_000);
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async url => {
+      calls.push(String(url));
+      return anthropicOk("primary safe");
+    }) as typeof fetch;
+
+    try {
+      const response = await invokeMessages(cfg, messagesBody(), {
+        continuityCircuit: circuit,
+        now: () => 2_000,
+      });
+      expect(response.status).toBe(200);
+      expect(calls).toEqual(["https://primary.test/v1/messages"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

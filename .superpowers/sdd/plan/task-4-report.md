@@ -36,3 +36,31 @@
 ## 우려
 
 요청 제한에 따라 전체 테스트, 포맷터, 린터, 전체 typecheck, GUI build는 실행하지 않았습니다. 지정된 데이터 경로와 관련 회귀 테스트만 검증했습니다.
+
+## 검토 수정 round 1
+
+### 상태
+
+완료. 후보 단위 실패 격리, 구조화 오류 보존, 후보가 없어도 열리는 회로, 인증 후보가 모두 건너뛰어진 경우의 원래 upstream 오류 보존, 동시 요청 완료 순서를 추가로 검증했습니다.
+
+### 변경
+
+- stale exact 후보의 route 해석 실패를 해당 후보만 건너뛰도록 제한했습니다.
+- message가 없는 구조화 upstream 오류도 exact `type`/`code`와 안전한 fallback message를 보존합니다.
+- eligible primary 실패가 key 진행을 마치면 다음 후보 유무와 관계없이 회로를 열되, 현재 요청에서 인증 가능한 후보가 없으면 열린 회로가 primary를 건너뛰지 않게 했습니다.
+- 모든 exact 후보가 인증 단계에서 건너뛰어지면 마지막 실제 upstream의 status/type/message를 반환합니다.
+- failure와 success가 겹친 요청은 마지막 완료가 회로 상태를 결정하는지 제어된 비동기 테스트로 고정했습니다.
+
+### 실행 명령과 실제 결과
+
+`bun test --isolate ./tests/model-continuity-runtime.test.ts ./tests/provider-fallback-chain.test.ts ./tests/provider-key-failover.test.ts ./tests/fallback-attempt-context.test.ts ./tests/fallback-abort.test.ts ./tests/error-fidelity.test.ts`
+
+- 결과: 종료 코드 0
+- 통과: 92
+- 실패: 0
+- 검증식: 262
+- 실행 파일: 6개
+
+### 우려
+
+요청 제한에 따라 전체 테스트, 포맷터, 린터, 전체 typecheck, GUI build는 실행하지 않았습니다.
