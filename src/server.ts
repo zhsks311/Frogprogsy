@@ -14,7 +14,7 @@ import type { ServerWebSocket } from "bun";
 import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, readActivePort, readPid, saveConfig, websocketsEnabled, writeLocalAccessToken } from "./config";
 import { parseRequest } from "./responses/parser";
 import { estimateMessagesInputTokens, parseMessagesRequest, buildResponsesBody } from "./messages/parser";
-import { materializeModelAliases, type ModelAliasEntry } from "./model-aliases";
+import { materializeModelAliases, reconcileRetiredModelAliases, type ModelAliasEntry } from "./model-aliases";
 import { routeModel, type RouteKind } from "./router";
 import { cheapMixTarget, isModelMixingRequest, resolveMix, validMixAgents, type CoordinatorComplete, type MixTarget } from "./model-mixing";
 import { computeCallPlan } from "./model-mixing/orchestrate";
@@ -43,9 +43,10 @@ import { injectClaudeCodeConfig } from "./claude-inject";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
 import { buildEffectiveConfig, sanitizeCatalogProviderForPersistence } from "./model-catalog-config";
+import { buildRetiredTargetIndex } from "./model-continuity";
 import { createRuntimeConfigState, type RuntimeConfigState } from "./runtime-config-state";
 import type { CatalogRuntimeStatus, SelectedModelCatalog } from "./model-catalog-runtime";
-import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, ClaudeProjectRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
+import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage, ModelContinuityPolicy } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
@@ -741,11 +742,15 @@ async function readParsedMessagesRequest(
   }
 }
 
+function continuityAllowsRetired(policy: ModelContinuityPolicy | undefined): boolean {
+  return policy?.automatic === "retired" || policy?.automatic === "all";
+}
+
 async function handleMessages(
   req: Request,
   config: FrogConfig,
   logCtx: RequestLogContext,
-  options: { abortSignal?: AbortSignal; profileId?: string; noKeyDnsLookup?: PublicDnsLookup } = {},
+  options: { abortSignal?: AbortSignal; profileId?: string; noKeyDnsLookup?: PublicDnsLookup; retiredTargets?: ReadonlySet<string> } = {},
 ): Promise<Response> {
   const parseStarted = Date.now();
   const read = await readParsedMessagesRequest(req, logCtx, parseStarted);
@@ -828,13 +833,34 @@ async function handleMessages(
   const routeStarted = Date.now();
   let attempts: AttemptContext[] = [];
   try {
+    const preflightRoute = routeModel(config, responseModelId);
+    const primaryTarget = `${preflightRoute.providerName}/${preflightRoute.modelId}`;
+    const primaryIsRetired = preflightRoute.retired === true
+      || (
+        preflightRoute.routeKind === "qualified"
+        && options.retiredTargets?.has(primaryTarget) === true
+      );
+    if (primaryIsRetired && !continuityAllowsRetired(config.modelContinuity?.[primaryTarget])) {
+      setRouteLog(logCtx, preflightRoute, preflightRoute.routeKind, preflightRoute.ambiguousCandidates);
+      recordLogPhase(logCtx, "route", "error", "model_retired", routeStarted);
+      finalizeRequestLog(logCtx, "internal_error", 410, { kind: "routing", code: "model_retired" });
+      return formatAnthropicErrorResponse(
+        410,
+        "invalid_request_error",
+        `Model "${responseModelId}" was retired. Run: frogp models continuity`,
+      );
+    }
+
     const built = buildAttemptContexts(config, parsed);
     if (isRouteDisabled(config, built.primaryRoute.providerName, built.primaryRoute.modelId, responseModelId)) {
       recordLogPhase(logCtx, "route", "error", "model_disabled", routeStarted);
       finalizeRequestLog(logCtx, "internal_error", 404, { kind: "routing", code: "model_disabled" });
       return formatAnthropicErrorResponse(404, "invalid_request_error", `Model "${responseModelId}" is disabled.`);
     }
-    attempts = built.attempts.filter(attempt => !isRouteDisabled(config, attempt.providerName, attempt.modelId, responseModelId));
+    attempts = built.attempts.filter(attempt =>
+      (!primaryIsRetired || attempt.source === "primary")
+      && !isRouteDisabled(config, attempt.providerName, attempt.modelId, responseModelId)
+    );
     setRouteLog(logCtx, built.primaryRoute, built.primaryRoute.routeKind, built.primaryRoute.ambiguousCandidates);
     recordLogPhase(logCtx, "route", "ok", undefined, routeStarted);
   } catch (err) {
@@ -2054,30 +2080,36 @@ function managementTestState(
   effectiveConfig: FrogConfig = config,
   selectedCatalog?: SelectedModelCatalog,
 ): RuntimeConfigState {
+  const catalog: SelectedModelCatalog = selectedCatalog ?? {
+    document: {
+      schemaVersion: 1,
+      catalogRevision: 0,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "1970-01-01T00:00:00Z",
+      minFrogprogsyVersion: "0.0.0",
+      providers: [],
+    },
+    status: {
+      source: "bundled",
+      catalogRevision: 0,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "1970-01-01T00:00:00Z",
+      skippedRecords: 0,
+      warnings: [],
+    },
+  };
+  const retiredTargets = buildRetiredTargetIndex(config, catalog);
+  reconcileRetiredModelAliases(retiredTargets);
   const state: RuntimeConfigState = {
     persisted: config,
     effective: structuredClone(effectiveConfig),
-    catalog: selectedCatalog ?? {
-      document: {
-        schemaVersion: 1,
-        catalogRevision: 0,
-        catalogDigest: "0".repeat(64),
-        sourceCommit: "0".repeat(40),
-        generatedAt: "1970-01-01T00:00:00Z",
-        minFrogprogsyVersion: "0.0.0",
-        providers: [],
-      },
-      status: {
-        source: "bundled",
-        catalogRevision: 0,
-        catalogDigest: "0".repeat(64),
-        sourceCommit: "0".repeat(40),
-        generatedAt: "1970-01-01T00:00:00Z",
-        skippedRecords: 0,
-        warnings: [],
-      },
-    },
+    catalog,
+    retiredTargets,
     rebuild() {
+      state.retiredTargets = buildRetiredTargetIndex(state.persisted, state.catalog);
+      reconcileRetiredModelAliases(state.retiredTargets);
       state.effective = selectedCatalog
         ? buildEffectiveConfig(state.persisted, selectedCatalog)
         : structuredClone(state.persisted);
@@ -4369,6 +4401,7 @@ export async function startServer(
   deps: ServerStartDeps = {},
 ): Promise<ReturnType<typeof Bun.serve>> {
   const state = await (deps.createRuntimeConfigState ?? createRuntimeConfigState)();
+  reconcileRetiredModelAliases(state.retiredTargets);
   const persistedConfig = state.persisted;
   const restoredOAuthProviders = (deps.restoreCredentialedOAuthProviderConfigs ?? restoreCredentialedOAuthProviderConfigs)(persistedConfig);
   const removedFixtures = dropRuntimeFixtureProviders(persistedConfig);
@@ -4534,7 +4567,11 @@ export async function startServer(
           return formatAnthropicErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
         }
         noteClaudeProfileRequest(persistedConfig, profileId, req.headers);
-        const response = await runLoggedDataPlane(req, url.pathname, logCtx => handleMessages(req, config, logCtx, { abortSignal: req.signal, profileId }));
+        const response = await runLoggedDataPlane(req, url.pathname, logCtx => handleMessages(req, config, logCtx, {
+          abortSignal: req.signal,
+          profileId,
+          retiredTargets: state.retiredTargets,
+        }));
         if (profileId && response.status === 401) noteClaudeProfileRequest(persistedConfig, profileId, req.headers, "oauth_rejected");
         if (profileId) state.save();
         return response;

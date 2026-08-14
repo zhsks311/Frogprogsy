@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { computeModelAliases, deterministicModelAlias, materializeModelAliases, resolveConfiguredModelAlias, resolvePersistedModelAlias, GATEWAY_MODEL_ALIAS_PREFIX, type ModelAliasEntry } from "../src/model-aliases";
+import { computeModelAliases, deterministicModelAlias, materializeModelAliases, reconcileRetiredModelAliases, resolveConfiguredModelAlias, resolvePersistedModelAlias, GATEWAY_MODEL_ALIAS_PREFIX, type ModelAliasEntry } from "../src/model-aliases";
 import { nativeOpenAiSlugs, syncCatalogModels, type CatalogModel } from "../src/claude-catalog";
 import { syncClaudeCodeGatewayModelsCache } from "../src/claude-refresh";
 import { routeModel } from "../src/router";
@@ -337,6 +337,96 @@ describe("Claude-visible model aliases", () => {
       expect(routeModel(tokenFreeConfig, routedAlias)).toMatchObject({ providerName: "kimi", modelId: "frog-kimi-only" });
     } finally {
       cleanup();
+    }
+  });
+
+  test("schema-version-1 entries without status remain active", () => {
+    const homes = makeHomes();
+    try {
+      const alias = deterministicModelAlias("provider-a", "Model X/Preview");
+      writeFileSync(homes.aliasesPath, JSON.stringify({
+        schemaVersion: 1,
+        aliases: {
+          [alias]: {
+            alias,
+            provider: "provider-a",
+            model: "Model X/Preview",
+            routeKey: "provider-a/Model X/Preview",
+            displayName: "provider-a/Model X/Preview",
+            createdAt: new Date(0).toISOString(),
+          },
+        },
+      }));
+
+      expect(routeModel(config, alias)).toMatchObject({
+        providerName: "provider-a",
+        modelId: "Model X/Preview",
+      });
+      expect(routeModel(config, alias).retired).toBeUndefined();
+    } finally {
+      homes.cleanup();
+    }
+  });
+
+  test("canonical pruning preserves only currently catalog-confirmed retired aliases", () => {
+    const homes = makeHomes();
+    try {
+      const [old] = materializeModelAliases([{ provider: "provider-a", model: "old" }], { prune: true });
+      reconcileRetiredModelAliases(new Set(["provider-a/old"]));
+      materializeModelAliases([{ provider: "provider-a", model: "new" }], { prune: true });
+
+      expect(resolvePersistedModelAlias(old!.alias)).toMatchObject({
+        routeKey: "provider-a/old",
+        status: "retired",
+      });
+
+      reconcileRetiredModelAliases(new Set());
+      materializeModelAliases([{ provider: "provider-a", model: "new" }], { prune: true });
+      expect(resolvePersistedModelAlias(old!.alias)).toBeUndefined();
+    } finally {
+      homes.cleanup();
+    }
+  });
+
+  test.each([false, true])("canonical=%s writer reserves aliases owned by a different tombstone", prune => {
+    const homes = makeHomes();
+    try {
+      const [old] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune: true });
+      reconcileRetiredModelAliases(new Set(["a/b-c"]));
+      const [current] = materializeModelAliases([{ provider: "a-b", model: "c" }], { prune });
+
+      expect(current!.alias).not.toBe(old!.alias);
+      expect(resolvePersistedModelAlias(old!.alias)).toMatchObject({
+        routeKey: "a/b-c",
+        status: "retired",
+      });
+      expect(resolvePersistedModelAlias(current!.alias)).toMatchObject({
+        routeKey: "a-b/c",
+        status: "active",
+      });
+    } finally {
+      homes.cleanup();
+    }
+  });
+
+  test.each([false, true])("canonical=%s writer reuses a tombstone alias when its route becomes active again", prune => {
+    const homes = makeHomes();
+    try {
+      const [old] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune: true });
+      reconcileRetiredModelAliases(new Set(["a/b-c"]));
+      const [activeAgain] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune });
+
+      expect(activeAgain).toMatchObject({
+        alias: old!.alias,
+        routeKey: "a/b-c",
+        status: "active",
+      });
+      expect(resolvePersistedModelAlias(old!.alias)).toMatchObject({
+        routeKey: "a/b-c",
+        status: "active",
+      });
+    } finally {
+      homes.cleanup();
     }
   });
 });

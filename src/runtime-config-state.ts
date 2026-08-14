@@ -7,12 +7,15 @@ import {
 } from "./model-catalog-config";
 import { refreshModelCatalog, type SelectedModelCatalog } from "./model-catalog-runtime";
 import type { ModelCatalogDocumentV1 } from "./model-catalog-schema";
+import { buildRetiredTargetIndex } from "./model-continuity";
+import { reconcileRetiredModelAliases } from "./model-aliases";
 import type { FrogConfig } from "./types";
 
 export interface RuntimeConfigState {
   persisted: FrogConfig;
   effective: FrogConfig;
   readonly catalog: SelectedModelCatalog;
+  retiredTargets: ReadonlySet<string>;
   rebuild(): void;
   save(): void;
   persist(): void;
@@ -32,16 +35,21 @@ export interface RuntimeConfigStateDeps {
 
 class DefaultRuntimeConfigState implements RuntimeConfigState {
   effective: FrogConfig;
+  retiredTargets: ReadonlySet<string>;
 
   constructor(
     public persisted: FrogConfig,
     public readonly catalog: SelectedModelCatalog,
     private readonly writePersisted: (config: FrogConfig) => void,
   ) {
+    this.retiredTargets = buildRetiredTargetIndex(persisted, catalog);
+    reconcileRetiredModelAliases(this.retiredTargets);
     this.effective = buildEffectiveConfig(persisted, catalog);
   }
 
   rebuild(): void {
+    this.retiredTargets = buildRetiredTargetIndex(this.persisted, this.catalog);
+    reconcileRetiredModelAliases(this.retiredTargets);
     this.effective = buildEffectiveConfig(this.persisted, this.catalog);
   }
 

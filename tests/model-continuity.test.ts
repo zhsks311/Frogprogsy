@@ -11,7 +11,9 @@ import {
   validateContinuityPolicy,
   type ModelContinuityValidationInput,
 } from "../src/model-continuity";
-import { listPersistedModelAliases, type ModelAliasEntry } from "../src/model-aliases";
+import { listPersistedModelAliases, materializeModelAliases, reconcileRetiredModelAliases, resolvePersistedModelAlias, type ModelAliasEntry } from "../src/model-aliases";
+import { createRuntimeConfigState } from "../src/runtime-config-state";
+import { __requestLogTest } from "../src/server";
 import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
 import type { FrogConfig, ModelContinuityAutomatic } from "../src/types";
 
@@ -132,7 +134,149 @@ describe("model retirement identity", () => {
     expect(retired.has("custom/claude-old")).toBeFalse();
     expect(retired.has("anthropic/claude-old")).toBeFalse();
   });
+
+  test.each(["retired model removed", "configured provider removed"])(
+    "runtime rebuild drops tombstone authority when the %s",
+    async scenario => {
+      const frogHome = mkdtempSync(join(tmpdir(), "frogp-retired-state-"));
+      const previousFrogHome = process.env.FROGPROGSY_HOME;
+      process.env.FROGPROGSY_HOME = frogHome;
+      try {
+        const [old] = materializeModelAliases([{ provider: "work", model: "claude-old" }], { prune: true });
+        const config = configWithRenamedManagedProvider();
+        const catalog = selectedCatalog();
+        const state = await createRuntimeConfigState({
+          loadConfig: () => config,
+          saveConfig: () => {},
+          refreshCatalog: async () => catalog,
+          getConfigPath: () => join(frogHome, "config.json"),
+          configExists: () => false,
+        });
+
+        expect(state.retiredTargets.has("work/claude-old")).toBeTrue();
+        expect(resolvePersistedModelAlias(old!.alias)).toMatchObject({ status: "retired" });
+
+        if (scenario === "retired model removed") {
+          catalog.document.providers[0]!.retiredModels = ["claude-retired"];
+        } else {
+          delete state.persisted.providers.work;
+        }
+        state.rebuild();
+
+        expect(state.retiredTargets.has("work/claude-old")).toBeFalse();
+        expect(resolvePersistedModelAlias(old!.alias)).toMatchObject({ status: "active" });
+        materializeModelAliases([], { prune: true });
+        expect(resolvePersistedModelAlias(old!.alias)).toBeUndefined();
+      } finally {
+        if (previousFrogHome === undefined) delete process.env.FROGPROGSY_HOME;
+        else process.env.FROGPROGSY_HOME = previousFrogHome;
+        rmSync(frogHome, { recursive: true, force: true });
+      }
+    },
+  );
 });
+
+describe("retired request continuity preflight", () => {
+  test.each([
+    ["off", "work/claude-old"],
+    ["off", "alias"],
+    ["transient", "work/claude-old"],
+    ["transient", "alias"],
+  ] as const)("automatic=%s returns typed 410 for retired %s", async (automatic, requestedTarget) => {
+    const frogHome = mkdtempSync(join(tmpdir(), "frogp-retired-request-"));
+    const previousFrogHome = process.env.FROGPROGSY_HOME;
+    process.env.FROGPROGSY_HOME = frogHome;
+    try {
+      const [old] = materializeModelAliases([{ provider: "work", model: "claude-old" }], { prune: true });
+      reconcileRetiredModelAliases(new Set(["work/claude-old"]));
+      const config: FrogConfig = {
+        port: 3764,
+        defaultProvider: "work",
+        fallbackProviders: ["generic-fallback"],
+        providers: {
+          work: {
+            adapter: "anthropic",
+            baseUrl: "https://work.invalid",
+            apiKey: "test-key",
+            models: ["claude-old", "claude-new"],
+          },
+          "generic-fallback": {
+            adapter: "anthropic",
+            baseUrl: "https://fallback.invalid",
+            apiKey: "test-key",
+            defaultModel: "fallback",
+          },
+        },
+        modelContinuity: {
+          "work/claude-old": {
+            automatic,
+            fallbacks: ["work/claude-new"],
+          },
+        },
+      };
+      const logCtx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const response = await __requestLogTest.handleMessages(
+        new Request("http://127.0.0.1/v1/messages", {
+          method: "POST",
+          body: JSON.stringify({
+            model: requestedTarget === "alias" ? old!.alias : requestedTarget,
+            max_tokens: 16,
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        }),
+        config,
+        logCtx,
+        { retiredTargets: new Set(["work/claude-old"]) },
+      );
+
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: `Model "${requestedTarget === "alias" ? old!.alias : requestedTarget}" was retired. Run: frogp models continuity`,
+        },
+      });
+    } finally {
+      if (previousFrogHome === undefined) delete process.env.FROGPROGSY_HOME;
+      else process.env.FROGPROGSY_HOME = previousFrogHome;
+      rmSync(frogHome, { recursive: true, force: true });
+      __requestLogTest.clear();
+    }
+  });
+
+  test("fabricated gateway alias remains a typed 404", async () => {
+    const config: FrogConfig = {
+      port: 3764,
+      defaultProvider: "work",
+      providers: {
+        work: {
+          adapter: "anthropic",
+          baseUrl: "https://work.invalid",
+          apiKey: "test-key",
+          models: ["claude-old"],
+        },
+      },
+    };
+    const logCtx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+    const response = await __requestLogTest.handleMessages(
+      new Request("http://127.0.0.1/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({
+          model: "claude-frogp-fabricated",
+          max_tokens: 16,
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      }),
+      config,
+      logCtx,
+      { retiredTargets: new Set(["work/claude-old"]) },
+    );
+
+    expect(response.status).toBe(404);
+  });
+});
+
 
 describe("model continuity policy", () => {
   test("defaults off and preserves exact order", () => {
