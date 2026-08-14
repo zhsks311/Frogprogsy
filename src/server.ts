@@ -14,7 +14,7 @@ import type { ServerWebSocket } from "bun";
 import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, readActivePort, readPid, saveConfig, websocketsEnabled, writeLocalAccessToken } from "./config";
 import { parseRequest } from "./responses/parser";
 import { estimateMessagesInputTokens, parseMessagesRequest, buildResponsesBody } from "./messages/parser";
-import { materializeModelAliases, reconcileRetiredModelAliases, type ModelAliasEntry } from "./model-aliases";
+import { listPersistedModelAliases, materializeModelAliases, reconcileRetiredModelAliases, type ModelAliasEntry } from "./model-aliases";
 import { routeModel, type RouteKind, type RouteResult } from "./router";
 import { cheapMixTarget, isModelMixingRequest, resolveMix, validMixAgents, type CoordinatorComplete, type MixTarget } from "./model-mixing";
 import { computeCallPlan } from "./model-mixing/orchestrate";
@@ -45,14 +45,19 @@ import { deriveProviderPresets } from "./providers/derive";
 import { buildEffectiveConfig, sanitizeCatalogProviderForPersistence } from "./model-catalog-config";
 import {
   buildRetiredTargetIndex,
+  collectModelContinuityReferences,
   ContinuityCircuit,
   continuityCandidates,
   isContinuityEligibleHttpFailure,
+  normalizeContinuityPolicy,
+  replaceModelContinuityReference,
+  validateContinuityPolicy,
   type ContinuityReason,
+  type ModelContinuityReference,
 } from "./model-continuity";
 import { createRuntimeConfigState, type RuntimeConfigState } from "./runtime-config-state";
 import type { CatalogRuntimeStatus, SelectedModelCatalog } from "./model-catalog-runtime";
-import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage, ModelContinuityPolicy } from "./types";
+import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage, ModelContinuityAutomatic, ModelContinuityPolicy } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
@@ -2593,6 +2598,10 @@ interface ManagementAPIDeps {
   effectiveConfig?: FrogConfig;
   /** Selected catalog fixture for management boundary tests. Production reads RuntimeConfigState. */
   catalog?: SelectedModelCatalog;
+  /** Shared request circuit used by the data plane and redacted continuity reporting. */
+  continuityCircuit?: ContinuityCircuit;
+  /** Clock seam for filtering and projecting circuit expiry without sleeping in tests. */
+  now?: () => number;
   /** Profile refresh seam for asserting the effective config passed to Claude catalog generation. */
   refreshProfileCatalog?: (
     config: FrogConfig,
@@ -3102,6 +3111,108 @@ function noteClaudeProfileRequest(config: FrogConfig, profileId: string | undefi
   if (!profileId) return;
   updateClaudeProfileAuthState(config, profileId, status ?? (profileRequestHasForwardAuth(headers) ? "oauth_ok" : "seen_no_bearer"));
 }
+type ModelContinuityAction =
+  | {
+    action: "set";
+    primary: string;
+    fallbacks: string[];
+    automatic: ModelContinuityAutomatic;
+    referenceId?: string;
+  }
+  | {
+    action: "replace";
+    referenceId: string;
+    expectedPrimary: string;
+    replacement: string;
+  };
+
+type ModelContinuityActionParseResult =
+  | { ok: true; action: ModelContinuityAction }
+  | { ok: false; code: "invalid_action" | "invalid_request"; error: string };
+
+function isModelContinuityAutomatic(value: unknown): value is ModelContinuityAutomatic {
+  return value === "off" || value === "retired" || value === "transient" || value === "all";
+}
+
+function hasOnlyKeys(body: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(body).every(key => allowed.includes(key));
+}
+
+function parseModelContinuityAction(body: unknown): ModelContinuityActionParseResult {
+  if (!isPlainJsonObject(body)) {
+    return { ok: false, code: "invalid_request", error: "request body must be an object" };
+  }
+  if (body.action !== "set" && body.action !== "replace") {
+    return { ok: false, code: "invalid_action", error: "action must be set or replace" };
+  }
+  if (body.action === "set") {
+    const allowed = ["action", "primary", "fallbacks", "automatic", "referenceId"] as const;
+    if (
+      !hasOnlyKeys(body, allowed)
+      || typeof body.primary !== "string"
+      || !Array.isArray(body.fallbacks)
+      || !body.fallbacks.every(fallback => typeof fallback === "string")
+      || !isModelContinuityAutomatic(body.automatic)
+      || (body.referenceId !== undefined && typeof body.referenceId !== "string")
+    ) {
+      return {
+        ok: false,
+        code: "invalid_request",
+        error: "set requires only primary, string fallbacks, automatic, and optional referenceId",
+      };
+    }
+    return {
+      ok: true,
+      action: {
+        action: "set",
+        primary: body.primary,
+        fallbacks: body.fallbacks,
+        automatic: body.automatic,
+        ...(body.referenceId === undefined ? {} : { referenceId: body.referenceId }),
+      },
+    };
+  }
+
+  const allowed = ["action", "referenceId", "expectedPrimary", "replacement"] as const;
+  if (
+    !hasOnlyKeys(body, allowed)
+    || typeof body.referenceId !== "string"
+    || typeof body.expectedPrimary !== "string"
+    || typeof body.replacement !== "string"
+  ) {
+    return {
+      ok: false,
+      code: "invalid_request",
+      error: "replace requires only referenceId, expectedPrimary, and replacement",
+    };
+  }
+  return {
+    ok: true,
+    action: {
+      action: "replace",
+      referenceId: body.referenceId,
+      expectedPrimary: body.expectedPrimary,
+      replacement: body.replacement,
+    },
+  };
+}
+
+const MODEL_CONTINUITY_STATUS_ORDER: Record<ModelContinuityReference["status"], number> = {
+  retired: 0,
+  policy_invalid: 1,
+  authentication_required: 1,
+  ready: 2,
+};
+
+function compareModelContinuityReferences(
+  left: ModelContinuityReference,
+  right: ModelContinuityReference,
+): number {
+  const severity = MODEL_CONTINUITY_STATUS_ORDER[left.status] - MODEL_CONTINUITY_STATUS_ORDER[right.status];
+  if (severity !== 0) return severity;
+  const label = left.label.localeCompare(right.label);
+  return label !== 0 ? label : left.id.localeCompare(right.id);
+}
 
 
 async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigState, deps: ManagementAPIDeps = {}): Promise<Response | null> {
@@ -3129,6 +3240,40 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     if (!changed) return;
     state.persist();
     await refreshClaudeCodeCatalogBestEffort();
+  }
+
+  async function modelContinuityContext(): Promise<{
+    models: Array<{
+      namespaced: string;
+      disabled: boolean;
+      authReady?: boolean;
+      supportStatus?: "validated" | "discovered" | "unknown";
+    }>;
+    references: ModelContinuityReference[];
+  }> {
+    const profileId = url.searchParams.get("profileId") ?? undefined;
+    const view = await effectiveModelView(state.effective, {
+      profileId,
+      headers: req.headers,
+      includeConfiguredForwardModels: true,
+    });
+    const models = view.models.map(model => {
+      const namespaced = `${model.provider}/${model.id}`;
+      return {
+        namespaced,
+        disabled: view.disabled.has(namespaced),
+        ...(model.authReady === undefined ? {} : { authReady: model.authReady }),
+        ...(model.supportStatus === undefined ? {} : { supportStatus: model.supportStatus }),
+      };
+    });
+    const references = collectModelContinuityReferences({
+      config,
+      retiredTargets: state.retiredTargets,
+      models,
+      aliases: listPersistedModelAliases(),
+    });
+    references.sort(compareModelContinuityReferences);
+    return { models, references };
   }
 
   await persistProviderConfigIfChanged(restoreCredentialedOAuthProviderConfigs(config));
@@ -3890,6 +4035,113 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
 
   if (url.pathname === "/api/config" && req.method === "PUT") {
     return jsonResponse({ error: "Full config PUT is disabled. Use /api/providers POST for provider changes." }, 405);
+  }
+
+  if (url.pathname === "/api/model-continuity" && req.method === "GET") {
+    const { references } = await modelContinuityContext();
+    const policies = Object.fromEntries(
+      Object.entries(config.modelContinuity ?? {})
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([primary, policy]) => [primary, normalizeContinuityPolicy(policy)]),
+    );
+    const circuits = (deps.continuityCircuit?.snapshot((deps.now ?? Date.now)()) ?? [])
+      .map(entry => ({
+        primary: entry.target,
+        reason: entry.reason,
+        retryAt: entry.until,
+      }))
+      .sort((left, right) => left.primary.localeCompare(right.primary));
+    return jsonResponse({ policies, references, circuits });
+  }
+
+  if (url.pathname === "/api/model-continuity" && req.method === "POST") {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: "invalid JSON body", code: "invalid_json" }, 400);
+    }
+    const parsed = parseModelContinuityAction(body);
+    if (!parsed.ok) {
+      return jsonResponse({ error: parsed.error, code: parsed.code }, 400);
+    }
+
+    const { models, references } = await modelContinuityContext();
+    const ordinaryRouteConfig = { ...config };
+    delete ordinaryRouteConfig.autoModeClassifier;
+
+    if (parsed.action.action === "set") {
+      const action = parsed.action;
+      if (action.referenceId !== undefined) {
+        const reference = references.find(candidate => candidate.id === action.referenceId);
+        if (!reference) {
+          return jsonResponse({ error: "unknown model reference", code: "invalid_reference" }, 400);
+        }
+        if (reference.primary !== action.primary) {
+          return jsonResponse({
+            error: "model reference changed; reload and retry",
+            code: "stale_reference",
+          }, 409);
+        }
+        if (action.automatic !== "off" && !reference.automaticEligible) {
+          return jsonResponse({
+            error: "automatic continuity is available only for ordinary routed model requests",
+            code: "automatic_ineligible",
+          }, 400);
+        }
+      }
+
+      const validation = validateContinuityPolicy({
+        primaryTarget: action.primary,
+        config: ordinaryRouteConfig,
+        retiredTargets: state.retiredTargets,
+        models,
+        automatic: action.automatic,
+        fallbacks: action.fallbacks,
+      });
+      if (!validation.ok) {
+        return jsonResponse({ error: validation.error, code: "invalid_policy" }, 400);
+      }
+
+      if (validation.policy.automatic === "off" && validation.policy.fallbacks.length === 0) {
+        if (config.modelContinuity) {
+          delete config.modelContinuity[action.primary];
+          if (Object.keys(config.modelContinuity).length === 0) delete config.modelContinuity;
+        }
+      } else {
+        config.modelContinuity ??= {};
+        config.modelContinuity[action.primary] = validation.policy;
+      }
+      state.persist();
+      return jsonResponse({ ok: true, policy: validation.policy, warnings: validation.warnings });
+    }
+
+    const action = parsed.action;
+    const replaced = replaceModelContinuityReference({
+      config,
+      referenceId: action.referenceId,
+      expectedPrimary: action.expectedPrimary,
+      replacement: action.replacement,
+      models,
+      validateTarget: target => {
+        const validation = validateContinuityPolicy({
+          primaryTarget: action.expectedPrimary,
+          config: ordinaryRouteConfig,
+          retiredTargets: state.retiredTargets,
+          models,
+          automatic: "off",
+          fallbacks: [target],
+        });
+        return validation.ok ? null : validation.error;
+      },
+    });
+    if (!replaced.ok) {
+      const code = replaced.status === 409 ? "stale_reference" : "invalid_replacement";
+      return jsonResponse({ error: replaced.error, code }, replaced.status);
+    }
+    state.persist();
+    await refreshClaudeCodeCatalogBestEffort();
+    return jsonResponse({ ok: true });
   }
 
   if (url.pathname === "/api/settings" && req.method === "GET") {
@@ -4704,7 +4956,7 @@ export async function startServer(
       }
 
       if (url.pathname.startsWith("/api/")) {
-        const mgmtResponse = await handleManagementAPI(req, url, state, { clientAddress });
+        const mgmtResponse = await handleManagementAPI(req, url, state, { clientAddress, continuityCircuit });
         return mgmtResponse ?? jsonResponse({ error: `Unknown API endpoint: ${req.method} ${url.pathname}` }, 404);
       }
 
