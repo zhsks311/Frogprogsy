@@ -123,7 +123,7 @@ afterEach(() => {
 describe("GET /api/usage", () => {
   test("returns documented shape with summary, days, models, providers", async () => {
     writeFixture(Date.now());
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const res = await fetch(new URL("/api/usage", server.url));
       expect(res.status).toBe(200);
@@ -146,7 +146,7 @@ describe("GET /api/usage", () => {
 
   test("range=7d drops entries older than 7 days", async () => {
     writeFixture(Date.now());
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const res = await fetch(new URL("/api/usage?range=7d", server.url));
       const body = await res.json();
@@ -160,7 +160,7 @@ describe("GET /api/usage", () => {
 
   test("default range is 30d and includes older entries", async () => {
     writeFixture(Date.now());
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const res = await fetch(new URL("/api/usage", server.url));
       const body = await res.json();
@@ -176,7 +176,7 @@ describe("GET /api/usage", () => {
 
   test("unknown range falls back to 30d", async () => {
     writeFixture(Date.now());
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const res = await fetch(new URL("/api/usage?range=quarter", server.url));
       const body = await res.json();
@@ -187,7 +187,7 @@ describe("GET /api/usage", () => {
   });
 
   test("missing usage.jsonl returns zeroed summary, not 500", async () => {
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const res = await fetch(new URL("/api/usage", server.url));
       expect(res.status).toBe(200);
@@ -225,7 +225,7 @@ describe("GET /api/usage", () => {
       },
     } as FrogConfig);
 
-    const server = startServer(0);
+    const server = await startServer(0);
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (url, init) => {
       const target = String(url);

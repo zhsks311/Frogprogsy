@@ -38,6 +38,39 @@ export function sanitizeClaudeCodeReasoningEfforts(efforts: readonly string[] | 
   return out.sort((a, b) => CODEX_REASONING_ORDER.indexOf(a) - CODEX_REASONING_ORDER.indexOf(b));
 }
 
+export function intersectReasoningEfforts(
+  ...sources: Array<readonly string[] | undefined>
+): string[] | undefined {
+  const defined = sources
+    .filter((source): source is readonly string[] => source !== undefined)
+    .map(source => sanitizeClaudeCodeReasoningEfforts(source) ?? []);
+  if (defined.length === 0) return undefined;
+  const [first, ...rest] = defined;
+  return first.filter(effort => rest.every(source => source.includes(effort)));
+}
+
+export function mergeReasoningEffortMap(
+  live: Record<string, string> | undefined,
+  managed: Record<string, string> | undefined,
+  userOverride: Record<string, string> | undefined,
+  supported: readonly string[] | undefined,
+): Record<string, string> | undefined {
+  const merged: Record<string, string> = { ...live };
+  if (userOverride) {
+    for (const [effort, value] of Object.entries(userOverride)) {
+      if (supported !== undefined && !supported.includes(effort)) continue;
+      if (managed && Object.prototype.hasOwnProperty.call(managed, effort)) continue;
+      Object.defineProperty(merged, effort, { value, enumerable: true, configurable: true, writable: true });
+    }
+  }
+  if (managed) {
+    for (const [effort, value] of Object.entries(managed)) {
+      Object.defineProperty(merged, effort, { value, enumerable: true, configurable: true, writable: true });
+    }
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
 /**
  * Provider/model configured reasoning levels for the Claude Code catalog. `undefined` means “no override”,
  * while an empty array means “intentionally expose no effort control for this model”.
@@ -91,12 +124,18 @@ export function mapReasoningEffort(provider: FrogProviderConfig, modelId: string
   if (modelInList(provider.noReasoningModels, modelId)) return undefined;
 
   const wireMap = reasoningEffortMapFor(provider, modelId);
-  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, requested)) return wireMap[requested];
-
   const supported = configuredReasoningEfforts(provider, modelId);
-  const claudeEffort = supported !== undefined ? clampToSupportedClaudeCodeEffort(requested, supported) : requestToClaudeCodeEffort(requested);
+  if (supported === undefined) {
+    if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, requested)) return wireMap[requested];
+    const claudeEffort = requestToClaudeCodeEffort(requested);
+    if (!claudeEffort) return undefined;
+    if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, claudeEffort)) return wireMap[claudeEffort];
+    return claudeEffort;
+  }
+  if (supported.length === 0) return undefined;
+  if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, requested)) return wireMap[requested];
+  const claudeEffort = clampToSupportedClaudeCodeEffort(requested, supported);
   if (!claudeEffort) return undefined;
-
   if (wireMap && Object.prototype.hasOwnProperty.call(wireMap, claudeEffort)) return wireMap[claudeEffort];
   return claudeEffort;
 }

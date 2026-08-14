@@ -12,6 +12,7 @@ fixtures/claude-code-gateway/tmp-*/
 
 # local planning, investigation, and verification output
 /.omx/
+/.superpowers/
 /docs/
 /artifacts/
 /claude.md

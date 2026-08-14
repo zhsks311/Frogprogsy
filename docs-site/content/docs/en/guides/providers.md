@@ -20,6 +20,14 @@ Provider setup is safest from the dashboard.
 
 After the dashboard flow, use [Model Routing](/frog-progsy/guides/model-routing/) and [Dashboard & Activity](/frog-progsy/guides/web-dashboard/) to verify the live operating state.
 
+## Keep model information current
+
+FrogProgsy checks for validated model updates once, before the proxy starts accepting requests. Restart the proxy to activate a newer model list. Opening the dashboard does not refresh a running proxy.
+
+If the update cannot be reached or does not pass validation, startup compares the last validated saved copy with the model data bundled in the installed release and uses the one with the higher catalog revision. A new installation with no saved copy uses the bundled data. These updates never replace your API keys, chosen default, disabled models, or models you added yourself.
+
+Use `frogp models` after a restart to confirm the active source and model support status.
+
 ## Pick the right lane
 
 | Lane | Best when | Auth source | Typical adapter |

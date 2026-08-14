@@ -20,8 +20,7 @@
 import { $ } from "bun";
 import { registryVersionListed } from "./release-registry";
 
-const args = process.argv.slice(2);
-interface GhRun {
+export interface GhRun {
   conclusion: string | null;
   databaseId: number;
   headSha: string;
@@ -35,11 +34,11 @@ interface CommandResult {
   stderr: string;
 }
 
-// The local helper mirrors release.yml's fail-closed dual gate: both Cross-platform CI
-// (ci.yml) and Package lifecycle (package-lifecycle.yml) must have a successful run for
-// the exact release SHA before the Release workflow is dispatched.
+// The local helper mirrors release.yml's fail-closed three-workflow gate for
+// Cross-platform CI, Package lifecycle, and the deployed Pages catalog.
 const CI_WORKFLOW = "ci.yml";
 const PACKAGE_LIFECYCLE_WORKFLOW = "package-lifecycle.yml";
+const PAGES_WORKFLOW = "deploy-docs.yml";
 const RELEASE_GATE_WAIT_TIMEOUT_MS = 20 * 60 * 1000;
 const RELEASE_GATE_POLL_MS = 10 * 1000;
 
@@ -51,6 +50,7 @@ interface ReleaseGate {
 const RELEASE_GATES: ReleaseGate[] = [
   { workflow: CI_WORKFLOW, label: "Cross-platform CI" },
   { workflow: PACKAGE_LIFECYCLE_WORKFLOW, label: "Package lifecycle" },
+  { workflow: PAGES_WORKFLOW, label: "Pages catalog" },
 ];
 
 async function runQuiet(command: string[]): Promise<CommandResult> {
@@ -168,29 +168,34 @@ async function listWorkflowRuns(workflow: string, sha: string): Promise<GhRun[]>
   return runs.filter(run => run.headSha === sha);
 }
 
-// Wait for a single gate's workflow to have a successful run for THIS exact SHA. A run that
-// completed with a non-success conclusion aborts immediately (naming the failed workflow);
-// missing or in-progress runs keep polling inside the bounded timeout (fail-closed on expiry).
+export function latestWorkflowRun(runs: readonly GhRun[]): GhRun | null {
+  return runs.reduce<GhRun | null>(
+    (latest, run) => latest === null || run.databaseId > latest.databaseId ? run : latest,
+    null,
+  );
+}
+
+// Judge only the newest attempt for this exact SHA. An older successful run
+// cannot hide a newer queued, in-progress, cancelled, or failed retry.
 async function waitForSuccessfulGate(gate: ReleaseGate, sha: string): Promise<GhRun> {
   const deadline = Date.now() + RELEASE_GATE_WAIT_TIMEOUT_MS;
   let attempt = 1;
   while (Date.now() < deadline) {
     const runs = await listWorkflowRuns(gate.workflow, sha);
-    const successful = runs.find(run => run.status === "completed" && run.conclusion === "success");
-    if (successful) {
-      console.log(`→ ${gate.label} (${gate.workflow}) passed: ${successful.url}`);
-      return successful;
+    const latest = latestWorkflowRun(runs);
+    if (latest?.status === "completed" && latest.conclusion === "success") {
+      console.log(`→ ${gate.label} (${gate.workflow}) passed: ${latest.url}`);
+      return latest;
     }
 
-    const failed = runs.find(run => run.status === "completed" && run.conclusion && run.conclusion !== "success");
-    if (failed) {
-      console.error(`✗ ${gate.label} (${gate.workflow}) failed for ${sha}: ${failed.url}`);
+    if (latest?.status === "completed" && latest.conclusion && latest.conclusion !== "success") {
+      console.error(`✗ ${gate.label} (${gate.workflow}) failed for ${sha}: ${latest.url}`);
       process.exit(1);
     }
 
-    const state = runs.length > 0
-      ? runs.map(run => `${run.status}${run.conclusion ? `/${run.conclusion}` : ""}`).join(", ")
-      : "not started yet";
+    const state = latest === null
+      ? "not started yet"
+      : `${latest.status}${latest.conclusion ? `/${latest.conclusion}` : ""} (run ${latest.databaseId})`;
     console.log(`→ waiting for ${gate.label} (${sha.slice(0, 7)}) attempt ${attempt}: ${state}`);
     attempt += 1;
     await Bun.sleep(RELEASE_GATE_POLL_MS);
@@ -200,8 +205,8 @@ async function waitForSuccessfulGate(gate: ReleaseGate, sha: string): Promise<Gh
   process.exit(1);
 }
 
-// The two gates are independent, so wait for them in parallel. Each keeps its own bounded
-// timeout and fail-closed semantics; the first failed/missing run aborts the whole release.
+// The three gates are independent, so wait for them in parallel. Each keeps its
+// own bounded timeout and fail-closed latest-attempt semantics.
 async function waitForReleaseGates(sha: string): Promise<void> {
   await Promise.all(RELEASE_GATES.map(gate => waitForSuccessfulGate(gate, sha)));
 }
@@ -216,82 +221,86 @@ async function remoteMainSha(): Promise<string> {
   return sha;
 }
 
-if (args[0] === "watch") {
+async function main(args = process.argv.slice(2)): Promise<void> {
+  if (args[0] === "watch") {
+    await watchLatest();
+    return;
+  }
+
+  const version = args[0];
+  if (!version || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
+    console.error("Usage: bun scripts/release.ts <version> [--tag latest|preview] [--publish] [--bootstrap]\n       bun scripts/release.ts watch");
+    process.exit(1);
+  }
+  const tag = args.includes("--tag") ? (args[args.indexOf("--tag") + 1] ?? "latest") : "latest";
+  if (tag !== "latest" && tag !== "preview") {
+    console.error(`✗ unsupported registry dist-tag: ${tag}`);
+    process.exit(1);
+  }
+  const prerelease = version.includes("-");
+  if ((tag === "preview") !== prerelease) {
+    console.error(`✗ ${tag} requires a ${tag === "preview" ? "prerelease" : "stable"} SemVer; got ${version}`);
+    process.exit(1);
+  }
+  const dryRun = !args.includes("--publish");
+  const bootstrap = args.includes("--bootstrap");
+  if (bootstrap && dryRun) {
+    console.error("✗ --bootstrap requires --publish");
+    process.exit(1);
+  }
+  if (bootstrap && tag !== "latest") {
+    console.error("✗ --bootstrap must publish a stable version to the latest channel");
+    process.exit(1);
+  }
+
+  // 1. Preflight — must be on a clean main, and typecheck must pass.
+  const branch = (await $`git rev-parse --abbrev-ref HEAD`.text()).trim();
+  if (branch !== "main") { console.error(`✗ must be on main (currently ${branch}).`); process.exit(1); }
+  if ((await $`git status --porcelain`.text()).trim()) { console.error("✗ working tree not clean — commit or stash first."); process.exit(1); }
+  const packageName = await readPackageName();
+  console.log(`→ release metadata preflight (${packageName}@${version})`);
+  await assertUnusedReleaseVersion(packageName, version);
+  console.log("→ typecheck");
+  await $`bun x tsc --noEmit`;
+
+  // 2. Bump package.json only; the workflow creates the version tag after a successful publish.
+  console.log(`→ package.json version → ${version}`);
+  const versionChanged = await writePackageVersion(version);
+
+  // 3. Commit + push the version bump. Re-running dry-run → publish for the same
+  // version reuses the already-pushed release commit instead of creating an empty commit.
+  if (versionChanged) {
+    await $`git add package.json`;
+    await $`git commit -m ${`release: v${version}`}`;
+  } else {
+    console.log("→ package.json already has the requested version; reusing HEAD");
+  }
+  const releaseSha = (await $`git rev-parse HEAD`.text()).trim();
+  console.log("→ push origin main");
+  await $`git push origin main`;
+
+  // 4. Wait for the pushed release commit to pass all three exact-SHA gates
+  // before dispatching the Release workflow.
+  console.log(`→ wait for release gates (${RELEASE_GATES.map(gate => gate.workflow).join(" + ")}) on ${releaseSha}`);
+  await waitForReleaseGates(releaseSha);
+
+  const originMain = await remoteMainSha();
+  if (originMain !== releaseSha) {
+    console.error(`✗ origin/main moved while waiting for the release gates (${originMain} != ${releaseSha}); aborting release dispatch.`);
+    process.exit(1);
+  }
+
+  console.log(`→ dispatch Release (sha=${releaseSha}, tag=${tag}, dry-run=${dryRun}, bootstrap=${bootstrap})`);
+  await $`gh workflow run release.yml --ref main -f version=${version} -f expected-sha=${releaseSha} -f tag=${tag} -f dry-run=${String(dryRun)} -f bootstrap=${String(bootstrap)}`;
+  await Bun.sleep(4000);
+
+  // 5. Watch it.
   await watchLatest();
-  process.exit(0);
+  console.log(dryRun
+    ? "\n✓ Dry run complete. Re-run with --publish to publish for real."
+    : "\n✓ Published. Try:  bun add -g frogprogsy");
 }
 
-const version = args[0];
-if (!version || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
-  console.error("Usage: bun scripts/release.ts <version> [--tag latest|preview] [--publish] [--bootstrap]\n       bun scripts/release.ts watch");
-  process.exit(1);
+if (import.meta.main) {
+  await main();
 }
-const tag = args.includes("--tag") ? (args[args.indexOf("--tag") + 1] ?? "latest") : "latest";
-if (tag !== "latest" && tag !== "preview") {
-  console.error(`✗ unsupported registry dist-tag: ${tag}`);
-  process.exit(1);
-}
-const prerelease = version.includes("-");
-if ((tag === "preview") !== prerelease) {
-  console.error(`✗ ${tag} requires a ${tag === "preview" ? "prerelease" : "stable"} SemVer; got ${version}`);
-  process.exit(1);
-}
-const dryRun = !args.includes("--publish");
-const bootstrap = args.includes("--bootstrap");
-if (bootstrap && dryRun) {
-  console.error("✗ --bootstrap requires --publish");
-  process.exit(1);
-}
-if (bootstrap && tag !== "latest") {
-  console.error("✗ --bootstrap must publish a stable version to the latest channel");
-  process.exit(1);
-}
-
-// 1. Preflight — must be on a clean main, and typecheck must pass.
-const branch = (await $`git rev-parse --abbrev-ref HEAD`.text()).trim();
-if (branch !== "main") { console.error(`✗ must be on main (currently ${branch}).`); process.exit(1); }
-if ((await $`git status --porcelain`.text()).trim()) { console.error("✗ working tree not clean — commit or stash first."); process.exit(1); }
-const packageName = await readPackageName();
-console.log(`→ release metadata preflight (${packageName}@${version})`);
-await assertUnusedReleaseVersion(packageName, version);
-console.log("→ typecheck");
-await $`bun x tsc --noEmit`;
-
-// 2. Bump package.json only; the workflow creates the version tag after a successful publish.
-console.log(`→ package.json version → ${version}`);
-const versionChanged = await writePackageVersion(version);
-
-// 3. Commit + push the version bump. Re-running dry-run → publish for the same
-// version reuses the already-pushed release commit instead of creating an empty commit.
-if (versionChanged) {
-  await $`git add package.json`;
-  await $`git commit -m ${`release: v${version}`}`;
-} else {
-  console.log("→ package.json already has the requested version; reusing HEAD");
-}
-const releaseSha = (await $`git rev-parse HEAD`.text()).trim();
-console.log("→ push origin main");
-await $`git push origin main`;
-
-// 4. Wait for the pushed release commit to pass BOTH release gates — Cross-platform CI
-// (ci.yml) and Package lifecycle (package-lifecycle.yml) — for this exact SHA, then
-// dispatch the Release workflow. This mirrors release.yml's fail-closed dual gate, so we
-// never dispatch without both success signals.
-console.log(`→ wait for release gates (${RELEASE_GATES.map(gate => gate.workflow).join(" + ")}) on ${releaseSha}`);
-await waitForReleaseGates(releaseSha);
-
-const originMain = await remoteMainSha();
-if (originMain !== releaseSha) {
-  console.error(`✗ origin/main moved while waiting for the release gates (${originMain} != ${releaseSha}); aborting release dispatch.`);
-  process.exit(1);
-}
-
-console.log(`→ dispatch Release (sha=${releaseSha}, tag=${tag}, dry-run=${dryRun}, bootstrap=${bootstrap})`);
-await $`gh workflow run release.yml --ref main -f version=${version} -f expected-sha=${releaseSha} -f tag=${tag} -f dry-run=${String(dryRun)} -f bootstrap=${String(bootstrap)}`;
-await Bun.sleep(4000);
-
-// 5. Watch it.
-await watchLatest();
-console.log(dryRun
-  ? "\n✓ Dry run complete. Re-run with --publish to publish for real."
-  : "\n✓ Published. Try:  bun add -g frogprogsy");

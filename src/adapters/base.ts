@@ -5,6 +5,10 @@ export interface IncomingMeta {
   headers: Headers;
 }
 
+export function supportsWireModelIds(adapterName: string): boolean {
+  return adapterName === "anthropic";
+}
+
 export interface ProviderAdapter {
   name: string;
 

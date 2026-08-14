@@ -367,7 +367,7 @@ describe("provider connection test API", () => {
     expect(body.error).toBe("Claude Code home path is required");
     expect(cfg.providers["anthropic-work"]).toBeUndefined();
   });
-  test("adding a renamed Anthropic pass-through provider keeps generated context metadata out of user overrides", async () => {
+  test("adding a renamed Anthropic pass-through provider preserves explicit context override without generated metadata", async () => {
     const cfg = config();
     const defaultHome = join(testHome, ".claude");
     const workHome = join(testHome, ".claude-work");
@@ -396,18 +396,20 @@ describe("provider connection test API", () => {
       }),
       new URL("http://localhost/api/providers"),
       cfg,
-      { saveConfig: () => {} },
+      { saveConfig: () => {}, refreshClaudeCodeCatalog: async () => {} },
     );
     const body = await res!.json() as { success?: boolean; name?: string };
 
     expect(res?.status).toBe(200);
     expect(body).toMatchObject({ success: true, name: "anthropic-work" });
-    expect(cfg.providers["anthropic-work"]?.authMode).toBe("forward");
-    expect(cfg.providers["anthropic-work"]?.models).toContain("claude-sonnet-5");
-    expect(cfg.providers["anthropic-work"]?.contextWindow).toBe(100_000);
-    expect(cfg.providers["anthropic-work"]?.modelContextWindows).toBeUndefined();
-    const view = await __requestLogTest.effectiveModelView(cfg, { includeConfiguredForwardModels: true });
-    expect(view.models.find(model => model.provider === "anthropic-work" && model.id === "claude-sonnet-5")?.contextWindow).toBe(100_000);
+    expect(cfg.providers["anthropic-work"]).toEqual({
+      adapter: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      authMode: "forward",
+      catalogProviderId: "anthropic",
+      defaultModel: "claude-sonnet-5",
+      contextWindow: 100_000,
+    });
     expect(cfg.claudeProfiles?.profiles).toContainEqual(expect.objectContaining({
       name: "anthropic-work",
       claudeHome: workHome,

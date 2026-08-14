@@ -1,4 +1,4 @@
-import type { FrogConfig, FrogModelCapabilities, FrogProviderConfig } from "../types";
+import type { FrogModelCapabilities, FrogProviderConfig } from "../types";
 import { deriveKeyLoginMap } from "../providers/derive";
 
 /**
@@ -34,92 +34,6 @@ export interface KeyLoginProvider {
 
 export const KEY_LOGIN_PROVIDERS: Record<string, KeyLoginProvider> = deriveKeyLoginMap();
 
-const KEY_PROVIDER_CATALOG_FIELDS: (keyof FrogProviderConfig)[] = [
-  "models",
-  "contextWindow",
-  "modelContextWindows",
-  "modelCapabilities",
-  "reasoningEfforts",
-  "modelReasoningEfforts",
-  "reasoningEffortMap",
-  "modelReasoningEffortMap",
-  "noReasoningModels",
-  "noTemperatureModels",
-  "noTopPModels",
-  "noPenaltyModels",
-  "autoToolChoiceOnlyModels",
-  "preserveReasoningContentModels",
-  "escapeBuiltinToolNames",
-];
-
-const MODEL_ID_LIST_FIELDS: Partial<Record<keyof FrogProviderConfig, true>> = {
-  models: true,
-  noReasoningModels: true,
-  noTemperatureModels: true,
-  noTopPModels: true,
-  noPenaltyModels: true,
-  autoToolChoiceOnlyModels: true,
-  preserveReasoningContentModels: true,
-};
-
-const MODEL_ID_RECORD_FIELDS: Partial<Record<keyof FrogProviderConfig, true>> = {
-  modelContextWindows: true,
-  modelCapabilities: true,
-  modelReasoningEfforts: true,
-  modelReasoningEffortMap: true,
-};
-
-const RETIRED_KEY_PROVIDER_MODELS: Record<string, readonly string[]> = {
-  umans: ["umans-kimi-k2.6", "umans-glm-5.1", "umans-qwen3.6-35b-a3b"],
-  neuralwatt: [
-    "moonshotai/Kimi-K2.5",
-    "kimi-k2.5-fast",
-    "kimi-k2.6",
-    "kimi-k2.6-fast",
-    "qwen3.5-397b",
-    "qwen3.5-397b-fast",
-  ],
-  deepseek: ["deepseek-chat", "deepseek-reasoner"],
-};
-
-
-export function reconcileKeyProviderConfigs(config: FrogConfig): boolean {
-  let changed = false;
-  for (const [name, provider] of Object.entries(config.providers)) {
-    const preset = KEY_LOGIN_PROVIDERS[name];
-    if (!preset) continue;
-    if (provider.authMode !== undefined && provider.authMode !== "key") continue;
-    if (provider.adapter !== preset.adapter || provider.baseUrl.replace(/\/$/, "") !== preset.baseUrl.replace(/\/$/, "")) continue;
-    if (provider.liveModels === false) continue;
-
-    const retiredModels = new Set(RETIRED_KEY_PROVIDER_MODELS[name] ?? []);
-    const managedModels = new Set(preset.models ?? []);
-    for (const field of KEY_PROVIDER_CATALOG_FIELDS) {
-      let next: unknown = preset[field as keyof KeyLoginProvider];
-      if (next === undefined) continue;
-      if (MODEL_ID_LIST_FIELDS[field] && Array.isArray(next)) {
-        const explicitAdditions = (Array.isArray(provider[field]) ? provider[field] : [])
-          .filter((id): id is string => typeof id === "string")
-          .filter(id => !retiredModels.has(id) && !managedModels.has(id));
-        next = [...next, ...explicitAdditions];
-      } else if (MODEL_ID_RECORD_FIELDS[field]) {
-        const presetRecord = next as Record<string, unknown>;
-        const current = (provider[field] ?? {}) as Record<string, unknown>;
-        const explicitEntries = Object.entries(current)
-          .filter(([id]) => !retiredModels.has(id) && !Object.prototype.hasOwnProperty.call(presetRecord, id));
-        next = { ...Object.fromEntries(explicitEntries), ...presetRecord };
-      }
-      if (JSON.stringify(provider[field]) === JSON.stringify(next)) continue;
-      provider[field] = structuredClone(next) as never;
-      changed = true;
-    }
-    if (provider.defaultModel && preset.defaultModel && retiredModels.has(provider.defaultModel)) {
-      provider.defaultModel = preset.defaultModel;
-      changed = true;
-    }
-  }
-  return changed;
-}
 
 /**
  * Copy a key-login catalog entry's seed/classification (`models`, `modelCapabilities`,

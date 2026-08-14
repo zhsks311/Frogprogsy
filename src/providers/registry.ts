@@ -12,8 +12,11 @@ export interface ProviderRegistryEntry {
   featured?: boolean;
   note?: string;
   dashboardUrl?: string;
+  minFrogprogsyVersion?: string;
   defaultModel?: string;
   models?: string[];
+  retiredModels?: string[];
+  modelMinFrogprogsyVersions?: Record<string, string>;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
   modelCapabilities?: Record<string, FrogModelCapabilities>;
@@ -241,6 +244,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     dashboardUrl: "https://app.umans.ai/billing",
     defaultModel: "umans-coder",
     models: UMANS_MODELS,
+    retiredModels: ["umans-kimi-k2.6", "umans-glm-5.1", "umans-qwen3.6-35b-a3b"],
     modelContextWindows: UMANS_MODEL_CONTEXT_WINDOWS,
     modelCapabilities: UMANS_MODEL_CAPABILITIES,
     note: "Coding plan via Anthropic Messages",
@@ -288,6 +292,14 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "gemma-4-31b",
       "kimi-k2.7-code", "kimi-k2.7-code-fast", "kimi-k3", "kimi-k3-fast",
       "qwen3.6-35b", "qwen3.6-35b-fast",
+    ],
+    retiredModels: [
+      "moonshotai/Kimi-K2.5",
+      "kimi-k2.5-fast",
+      "kimi-k2.6",
+      "kimi-k2.6-fast",
+      "qwen3.5-397b",
+      "qwen3.5-397b-fast",
     ],
     // Neuralwatt's /v1/models metadata is authoritative; these static hints are the offline fallback.
     modelContextWindows: {
@@ -360,6 +372,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     dashboardUrl: "https://platform.deepseek.com/api_keys",
     models: ["deepseek-v4-flash", "deepseek-v4-pro"],
     defaultModel: "deepseek-v4-pro",
+    retiredModels: ["deepseek-chat", "deepseek-reasoner"],
     modelContextWindows: {
       "deepseek-v4-flash": 1_000_000,
       "deepseek-v4-pro": 1_000_000,
@@ -451,4 +464,18 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
 
 export function getProviderRegistryEntry(id: string): ProviderRegistryEntry | undefined {
   return PROVIDER_REGISTRY.find(entry => entry.id === id);
+}
+
+export function providerUserSeedFromRegistry(catalogProviderId: string): FrogProviderConfig {
+  const entry = getProviderRegistryEntry(catalogProviderId);
+  if (!entry) {
+    throw new Error(`Unknown provider registry entry: ${catalogProviderId}`);
+  }
+  return {
+    adapter: entry.adapter,
+    baseUrl: entry.baseUrl,
+    ...(entry.authKind !== "local" ? { authMode: entry.authKind } : {}),
+    catalogProviderId: entry.id,
+    ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
+  };
 }

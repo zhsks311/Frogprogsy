@@ -20,6 +20,14 @@ Provider setup 最安全的运营方式是 dashboard。
 
 Dashboard 操作后，也请配合 `/zh-cn/` 文档中的 [模型路由](/frog-progsy/zh-cn/guides/model-routing/) 与 [Dashboard 与 Activity](/frog-progsy/zh-cn/guides/web-dashboard/) 检查运营状态。
 
+## 保持模型资料为最新状态
+
+FrogProgsy 会在 proxy 开始接收请求前检查一次经过验证的最新模型资料。要启用更新后的模型列表，请重启 proxy；仅打开 dashboard 不会刷新正在运行的 proxy。
+
+如果无法获取更新，或更新没有通过验证，proxy 仍会启动。FrogProgsy 会比较上次验证后保存的副本与当前安装版本自带的模型资料，并使用 catalog revision 较高的一份；全新安装没有保存副本时使用自带资料。更新不会替换 API key、已选默认模型、已隐藏模型或手动添加的模型。
+
+重启后运行 `frogp models`，确认当前资料来源和每个模型的支持状态。
+
 ## 选择哪条 lane
 
 | Lane | 适合场景 | 认证来源 | 常见 adapter |

@@ -5,7 +5,8 @@ import { OAUTH_PROVIDERS, runLogin } from "./index";
 import { KEY_LOGIN_PROVIDERS, isKeyLoginProvider, validateApiKey, type KeyLoginProvider } from "./key-providers";
 import { suggestClosest } from "../cli-suggest";
 import { sameMachineAccessHeaders } from "../local-access";
-import type { FrogModelCapabilities, FrogProviderConfig } from "../types";
+import type { FrogProviderConfig } from "../types";
+import { providerUserSeedFromRegistry } from "../providers/registry";
 
 /** Push the new provider into a running proxy's live config so it routes without a restart. */
 async function notifyRunningProxy(name: string, provider: unknown): Promise<void> {
@@ -111,32 +112,30 @@ async function handleOAuthLogin(name: string): Promise<void> {
     console.error(formatLoginFailure(name, loginError));
     process.exit(1);
   }
-  await notifyRunningProxy(name, OAUTH_PROVIDERS[name].providerConfig);
+  const savedProvider = loadConfig().providers[name] ?? OAUTH_PROVIDERS[name].providerConfig;
+  await notifyRunningProxy(name, savedProvider);
   console.log(`\n✅ Logged in to ${name}. Try: frogp refresh`);
 }
 
-export function providerConfigFromKeyLoginProvider(def: KeyLoginProvider, key: string): FrogProviderConfig {
-  return {
-    adapter: def.adapter,
-    baseUrl: def.baseUrl,
+export function providerConfigFromKeyLoginProvider(
+  catalogProviderId: string,
+  key: string,
+  current?: FrogProviderConfig,
+): FrogProviderConfig {
+  const seed = providerUserSeedFromRegistry(catalogProviderId);
+  if (seed.authMode !== "key") {
+    throw new Error(`Registry provider does not use API-key login: ${catalogProviderId}`);
+  }
+  return current ? {
+    ...seed,
+    ...current,
+    adapter: seed.adapter,
+    baseUrl: seed.baseUrl,
+    authMode: seed.authMode,
+    catalogProviderId: seed.catalogProviderId,
+    defaultModel: current.defaultModel ?? seed.defaultModel,
     apiKey: key,
-    ...(def.defaultModel ? { defaultModel: def.defaultModel } : {}),
-    ...(def.models ? { models: [...def.models] } : {}),
-    ...(def.contextWindow !== undefined ? { contextWindow: def.contextWindow } : {}),
-    ...(def.modelContextWindows ? { modelContextWindows: { ...def.modelContextWindows } } : {}),
-    ...(def.modelCapabilities ? { modelCapabilities: cloneModelCapabilities(def.modelCapabilities) } : {}),
-    ...(def.reasoningEfforts ? { reasoningEfforts: [...def.reasoningEfforts] } : {}),
-    ...(def.modelReasoningEfforts ? { modelReasoningEfforts: cloneRecordOfArrays(def.modelReasoningEfforts) } : {}),
-    ...(def.reasoningEffortMap ? { reasoningEffortMap: { ...def.reasoningEffortMap } } : {}),
-    ...(def.modelReasoningEffortMap ? { modelReasoningEffortMap: cloneNestedRecord(def.modelReasoningEffortMap) } : {}),
-    ...(def.noReasoningModels ? { noReasoningModels: [...def.noReasoningModels] } : {}),
-    ...(def.noTemperatureModels ? { noTemperatureModels: [...def.noTemperatureModels] } : {}),
-    ...(def.noTopPModels ? { noTopPModels: [...def.noTopPModels] } : {}),
-    ...(def.noPenaltyModels ? { noPenaltyModels: [...def.noPenaltyModels] } : {}),
-    ...(def.autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels: [...def.autoToolChoiceOnlyModels] } : {}),
-    ...(def.preserveReasoningContentModels ? { preserveReasoningContentModels: [...def.preserveReasoningContentModels] } : {}),
-    ...(def.escapeBuiltinToolNames !== undefined ? { escapeBuiltinToolNames: def.escapeBuiltinToolNames } : {}),
-  };
+  } : { ...seed, apiKey: key };
 }
 
 async function handleKeyLogin(request: { lookupName: string; saveName: string; alias: boolean }): Promise<void> {
@@ -157,8 +156,8 @@ async function handleKeyLogin(request: { lookupName: string; saveName: string; a
     console.error("Provider rejected the key. Not saved.");
     process.exit(1);
   }
-  const provider = providerConfigFromKeyLoginProvider(def, key);
   const config = loadConfig();
+  const provider = providerConfigFromKeyLoginProvider(request.lookupName, key, config.providers[request.saveName]);
   config.providers[request.saveName] = provider;
   if (request.alias && (config.defaultProvider === request.saveName || !config.providers[config.defaultProvider])) {
     config.defaultProvider = request.saveName;
@@ -167,16 +166,4 @@ async function handleKeyLogin(request: { lookupName: string; saveName: string; a
   await notifyRunningProxy(request.saveName, provider);
   const aliasNote = request.alias ? ` (${request.lookupName})` : "";
   console.log(`✅ ${def.label}${aliasNote} added as "${request.saveName}". Try: frogp refresh`);
-}
-
-function cloneRecordOfArrays(input: Record<string, string[]>): Record<string, string[]> {
-  return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, [...value]]));
-}
-
-function cloneModelCapabilities(input: Record<string, FrogModelCapabilities>): Record<string, FrogModelCapabilities> {
-  return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { ...value, ...(value.input ? { input: [...value.input] } : {}) }]));
-}
-
-function cloneNestedRecord(input: Record<string, Record<string, string>>): Record<string, Record<string, string>> {
-  return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { ...value }]));
 }

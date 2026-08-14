@@ -205,7 +205,7 @@ describe("usage pricing", () => {
       totalTokens: 1_500_000,
     })]);
 
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const pricingRes = await fetch(new URL("/api/usage-pricing?range=all", server.url));
       expect(pricingRes.status).toBe(200);

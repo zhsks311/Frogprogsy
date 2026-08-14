@@ -89,12 +89,11 @@ Claude Code가 Claude 구독 로그인을 소유합니다. FrogProgsy는 Claude 
 
 | Command | Mutates | Effect |
 | --- | --- | --- |
-| `frogp models [--json]` | 없음 | 라우팅된 모델 목록의 온라인 전용 뷰입니다. 실행 중인 proxy가 필요하고 기존 `GET /api/models`를 그대로 읽습니다 — 대시보드와 Claude Code catalog가 쓰는 것과 같은 목록입니다. 텍스트 출력은 provider별로 그룹화하고 응답 필드(`disabled`, context window, modality, reasoning effort)를 그대로 표시합니다. `--json`은 `/api/models` 배열을 변형 없이 출력합니다. relay가 꺼져 있으면 `frogp start` 안내와 함께 실패하고, 기록은 있는데 응답이 없으면 `frogp status`/`frogp refresh`를 안내합니다. 오프라인 모델 목록을 합성하지 않습니다. |
+| `frogp models [--json]` | 없음 | 실행 중인 proxy의 모델 목록을 보여주는 온라인 전용 명령입니다. 텍스트 출력은 provider별로 모델을 묶고, 검증된 호환 정보가 있는 모델은 **검증됨**, AI 서비스 응답이나 사용자의 직접 추가로만 찾은 모델은 **발견됨**으로 표시합니다. 현재 모델 자료가 원격, 저장된 사본, 설치 버전 기본 제공 중 어디에서 왔는지도 보여줍니다. `--json`은 안정된 `supportStatus`와 `catalogSource` 값을 포함한 `GET /api/models` 배열을 변형 없이 출력합니다. relay가 꺼져 있으면 `frogp start`, 기록은 있는데 응답이 없으면 `frogp status`/`frogp refresh`를 안내합니다. 오프라인 모델 목록은 만들지 않습니다. |
 
 ## Catalog and Claude Code cache
 
-`frogp refresh`는 provider별 `/models` 결과와 `config.json`의 static model list를 합쳐 Claude Code가 볼
-`provider/model` alias를 만든 뒤, 설정된 모든 Claude Code 홈의 model cache를 invalidate합니다. `frogp claude reload-models <profile-id>`는 더 좁은 명령으로, proxy를 자동 시작하지 않고 한 Claude Code 홈의 gateway picker catalog/cache만 준비합니다. Proxy가 꺼져 있으면 출력되는 `frogp refresh` 안내로 relay를 먼저 복구합니다.
+Proxy를 시작할 때 FrogProgsy는 검증된 모델 자료를 선택한 다음, AI 서비스의 `/models` 응답과 사용자의 직접 설정을 합칩니다. 최신 모델 자료를 확인하고 적용하려면 proxy를 다시 시작하세요. 확인에 실패하면 마지막으로 검증해 저장한 사본과 설치 버전의 기본 자료를 비교해 catalog revision이 더 높은 쪽을 사용하며, API 키, 사용자가 고른 기본 모델, 숨긴 모델, 직접 추가한 모델은 바꾸지 않습니다. `frogp refresh`는 이렇게 만든 Claude Code용 `provider/model` 목록도 다시 동기화하고 모든 Claude Code 홈의 모델 캐시를 비웁니다. `frogp claude reload-models <profile-id>`는 proxy를 자동 시작하지 않고 한 홈의 모델 선택기 자료만 다시 만드는 더 좁은 명령입니다.
 `disabledModels`는 catalog와 `/v1/models`에서 제외되고, `subagentModels`는 Claude Code subagent picker의 앞쪽 slot에 우선 배치됩니다.
 Claude Code는 session을 시작하거나 resume할 때 `/v1/models`를 다시 가져옵니다. 이미 열린 `/model` 화면을 다시 여는 동작은 picker를 hot reload하지 않으므로, 새 Claude Code session을 시작하거나 resume해서 models endpoint를 다시 가져오게 해야 합니다. Dashboard/API model list reload는 Claude Code picker 복구와 별개입니다.
 

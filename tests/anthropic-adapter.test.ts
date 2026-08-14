@@ -2,6 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { parseMessagesRequest } from "../src/messages/parser";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION } from "../src/oauth/anthropic";
+import { buildEffectiveConfig } from "../src/model-catalog-config";
+import type { ModelCatalogProviderV1 } from "../src/model-catalog-schema";
+import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
+import type { FrogProviderConfig } from "../src/types";
+import { resolveAdapter } from "../src/server";
 import type { AdapterEvent } from "../src/types";
 
 /**
@@ -68,6 +73,42 @@ function build(
 
 function weatherTool() {
   return { name: "get_weather", description: "Report the weather.", input_schema: { type: "object" } };
+}
+
+function effectiveManagedProvider(
+  persisted: FrogProviderConfig,
+  catalogProvider: ModelCatalogProviderV1,
+): FrogProviderConfig {
+  const selected = {
+    document: {
+      schemaVersion: 1,
+      catalogRevision: 1,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "2026-08-12T00:00:00.000Z",
+      minFrogprogsyVersion: "0.0.0",
+      providers: [catalogProvider],
+    },
+    status: {
+      source: "bundled",
+      catalogRevision: 1,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "2026-08-12T00:00:00.000Z",
+      skippedRecords: 0,
+      warnings: [],
+    },
+  } satisfies SelectedModelCatalog;
+  return buildEffectiveConfig({
+    port: 3764,
+    defaultProvider: "managed",
+    providers: {
+      managed: {
+        ...persisted,
+        catalogProviderId: catalogProvider.id,
+      },
+    },
+  }, selected).providers.managed;
 }
 
 describe("claude-grant shares the Claude OAuth subscription wire identity", () => {
@@ -145,6 +186,73 @@ describe("claude-grant shares the Claude OAuth subscription wire identity", () =
       expect(grant.headers).toEqual(oauth.headers);
       expect(grant.body).toEqual(oauth.body);
     }
+  });
+});
+
+describe("effective managed Anthropic request settings", () => {
+  test("managed tool-name escaping cannot be disabled by a persisted override", () => {
+    const effectiveProvider = effectiveManagedProvider({
+      ...keyProvider,
+      escapeBuiltinToolNames: false,
+    }, {
+      id: "managed",
+      escapeBuiltinToolNames: true,
+      models: [{ id: "claude-opus-4-8" }],
+    });
+
+    const { body } = build(effectiveProvider, { tools: [weatherTool()] });
+    const tools = body.tools as Array<{ name: string }>;
+
+    expect(effectiveProvider.escapeBuiltinToolNames).toBe(true);
+    expect(tools[0]?.name).toBe("frogp_get_weather");
+  });
+});
+
+describe("managed wire model IDs", () => {
+  test("logical 1m model ID는 선택 상태에 남고 Anthropic outgoing body에서만 base slug로 바뀐다", () => {
+    const logicalModelId = "claude-opus-4-6[1m]";
+    const effectiveProvider = effectiveManagedProvider(keyProvider, {
+      id: "managed",
+      defaultModel: logicalModelId,
+      models: [{
+        id: logicalModelId,
+        wireModelId: "claude-opus-4-6",
+      }],
+    });
+    const parsed = parsedRequest({ model: logicalModelId });
+
+    const request = resolveAdapter(effectiveProvider).buildRequest(parsed);
+    const outgoing = JSON.parse(request.body) as { model: string };
+
+    expect(effectiveProvider.defaultModel).toBe(logicalModelId);
+    expect(parsed.modelId).toBe(logicalModelId);
+    expect(outgoing.model).toBe("claude-opus-4-6");
+  });
+
+  test("prototype model IDs fall back to the requested logical ID", () => {
+    const provider = {
+      ...keyProvider,
+      modelWireIds: {},
+    } as FrogProviderConfig;
+
+    const { body } = build(provider, { model: "constructor" });
+
+    expect(body.model).toBe("constructor");
+  });
+
+  test("wire mapping을 지원하지 않는 adapter는 mapping이 있어도 logical ID를 보낸다", () => {
+    const logicalModelId = "claude-opus-4-6[1m]";
+    const provider = {
+      adapter: "openai-chat",
+      baseUrl: "https://example.test/v1",
+      apiKey: STATIC_KEY,
+      modelWireIds: { [logicalModelId]: "claude-opus-4-6" },
+    } as FrogProviderConfig;
+
+    const request = resolveAdapter(provider).buildRequest(parsedRequest({ model: logicalModelId }));
+    const outgoing = JSON.parse(request.body) as { model: string };
+
+    expect(outgoing.model).toBe(logicalModelId);
   });
 });
 

@@ -46,19 +46,30 @@ async function canonicalizeStartupConfig(config: FrogConfig, outDir: string): Pr
   const priorHome = process.env.FROGPROGSY_HOME;
   process.env.FROGPROGSY_HOME = outDir;
   try {
-    // Mirrors the deterministic startup normalization used by src/server.ts without importing src/cli.ts:
-    // runtime fixture removal, OAuth provider reconcile, and subagent seed.
-    const [{ DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders }, { reconcileOAuthProviders }] = await Promise.all([
+    // Mirrors deterministic user-owned startup normalization without copying registry model metadata.
+    const [
+      { DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders },
+      { restoreCredentialedOAuthProviderConfigs },
+      { migratePersistedCatalogConfig },
+    ] = await Promise.all([
       import("../../../src/config"),
       import("../../../src/oauth/index"),
+      import("../../../src/model-catalog-config"),
     ]);
 
+    const bundledCatalog = JSON.parse(readFileSync(
+      new URL("../../../src/generated/model-catalog-v1.json", import.meta.url),
+      "utf8",
+    ));
+    config = migratePersistedCatalogConfig(config, bundledCatalog, {
+      writeBackup: () => undefined,
+    }).config;
     dropRuntimeFixtureProviders(config);
 
     const configPath = `${outDir.replace(/\/$/, "")}/config.json`;
     mkdirSync(outDir, { recursive: true, mode: 0o700 });
     writeFileSync(configPath, stableJson(config), { encoding: "utf8", mode: 0o600 });
-    reconcileOAuthProviders(config);
+    restoreCredentialedOAuthProviderConfigs(config);
 
     if (config.subagentModels === undefined) {
       config.subagentModels = [...DEFAULT_SUBAGENT_MODELS];
@@ -84,13 +95,13 @@ export async function runCommand(argv: string[]): Promise<number> {
   const overlay = validateEvalProfile(readJson(overlayPath), overlayPath);
   parseEvalTasksJsonl(readFileSync(suitePath, "utf8"), suitePath);
 
-  const config: FrogConfig = JSON.parse(JSON.stringify(base));
+  let config: FrogConfig = JSON.parse(JSON.stringify(base));
   if (overlay.modelMixing !== undefined) {
     config.modelMixing = overlay.modelMixing as FrogConfig["modelMixing"];
   }
 
   if (hasFlag(flags, "canonicalize-startup")) {
-    await canonicalizeStartupConfig(config, outDir);
+    config = await canonicalizeStartupConfig(config, outDir);
   }
 
   mkdirSync(outDir, { recursive: true, mode: 0o700 });

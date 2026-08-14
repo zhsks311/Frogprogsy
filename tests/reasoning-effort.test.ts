@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { buildCatalogEntries } from "../src/claude-catalog";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { parseMessagesRequest } from "../src/messages/parser";
+import { parseRequest } from "../src/responses/parser";
+import { buildEffectiveConfig } from "../src/model-catalog-config";
+import type { ModelCatalogProviderV1 } from "../src/model-catalog-schema";
+import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
 import type { FrogParsedRequest, FrogProviderConfig } from "../src/types";
 
 function nativeTemplate(): Record<string, unknown> {
@@ -34,6 +39,42 @@ function buildBody(provider: FrogProviderConfig, modelId: string, options: FrogP
   return JSON.parse(req.body as string) as Record<string, unknown>;
 }
 
+function effectiveManagedProvider(
+  persisted: FrogProviderConfig,
+  catalogProvider: ModelCatalogProviderV1,
+): FrogProviderConfig {
+  const selected: SelectedModelCatalog = {
+    document: {
+      schemaVersion: 1,
+      catalogRevision: 1,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "2026-08-12T00:00:00.000Z",
+      minFrogprogsyVersion: "0.0.0",
+      providers: [catalogProvider],
+    },
+    status: {
+      source: "bundled",
+      catalogRevision: 1,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "2026-08-12T00:00:00.000Z",
+      skippedRecords: 0,
+      warnings: [],
+    },
+  };
+  return buildEffectiveConfig({
+    port: 3764,
+    defaultProvider: "managed",
+    providers: {
+      managed: {
+        ...persisted,
+        catalogProviderId: catalogProvider.id,
+      },
+    },
+  }, selected).providers.managed;
+}
+
 describe("provider-specific reasoning effort mapping", () => {
   test("Claude Code catalog advertises only the efforts actually supported by a routed model", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
@@ -48,6 +89,124 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(neuralwatt?.default_reasoning_level).toBe("medium");
     expect(kimi?.supported_reasoning_levels).toEqual([]);
     expect(kimi).not.toHaveProperty("default_reasoning_level");
+  });
+
+  test("effective managed reasoning metadata controls the actual OpenAI request", () => {
+    const provider = effectiveManagedProvider({
+      adapter: "openai-chat",
+      baseUrl: "https://managed.test/v1",
+      modelReasoningEfforts: { reasoner: ["high", "xhigh"] },
+      modelReasoningEffortMap: { reasoner: { high: "unsafe", xhigh: "xhigh" } },
+      preserveReasoningContentModels: [],
+    }, {
+      id: "managed",
+      models: [{
+        id: "reasoner",
+        reasoningEfforts: ["low", "high"],
+        reasoningEffortMap: { high: "max" },
+        preserveReasoningContent: true,
+      }],
+    });
+
+    const req = createOpenAIChatAdapter(provider).buildRequest({
+      modelId: "reasoner",
+      context: {
+        messages: [
+          { role: "assistant", timestamp: 0, content: [
+            { type: "thinking", thinking: "managed reasoning" },
+            { type: "text", text: "answer" },
+          ] },
+          { role: "user", content: "continue", timestamp: 1 },
+        ],
+      },
+      stream: false,
+      options: { reasoning: "xhigh" },
+    });
+    const body = JSON.parse(req.body as string) as {
+      reasoning_effort?: string;
+      messages: Record<string, unknown>[];
+    };
+
+    expect(provider.modelReasoningEfforts?.reasoner).toEqual(["high"]);
+    expect(provider.modelReasoningEffortMap?.reasoner).toEqual({ high: "max" });
+    expect(body.reasoning_effort).toBe("max");
+    expect(body.messages[0]?.reasoning_content).toBe("managed reasoning");
+  });
+
+  test("a user wire map remains active when the catalog does not restrict supported efforts", () => {
+    const provider = effectiveManagedProvider({
+      adapter: "openai-chat",
+      baseUrl: "https://managed.test/v1",
+      reasoningEffortMap: { xhigh: "max" },
+    }, {
+      id: "managed",
+      models: [{ id: "reasoner" }],
+    });
+
+    expect(provider.reasoningEffortMap).toEqual({ xhigh: "max" });
+    expect(buildBody(provider, "reasoner", { reasoning: "xhigh" }).reasoning_effort).toBe("max");
+  });
+
+  test("empty effective reasoning efforts suppress a managed wire map", () => {
+    const provider = effectiveManagedProvider({
+      adapter: "openai-chat",
+      baseUrl: "https://managed.test/v1",
+      modelReasoningEfforts: { reasoner: [] },
+      modelReasoningEffortMap: { reasoner: { high: "unsafe" } },
+    }, {
+      id: "managed",
+      models: [{
+        id: "reasoner",
+        reasoningEfforts: ["high"],
+        reasoningEffortMap: { high: "max" },
+      }],
+    });
+
+    expect(provider.modelReasoningEfforts?.reasoner).toEqual([]);
+    expect(buildBody(provider, "reasoner", { reasoning: "high" })).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("Responses minimal reasoning keeps the exact managed wire value", () => {
+    const provider: FrogProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://managed.test/v1",
+      modelReasoningEfforts: { reasoner: ["low", "medium", "high", "xhigh"] },
+      modelReasoningEffortMap: {
+        reasoner: { minimal: "none", low: "high", medium: "high", high: "high", xhigh: "max" },
+      },
+    };
+    const parsed = parseRequest({
+      model: "reasoner",
+      input: "solve",
+      reasoning: { effort: "minimal" },
+    });
+    const request = createOpenAIChatAdapter(provider).buildRequest(parsed);
+    const body = JSON.parse(request.body as string) as Record<string, unknown>;
+
+    expect(parsed.options.reasoning).toBe("minimal");
+    expect(body.reasoning_effort).toBe("none");
+  });
+
+  test("Messages minimal reasoning keeps the exact managed wire value", () => {
+    const provider: FrogProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://managed.test/v1",
+      modelReasoningEfforts: { reasoner: ["low", "medium", "high", "xhigh"] },
+      modelReasoningEffortMap: {
+        reasoner: { minimal: "none", low: "high", medium: "high", high: "high", xhigh: "max" },
+      },
+    };
+    const parsed = parseMessagesRequest({
+      model: "reasoner",
+      messages: [{ role: "user", content: "solve" }],
+      thinking: { type: "enabled", budget_tokens: 1_024 },
+      max_tokens: 4_096,
+    });
+    const request = createOpenAIChatAdapter(provider).buildRequest(parsed);
+    const body = JSON.parse(request.body as string) as Record<string, unknown>;
+
+    expect(parsed.options.reasoning).toBe("minimal");
+    expect(body.reasoning_effort).toBe("none");
   });
 
   test("Z.AI GLM-5.2 maps Claude Code xhigh to the upstream max effort", () => {

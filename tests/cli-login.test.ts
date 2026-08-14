@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatLoginFailure } from "../src/oauth/login-cli";
+import { formatLoginFailure, providerConfigFromKeyLoginProvider } from "../src/oauth/login-cli";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
@@ -72,5 +72,46 @@ describe("CLI login provider help", () => {
     expect(message).toContain("Login failed for codex: callback timed out");
     expect(message).toContain("Try again: frogp login codex");
     expect(message).not.toContain("at ");
+  });
+
+  test("key login seed stores the original catalog identity without managed metadata", () => {
+    const provider = providerConfigFromKeyLoginProvider("openai-apikey", "sk-test");
+
+    expect(provider).toEqual({
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      authMode: "key",
+      catalogProviderId: "openai-apikey",
+      defaultModel: "gpt-5.5",
+      apiKey: "sk-test",
+    });
+    expect(provider.models).toBeUndefined();
+    expect(provider.modelCapabilities).toBeUndefined();
+  });
+
+  test("key re-login preserves user selections and rotates only the primary credential", () => {
+    const provider = providerConfigFromKeyLoginProvider("umans", "new-primary", {
+      adapter: "legacy",
+      baseUrl: "https://legacy.invalid",
+      authMode: "key",
+      catalogProviderId: "umans",
+      apiKey: "old-primary",
+      apiKeys: ["secondary"],
+      headers: { "x-user-header": "keep" },
+      defaultModel: "private-model",
+      userModels: ["private-model"],
+    });
+
+    expect(provider).toEqual({
+      adapter: "anthropic",
+      baseUrl: "https://api.code.umans.ai",
+      authMode: "key",
+      catalogProviderId: "umans",
+      apiKey: "new-primary",
+      apiKeys: ["secondary"],
+      headers: { "x-user-header": "keep" },
+      defaultModel: "private-model",
+      userModels: ["private-model"],
+    });
   });
 });

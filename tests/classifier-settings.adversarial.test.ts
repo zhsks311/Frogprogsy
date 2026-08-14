@@ -58,7 +58,7 @@ afterEach(() => {
 
 describe("GET /api/classifier-settings", () => {
   test("returns every provider and one empty explicit target", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const response = await fetch(new URL("/api/classifier-settings", server.url));
       expect(response.status).toBe(200);
@@ -79,7 +79,7 @@ describe("GET /api/classifier-settings", () => {
 
 describe("PUT /api/classifier-settings", () => {
   test("persists one known provider/model pair", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const response = await put(server.url, { autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" } });
       expect(response.status).toBe(200);
@@ -92,7 +92,7 @@ describe("PUT /api/classifier-settings", () => {
   });
 
   test("rejects a model absent from a non-empty known catalog without persisting it", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const response = await put(server.url, { autoModeClassifier: { provider: "codex", model: "invented-model" } });
       expect(response.status).toBeGreaterThanOrEqual(400);
@@ -103,7 +103,7 @@ describe("PUT /api/classifier-settings", () => {
   });
 
   test("rejects a missing provider", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const response = await put(server.url, { autoModeClassifier: { provider: "ghost", model: "gpt-5.4-mini" } });
       expect(response.status).toBeGreaterThanOrEqual(400);
@@ -114,7 +114,7 @@ describe("PUT /api/classifier-settings", () => {
   });
 
   test("rejects incomplete and whitespace-only targets", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       for (const target of [
         { provider: "codex", model: "" },
@@ -135,7 +135,7 @@ describe("PUT /api/classifier-settings", () => {
       const config = adversarialConfig();
       config.disabledModels = [disabled];
       saveConfig(config);
-      const server = startServer(0);
+      const server = await startServer(0)
       try {
         const response = await put(server.url, { autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" } });
         expect(response.status).toBeGreaterThanOrEqual(400);
@@ -150,7 +150,7 @@ describe("PUT /api/classifier-settings", () => {
     const config = adversarialConfig();
     config.autoModeClassifier = { provider: "codex", model: "gpt-5.4-mini" };
     saveConfig(config);
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const response = await put(server.url, { autoModeClassifier: null });
       expect(response.status).toBe(200);
@@ -168,7 +168,7 @@ describe("PUT /api/classifier-settings", () => {
       profiles: [{ id: "cp_work", name: "Work", claudeHome: join(testDir, "claude-work"), routeAutoModeClassifier: true }],
     };
     saveConfig(config);
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const response = await put(server.url, { autoModeClassifier: null });
       expect(response.status).toBe(409);
@@ -179,7 +179,7 @@ describe("PUT /api/classifier-settings", () => {
   });
 
   test("rejects legacy payloads instead of silently accepting them", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       for (const body of [
         { classifierFallback: { provider: "codex", model: "gpt-5.4-mini" } },
@@ -195,7 +195,7 @@ describe("PUT /api/classifier-settings", () => {
   });
 
   test("rejects malformed JSON", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const response = await fetch(new URL("/api/classifier-settings", server.url), {
         method: "PUT",
@@ -214,7 +214,7 @@ describe("management mutations preserve the configured classifier target", () =>
     const config = adversarialConfig();
     config.autoModeClassifier = { provider: "codex", model: "gpt-5.4-mini" };
     saveConfig(config);
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const response = await fetch(new URL("/api/disabled-models", server.url), {
         method: "PUT",
@@ -233,7 +233,7 @@ describe("management mutations preserve the configured classifier target", () =>
     const config = adversarialConfig();
     config.autoModeClassifier = { provider: "codex", model: "gpt-5.4-mini" };
     saveConfig(config);
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const response = await fetch(new URL("/api/providers?name=codex", server.url), { method: "DELETE" });
       expect(response.status).toBe(409);
@@ -255,7 +255,7 @@ describe("management mutations preserve the configured classifier target", () =>
     };
     config.autoModeClassifier = { provider: "review", model: "review-v1" };
     saveConfig(config);
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const response = await fetch(new URL("/api/providers", server.url), {
         method: "POST",

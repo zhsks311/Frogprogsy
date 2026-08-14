@@ -3,6 +3,23 @@ import { dirname, resolve } from "node:path";
 import type { FrogConfig } from "../../../src/types";
 import { optionalString, parseFlags, parsePort, requireString } from "./cli-utils";
 
+interface EvalServer {
+  stop(force?: boolean): void;
+}
+
+type StartEvalServer = (port: number) => Promise<EvalServer>;
+
+export async function startEvalServer(
+  port: number,
+  pidFile: string,
+  start: StartEvalServer,
+): Promise<EvalServer> {
+  const server = await start(port);
+  mkdirSync(dirname(pidFile), { recursive: true, mode: 0o700 });
+  writeFileSync(pidFile, `${process.pid}\n`, { encoding: "utf8", mode: 0o600 });
+  return server;
+}
+
 export async function runCommand(argv: string[]): Promise<number> {
   const flags = parseFlags(argv);
   const home = resolve(requireString(flags, "home"));
@@ -24,9 +41,7 @@ export async function runCommand(argv: string[]): Promise<number> {
   const authFile = optionalString(flags, "auth-file");
   if (authFile) process.env.FROGPROGSY_AUTH_FILE = resolve(authFile);
   const { startServer } = await import("../../../src/server");
-  const server = startServer(port);
-  mkdirSync(dirname(pidFile), { recursive: true, mode: 0o700 });
-  writeFileSync(pidFile, `${process.pid}\n`, { encoding: "utf8", mode: 0o600 });
+  const server = await startEvalServer(port, pidFile, startServer);
 
   const shutdown = () => {
     try { server.stop(true); } finally { process.exit(0); }

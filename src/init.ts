@@ -2,8 +2,8 @@ import * as readline from "node:readline";
 import { injectClaudeCodeConfig } from "./claude-inject";
 import { error, shouldColor, success, warn } from "./cli-color";
 import { DEFAULT_PORT, getDefaultConfig, saveConfig } from "./config";
-import { enrichProviderFromCatalog } from "./oauth/key-providers";
 import { deriveInitProviders } from "./providers/derive";
+import { providerUserSeedFromRegistry } from "./providers/registry";
 import type { FrogConfig, FrogProviderConfig } from "./types";
 
 export const DEFAULT_INIT_PROVIDER_ID = "anthropic";
@@ -186,12 +186,12 @@ export async function runInit(): Promise<void> {
       console.log(`\n📡 ${p.label}`);
       console.log(`   Base URL: ${p.baseUrl}`);
 
+      const registrySeed = providerUserSeedFromRegistry(p.id);
       if (p.kind === "forward") {
-        providerConfig = { adapter: p.adapter, baseUrl: p.baseUrl, authMode: "forward", ...(p.defaultModel ? { defaultModel: p.defaultModel } : {}) };
-        enrichProviderFromCatalog(p.id, providerConfig);
+        providerConfig = { ...registrySeed, authMode: "forward" };
         console.log("   No key stored — forwards Claude Code/gateway credentials when present.");
       } else if (p.kind === "oauth") {
-        providerConfig = { adapter: p.adapter, baseUrl: p.baseUrl, authMode: "oauth", ...(p.defaultModel ? { defaultModel: p.defaultModel } : {}) };
+        providerConfig = registrySeed;
         oauthHint = true;
       } else {
         // key + local: collect a key (local usually blank).
@@ -202,13 +202,10 @@ export async function runInit(): Promise<void> {
         const modelChoice = (await prompt.ask(`Default model${p.defaultModel ? ` [${p.defaultModel}]` : " (optional)"}: `)).trim();
         const defaultModel = modelChoice || p.defaultModel;
         providerConfig = {
-          adapter: p.adapter,
-          baseUrl: p.baseUrl,
+          ...registrySeed,
           ...(p.kind === "key" ? { apiKey: apiKey || `\${${env}}` } : apiKey ? { apiKey } : {}),
           ...(defaultModel ? { defaultModel } : {}),
         };
-        // Apply the catalog's models / vision classification (same enrichment as the GUI).
-        enrichProviderFromCatalog(p.id, providerConfig);
       }
     } else {
       providerName = await askUntilValid(
@@ -256,6 +253,7 @@ export async function runInit(): Promise<void> {
 
     const config: FrogConfig = {
       ...getDefaultConfig(),
+      modelCatalogConfigVersion: 1,
       port: portResult.port,
       providers: { [providerName]: providerConfig },
       defaultProvider: providerName,

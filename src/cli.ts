@@ -27,7 +27,6 @@ import {
 import { createConfigMutationLock } from "./config-mutation-lock";
 import { generateLocalAccessSecret, hashLocalAccessSecret, sameMachineAccessHeaders } from "./local-access";
 import { findAvailablePort } from "./ports";
-import { startServer } from "./server";
 import { maybeShowStarPrompt } from "./star-prompt";
 import { parseEnvFlag, resolveWatchdogEnabled } from "./watchdog";
 import { configureZshAccountShortcuts, maybeConfigureAccountShortcuts, removeZshAccountShortcuts, shellManualPathLine, zshAccountShortcutsSupported } from "./shell-shortcuts";
@@ -73,7 +72,8 @@ import {
   removeClaudeGrant,
   resolveClaudeGrant,
 } from "./claude-grants";
-import type { ClaudeGrantRecord } from "./types";
+import type { ClaudeGrantRecord, FrogConfig } from "./types";
+import type { ClaudeCodeCatalogRefreshResult } from "./claude-refresh";
 import { deleteClaudeGrantCredential, inspectClaudeGrantStatus, type ClaudeGrantStatusState } from "./claude-grant-auth";
 import { ClaudeGrantProbeError, runClaudeGrantLiveProbe } from "./claude-grant-probe";
 import { assertAllowedClaudeGrantTarget } from "./provider-auth";
@@ -260,31 +260,51 @@ if (command !== undefined && command !== "help" && hasHelpFlag(frogpArgs)) {
   process.exit(0);
 }
 
+interface RunningProfileRefreshResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+  modelReload?: {
+    attempted?: boolean;
+    writeBlocked?: boolean;
+    status?: "synced" | "partial" | "skipped" | "failed" | "unknown";
+    catalog?: {
+      path?: string;
+      added?: number;
+      exists?: boolean;
+      cacheSynced?: boolean;
+    };
+    gatewayCache?: {
+      status?: string;
+      modelCount?: number;
+    };
+    warnings?: string[];
+  };
+}
+
 async function syncModelsToClaudeCode(port?: number) {
-  const config = loadConfig();
+  let config = loadConfig();
   const p = port ?? config.port ?? DEFAULT_PORT;
   const profiles = managedClaudeProfiles(config);
-  const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
-  const { injectClaudeCodeConfig } = await import("./claude-inject");
-  // Top-level refresh applies to every configured Claude Code home. Per-home refresh is available via `frogp claude refresh <home>`.
   let ok = true;
   const messages: string[] = [];
   for (const profile of profiles) {
-    let catalogPath: string | null | undefined;
     try {
-      const cat = await refreshClaudeCodeModelCatalog(config, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
-      catalogPath = cat.catalogExists ? cat.path : null;
-      if (cat.added > 0) {
-        console.log(`   + ${cat.added} models appended to Claude Code catalog for ${profile.name} (${cat.path})`);
+      const refreshed = await refreshClaudeProfileThroughRunningProxy(config, p, profile.id);
+      const added = refreshed.modelReload?.catalog?.added ?? 0;
+      const catalogPath = refreshed.modelReload?.catalog?.path;
+      if (added > 0 && catalogPath) {
+        console.log(`   + ${added} models appended to Claude Code catalog for ${profile.name} (${catalogPath})`);
       }
-    } catch (e) {
-      console.error(`catalog sync skipped for ${profile.name}:`, e instanceof Error ? e.message : String(e));
+      messages.push(`[${profile.name}] ${refreshed.message ?? "Claude Code model list refreshed."}`);
+    } catch (error) {
+      ok = false;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`model sync failed for ${profile.name}: ${message}`);
+      messages.push(`[${profile.name}] ${message}`);
     }
-    const result = await injectClaudeCodeConfig(p, config, { catalogPath, claudeHome: profile.claudeHome, profileId: profile.id });
-    ok = ok && result.success;
-    messages.push(`[${profile.name}] ${result.message}`);
-    if (result.success) markClaudeProfileInjected(config, profile.id, true);
   }
+  config = loadConfig();
   // Reapply every enrolled project's gateway routing on the same refresh path (uses the active port +
   // carrier; token-free migrates stale sentinel project settings). Failures are surfaced, not fatal.
   const projectReapply = reapplyEnrolledClaudeProjects(config, p);
@@ -335,6 +355,38 @@ async function proxyHealthy(port?: number): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function refreshClaudeProfileThroughRunningProxy(
+  config: FrogConfig,
+  port: number,
+  profileId: string,
+  includeAuthToken = false,
+): Promise<RunningProfileRefreshResponse> {
+  const response = await fetch(
+    `http://${healthHost(config.hostname)}:${port}/api/claude-profiles/${encodeURIComponent(profileId)}/refresh`,
+    {
+      method: "POST",
+      // Management mutations require a loopback Origin even when the authenticated relay binds to a LAN address.
+      headers: {
+        ...sameMachineAccessHeaders(),
+        "content-type": "application/json",
+        Origin: `http://127.0.0.1:${port}`,
+      },
+      body: JSON.stringify(includeAuthToken ? { globalDiscoveryAuth: true } : {}),
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  let payload: RunningProfileRefreshResponse;
+  try {
+    payload = await response.json() as RunningProfileRefreshResponse;
+  } catch {
+    throw new Error(`running proxy returned HTTP ${response.status} with an invalid refresh response`);
+  }
+  if (!response.ok || payload.success !== true) {
+    throw new Error(payload.error ?? payload.message ?? `running proxy refresh failed with HTTP ${response.status}`);
+  }
+  return payload;
 }
 
 function printLauncherSync(result: ReturnType<typeof syncClaudeLauncherShims>): void {
@@ -401,7 +453,15 @@ async function handleStart(options: { block?: boolean } = {}) {
       if (existingPid) return { runningPid: existingPid };
 
       const port = await chooseListenPort(requestedPort);
-      const server = startServer(port);
+      let effectiveConfig: FrogConfig | undefined;
+      const { startServer } = await import("./server");
+      const server = await startServer(port, {
+        onRuntimeConfigReady: config => { effectiveConfig = config; },
+      });
+      if (effectiveConfig === undefined) {
+        server.stop(true);
+        throw new Error("Server startup did not provide the effective runtime config.");
+      }
       let pidPublished = false;
       let activePortPublished = false;
       try {
@@ -409,7 +469,7 @@ async function handleStart(options: { block?: boolean } = {}) {
         pidPublished = true;
         writeActivePort(port);
         activePortPublished = true;
-        return { server, port };
+        return { server, port, effectiveConfig };
       } catch (error) {
         server.stop(true);
         if (activePortPublished) removeActivePort();
@@ -425,7 +485,7 @@ async function handleStart(options: { block?: boolean } = {}) {
     console.error(`⚠️  Proxy already running (PID ${startup.runningPid}). Use 'frogp stop' first.`);
     process.exit(1);
   }
-  const { server, port } = startup;
+  const { server, port, effectiveConfig: effectiveStartConfig } = startup;
 
   clearShutdownIntent();
   // Clear any stale watchdog give-up status so 'frogp status' doesn't show
@@ -482,7 +542,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
   for (const profile of startProfiles) {
     try {
-      const cat = await refreshClaudeCodeModelCatalog(startConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
+      const cat = await refreshClaudeCodeModelCatalog(effectiveStartConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
       if (cat.added > 0) console.log(`   + ${cat.added} models appended to Claude Code catalog for ${profile.name} (${cat.path})`);
     } catch (e) {
       console.error(`catalog sync skipped for ${profile.name}:`, e instanceof Error ? e.message : String(e));
@@ -508,8 +568,9 @@ async function handleStart(options: { block?: boolean } = {}) {
 
 async function handleRefresh() {
   let config = loadConfig();
-  if (await proxyHealthy(config.port)) {
-    await syncModelsToClaudeCode(config.port).catch(e => {
+  const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
+  if (await proxyHealthy(activePort)) {
+    await syncModelsToClaudeCode(activePort).catch(e => {
       console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
     });
     try {
@@ -518,7 +579,7 @@ async function handleRefresh() {
     } catch (e) {
       console.error(`⚠️  Cache invalidation skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
-    console.log(`✅ Proxy running on port ${config.port}`);
+    console.log(`✅ Proxy running on port ${activePort}`);
     return;
   }
 
@@ -789,9 +850,11 @@ function renderHumanStatus(snapshot: StatusSnapshot, paint: boolean): void {
   }
   const guiWarning = guiBuildWarning();
   if (guiWarning) console.log(warn(`⚠️  ${guiWarning}`, paint));
-  const rawClaude = resolveRawClaudeOnPath();
-  if (rawClaude.kind === "cmux_shim") {
-    console.log(warn("⚠️  Claude 모델 선택기에 GPT/codex가 없으면 진단 실행: frogp doctor claude", paint));
+  if (snapshot.running && snapshot.healthy) {
+    const rawClaude = resolveRawClaudeOnPath();
+    if (rawClaude.kind === "cmux_shim") {
+      console.log(warn("⚠️  Claude 모델 선택기에 GPT/codex가 없으면 진단 실행: frogp doctor claude", paint));
+    }
   }
 }
 
@@ -809,7 +872,32 @@ async function handleStatus(flags: string[]) {
   renderHumanStatus(snapshot, humanColorEnabled());
 }
 
-function renderHumanModels(models: Record<string, unknown>[], paint: boolean): void {
+interface CliCatalogStatus {
+  source: "remote" | "cached" | "bundled";
+  catalogRevision: number;
+  sourceCommit: string;
+  refreshedAt?: string;
+}
+
+const MODEL_CATALOG_SOURCE_LABEL: Record<CliCatalogStatus["source"], string> = {
+  remote: "원격",
+  cached: "저장된 사본",
+  bundled: "기본 제공",
+};
+
+const MODEL_SUPPORT_STATUS_LABEL: Record<"validated" | "discovered" | "unknown", string> = {
+  validated: "검증됨",
+  discovered: "발견됨",
+  unknown: "확인 필요",
+};
+
+function renderHumanModels(models: Record<string, unknown>[], paint: boolean, catalogStatus?: CliCatalogStatus): void {
+  if (catalogStatus) {
+    const refreshedAt = catalogStatus.refreshedAt ?? "없음";
+    console.log(`모델 자료: ${MODEL_CATALOG_SOURCE_LABEL[catalogStatus.source]} · revision ${catalogStatus.catalogRevision} · ${catalogStatus.sourceCommit.slice(0, 8)} · 마지막 성공 ${refreshedAt}`);
+  } else {
+    console.log("모델 자료 상태를 확인하지 못했습니다 · 모델 목록은 계속 표시합니다.");
+  }
   if (models.length === 0) {
     console.log("No models reported by the proxy. Add a provider in the dashboard: frogp gui");
     return;
@@ -825,13 +913,15 @@ function renderHumanModels(models: Record<string, unknown>[], paint: boolean): v
     console.log(success(`${provider} (${rows.length})`, paint));
     for (const row of rows) {
       const id = typeof row.id === "string" ? row.id : String(row.id ?? "(unknown)");
-      const details: string[] = [];
+      const supportStatus = row.supportStatus === "validated" || row.supportStatus === "discovered"
+        ? row.supportStatus
+        : "unknown";
+      const details: string[] = [MODEL_SUPPORT_STATUS_LABEL[supportStatus]];
       if (row.disabled === true) details.push("disabled");
       if (typeof row.contextWindow === "number") details.push(`ctx ${row.contextWindow}`);
       if (Array.isArray(row.inputModalities) && row.inputModalities.length > 0) details.push(row.inputModalities.join("+"));
       if (Array.isArray(row.reasoningEfforts) && row.reasoningEfforts.length > 0) details.push(`effort ${row.reasoningEfforts.join("/")}`);
-      const suffix = details.length > 0 ? dim(`  (${details.join(", ")})`, paint) : "";
-      console.log(`  ${id}${suffix}`);
+      console.log(`  ${id}${dim(`  (${details.join(", ")})`, paint)}`);
     }
   }
 }
@@ -857,18 +947,26 @@ async function handleModels(flags: string[]) {
     console.error(`❌ Proxy is not answering on port ${port}. Check: frogp status, then recover with: frogp refresh (or frogp start)`);
     process.exit(1);
   }
-  let models: unknown;
-  try {
-    const res = await fetch(`http://${healthHost(config.hostname)}:${port}/api/models`, {
-      headers: sameMachineAccessHeaders(),
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    models = await res.json();
-  } catch (err) {
-    console.error(`❌ Could not fetch models from the running proxy (${err instanceof Error ? err.message : String(err)}). Check: frogp status, then recover with: frogp refresh`);
+  const apiBase = `http://${healthHost(config.hostname)}:${port}`;
+  const requestOptions = {
+    headers: sameMachineAccessHeaders(),
+    signal: AbortSignal.timeout(5_000),
+  };
+  const modelsRequest = fetch(`${apiBase}/api/models`, requestOptions).then(async response => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  });
+  const statusRequest = fetch(`${apiBase}/api/model-catalog/status`, requestOptions).then(async response => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  });
+  const [modelsResult, statusResult] = await Promise.allSettled([modelsRequest, statusRequest]);
+  if (modelsResult.status === "rejected") {
+    const reason = modelsResult.reason;
+    console.error(`❌ Could not fetch models from the running proxy (${reason instanceof Error ? reason.message : String(reason)}). Check: frogp status, then recover with: frogp refresh`);
     process.exit(1);
   }
+  const models = modelsResult.value;
   if (!Array.isArray(models)) {
     console.error("❌ Unexpected /api/models response shape (expected an array).");
     process.exit(1);
@@ -877,7 +975,23 @@ async function handleModels(flags: string[]) {
     printJson(models);
     return;
   }
-  renderHumanModels(models as Record<string, unknown>[], humanColorEnabled());
+  let catalogStatus: CliCatalogStatus | undefined;
+  if (statusResult.status === "fulfilled" && statusResult.value && typeof statusResult.value === "object") {
+    const candidate = statusResult.value as Partial<CliCatalogStatus>;
+    if (
+      (candidate.source === "remote" || candidate.source === "cached" || candidate.source === "bundled")
+      && typeof candidate.catalogRevision === "number"
+      && typeof candidate.sourceCommit === "string"
+    ) {
+      catalogStatus = {
+        source: candidate.source,
+        catalogRevision: candidate.catalogRevision,
+        sourceCommit: candidate.sourceCommit,
+        ...(typeof candidate.refreshedAt === "string" ? { refreshedAt: candidate.refreshedAt } : {}),
+      };
+    }
+  }
+  renderHumanModels(models as Record<string, unknown>[], humanColorEnabled(), catalogStatus);
 }
 async function fetchApiModelRowsForDoctor(config: ReturnType<typeof loadConfig>, port: number): Promise<ApiModelRow[]> {
   if (!readPid() || !(await proxyHealthy(port))) return [];
@@ -1340,29 +1454,82 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
     case "refresh":
     case "reload-models": {
       const parsed = parseGlobalDiscoveryAuthFlag(values);
-      const profile = resolveClaudeProfile(config, parsed.values.slice(1).join(" ") || undefined);
       const isReloadModels = sub === "reload-models";
+      const shouldRefresh = sub === "refresh" || isReloadModels;
+      const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
+      const profile = resolveClaudeProfile(config, parsed.values.slice(1).join(" ") || undefined);
+      const running = shouldRefresh && await proxyHealthy(activePort);
+
+      if (running) {
+        let remoteRefresh: RunningProfileRefreshResponse;
+        try {
+          remoteRefresh = await refreshClaudeProfileThroughRunningProxy(
+            config,
+            activePort,
+            profile.id,
+            parsed.includeAuthToken,
+          );
+        } catch (error) {
+          console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
+          process.exit(1);
+        }
+        syncLaunchers(loadConfig());
+        if (!isReloadModels) {
+          console.log(remoteRefresh.message ?? "Claude Code model list refreshed.");
+          return;
+        }
+        const remoteCatalog = remoteRefresh.modelReload?.catalog;
+        const remoteGateway = remoteRefresh.modelReload?.gatewayCache;
+        const remoteReloadSummary = remoteRefresh.modelReload?.writeBlocked === true
+          || remoteRefresh.modelReload?.status === "skipped"
+          ? `Model reload skipped for ${profile.name} (${profile.id}).`
+          : remoteRefresh.modelReload?.status === "failed"
+            ? `Model reload failed for ${profile.name} (${profile.id}).`
+            : remoteRefresh.modelReload?.status === "partial"
+              ? `Model reload completed with warnings for ${profile.name} (${profile.id}).`
+              : remoteRefresh.modelReload?.status === "unknown"
+                ? `Model reload attempted for ${profile.name} (${profile.id}).`
+                : `Model reload prepared for ${profile.name} (${profile.id}).`;
+        console.log([
+          remoteRefresh.message ?? "Claude Code model list refreshed.",
+          remoteReloadSummary,
+          `Claude Code home: ${profile.claudeHome}`,
+          `Gateway cache: ${remoteGateway?.status ?? "unknown"}${remoteGateway?.modelCount !== undefined ? ` (${remoteGateway.modelCount} models)` : ""}`,
+          `Catalog cache: ${remoteCatalog?.cacheSynced ? "synced" : "not synced"}`,
+          ...((remoteRefresh.modelReload?.warnings ?? []).map(warning => `Warning: ${warning}`)),
+          `Proxy is answering on port ${activePort}.`,
+          "Start a new Claude Code session or resume so it refetches /v1/models; reopening an already-open /model screen is not a hot reload.",
+          "For ordinary raw `claude` in a repository, use `frogp claude project enroll [path]`; managed launchers are only for explicitly selecting a separate Claude home/account.",
+        ].join("\n"));
+        return;
+      }
+
+      const runtimeState = shouldRefresh
+        ? await (await import("./runtime-config-state")).createRuntimeConfigState({ loadConfig: () => config })
+        : undefined;
+      const persistedConfig = runtimeState?.persisted ?? config;
+      const effectiveConfig = runtimeState?.effective ?? config;
       let catalogPath: string | null | undefined;
-      let refreshed: import("./claude-refresh").ClaudeCodeCatalogRefreshResult | undefined;
-      if (sub === "refresh" || isReloadModels) {
+      let refreshed: ClaudeCodeCatalogRefreshResult | undefined;
+      if (shouldRefresh) {
         const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
-        refreshed = await refreshClaudeCodeModelCatalog(config, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
+        refreshed = await refreshClaudeCodeModelCatalog(effectiveConfig, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
         catalogPath = refreshed.catalogExists ? refreshed.path : null;
       }
-      const result = await (await import("./claude-inject")).injectClaudeCodeConfig(config.port ?? DEFAULT_PORT, config, { catalogPath, claudeHome: profile.claudeHome, profileId: profile.id, includeAuthToken: parsed.includeAuthToken });
+      const result = await (await import("./claude-inject")).injectClaudeCodeConfig(persistedConfig.port ?? DEFAULT_PORT, persistedConfig, { catalogPath, claudeHome: profile.claudeHome, profileId: profile.id, includeAuthToken: parsed.includeAuthToken });
       if (!result.success) {
         console.error(`❌ ${result.message}`);
         process.exit(1);
       }
-      markClaudeProfileInjected(config, profile.id, true);
-      saveConfig(config);
-      syncLaunchers(config);
+      markClaudeProfileInjected(persistedConfig, profile.id, true);
+      saveConfig(persistedConfig);
+      syncLaunchers(persistedConfig);
       if (!isReloadModels) {
         console.log(result.message);
         return;
       }
 
-      const port = config.port ?? DEFAULT_PORT;
+      const port = persistedConfig.port ?? DEFAULT_PORT;
       const healthy = await proxyHealthy(port);
       const lines = [
         result.message,

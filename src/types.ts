@@ -312,6 +312,8 @@ export interface FrogConfig {
   port: number;
   providers: Record<string, FrogProviderConfig>;
   defaultProvider: string;
+  /** One-time marker for persisted config split from managed model catalog metadata. */
+  modelCatalogConfigVersion?: 1;
   /** Provider failover preference list; only the first valid provider is used. */
   fallbackProviders?: string[];
   longContext?: { thresholdTokens?: number; provider?: string; model?: string };
@@ -566,6 +568,10 @@ export interface FrogModelMixingConfig {
 export interface FrogProviderConfig {
   adapter: string;
   baseUrl: string;
+  /** Stable registry/catalog identity. Provider map keys may be user-renamed. */
+  catalogProviderId?: string;
+  /** User-added model ids kept separately from the managed catalog model list. */
+  userModels?: string[];
   apiKey?: string;
   /** Key auth only: configured-order stateless failover candidates after apiKey. */
   apiKeys?: string[];
@@ -608,6 +614,8 @@ export interface FrogProviderConfig {
   reasoningEffortMap?: Record<string, string>;
   /** Model-specific mapping from Claude Code effort labels to upstream `reasoning_effort` values. */
   modelReasoningEffortMap?: Record<string, Record<string, string>>;
+  /** Managed logical model ids translated only at the supported adapter's outgoing request boundary. */
+  modelWireIds?: Record<string, string>;
   /**
    * Model ids that do NOT support a reasoning/thinking parameter. The openai-chat adapter drops
    * reasoning_effort for these even when Claude Code selects a reasoning level (e.g. xAI grok-build-0.1).

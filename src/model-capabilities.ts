@@ -26,9 +26,9 @@ export function modelRecordValue<T>(record: Record<string, T> | undefined, model
 }
 
 function normalizeInputModalities(input: readonly string[] | undefined): FrogInputModality[] | undefined {
-  if (!input) return undefined;
+  if (input === undefined) return undefined;
   const out = input.filter((value): value is FrogInputModality => value === "text" || value === "image");
-  return out.length > 0 ? [...new Set(out)] : undefined;
+  return [...new Set(out)];
 }
 
 function cachedInputFor(providerName: string, modelId: string): FrogInputModality[] | undefined {

@@ -6,7 +6,8 @@ import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, setCached }
 import { buildModelsRequest } from "./oauth/index";
 import { resolveProviderAuth, type ProviderAuthDeps } from "./provider-auth";
 import type { FrogConfig, FrogProviderConfig } from "./types";
-import { CLAUDE_REASONING_LEVELS, configuredReasoningEfforts, modelRecordValue, sanitizeClaudeCodeReasoningEfforts } from "./reasoning-effort";
+import { modelInList } from "./types";
+import { CLAUDE_REASONING_LEVELS, configuredReasoningEfforts, intersectReasoningEfforts, mergeReasoningEffortMap, modelRecordValue, reasoningEffortMapFor, sanitizeClaudeCodeReasoningEfforts } from "./reasoning-effort";
 import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "./generated/jawcode-model-metadata";
 import { materializeModelAliases } from "./model-aliases";
 import { mixAliasId } from "./model-mixing/select";
@@ -38,7 +39,81 @@ export function nativeOpenAiSlugs(): string[] {
   return live.length > 0 ? live : NATIVE_OPENAI_MODELS;
 }
 
-export interface CatalogModel { id: string; provider: string; owned_by?: string; reasoningEfforts?: string[]; contextWindow?: number; inputModalities?: string[]; authReady?: boolean; }
+export interface CatalogModel {
+  id: string;
+  provider: string;
+  owned_by?: string;
+  reasoningEfforts?: string[];
+  reasoningEffortMap?: Record<string, string>;
+  contextWindow?: number;
+  inputModalities?: string[];
+  noReasoning?: boolean;
+  noTemperature?: boolean;
+  noTopP?: boolean;
+  noPenalty?: boolean;
+  autoToolChoiceOnly?: boolean;
+  preserveReasoningContent?: boolean;
+  escapeBuiltinToolNames?: boolean;
+  supportStatus?: "validated" | "discovered";
+  authReady?: boolean;
+}
+
+function intersectMetadataValues(
+  ...sources: Array<readonly string[] | undefined>
+): string[] | undefined {
+  const defined = sources.filter((source): source is readonly string[] => source !== undefined);
+  if (defined.length === 0) return undefined;
+  const [first, ...rest] = defined;
+  return first.filter(value => rest.every(source => source.includes(value)));
+}
+
+export function mergeCatalogModelMetadata(
+  live: CatalogModel,
+  managed?: Partial<CatalogModel>,
+  userOverride?: Partial<CatalogModel>,
+): CatalogModel {
+  const compatibleManaged = managed?.id === live.id ? managed : undefined;
+  const compatibleUser = userOverride?.id === undefined || userOverride.id === live.id ? userOverride : undefined;
+  const contextWindows = [live.contextWindow, compatibleManaged?.contextWindow, compatibleUser?.contextWindow]
+    .filter((value): value is number => typeof value === "number" && value > 0);
+  const inputModalities = intersectMetadataValues(
+    live.inputModalities,
+    compatibleManaged?.inputModalities,
+    compatibleUser?.inputModalities,
+  );
+  const reasoningEfforts = intersectReasoningEfforts(
+    live.reasoningEfforts,
+    compatibleManaged?.reasoningEfforts,
+    compatibleUser?.reasoningEfforts,
+  );
+  const reasoningEffortMap = mergeReasoningEffortMap(
+    live.reasoningEffortMap,
+    compatibleManaged?.reasoningEffortMap,
+    compatibleUser?.reasoningEffortMap,
+    reasoningEfforts,
+  );
+  const merged: CatalogModel = {
+    ...live,
+    ...(contextWindows.length > 0 ? { contextWindow: Math.min(...contextWindows) } : {}),
+    ...(inputModalities !== undefined ? { inputModalities } : {}),
+    ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
+    ...(reasoningEffortMap !== undefined ? { reasoningEffortMap } : {}),
+    supportStatus: compatibleManaged ? "validated" : live.supportStatus ?? "discovered",
+  };
+  for (const field of [
+    "noReasoning",
+    "noTemperature",
+    "noTopP",
+    "noPenalty",
+    "autoToolChoiceOnly",
+    "preserveReasoningContent",
+    "escapeBuiltinToolNames",
+  ] as const) {
+    const values = [live[field], compatibleManaged?.[field], compatibleUser?.[field]];
+    if (values.some(value => value !== undefined)) merged[field] = values.some(Boolean);
+  }
+  return merged;
+}
 type RawEntry = Record<string, unknown>;
 const JAWCODE_CATALOG_AUGMENT_PROVIDERS = new Set(["opencode-go"]);
 
@@ -212,7 +287,7 @@ function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel): void 
     entry.max_context_window = model.contextWindow;
     entry.auto_compact_token_limit = Math.floor(model.contextWindow * 0.9);
   }
-  if (Array.isArray(model.inputModalities) && model.inputModalities.length > 0) {
+  if (Array.isArray(model.inputModalities)) {
     entry.input_modalities = model.inputModalities;
   }
 }
@@ -350,47 +425,84 @@ type ProviderModelsApiItem = {
 };
 
 function configuredContextWindow(prov: FrogProviderConfig, id: string): number | undefined {
-  const configured = modelRecordValue(prov.modelContextWindows, id) ?? prov.contextWindow;
-  return typeof configured === "number" && configured > 0 ? configured : undefined;
+  const modelValue = modelRecordValue(prov.modelContextWindows, id);
+  const modelWindow = typeof modelValue === "number" && modelValue > 0 ? modelValue : undefined;
+  const providerWindow = typeof prov.contextWindow === "number" && prov.contextWindow > 0
+    ? prov.contextWindow
+    : undefined;
+  if (modelWindow === undefined) return providerWindow;
+  if (providerWindow === undefined) return modelWindow;
+  return Math.min(modelWindow, providerWindow);
 }
 
 function configuredInputModalities(prov: FrogProviderConfig, id: string): string[] | undefined {
   const capabilities = modelRecordValue(prov.modelCapabilities, id);
-  return capabilities?.input && capabilities.input.length > 0 ? [...capabilities.input] : undefined;
-}
-
-export function applyProviderConfigHints(name: string, prov: FrogProviderConfig, model: CatalogModel): CatalogModel {
-  void name;
-  const contextCap = configuredContextWindow(prov, model.id);
-  const inputModalities = configuredInputModalities(prov, model.id);
-  const reasoningEfforts = configuredReasoningEfforts(prov, model.id);
-  return {
-    ...model,
-    ...(contextCap !== undefined
-      ? {
-        contextWindow: typeof model.contextWindow === "number" && model.contextWindow > 0
-          ? Math.min(model.contextWindow, contextCap)
-          : contextCap,
-      }
-      : {}),
-    ...(inputModalities ? { inputModalities } : {}),
-    ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
-  };
+  return capabilities?.input !== undefined ? [...capabilities.input] : undefined;
 }
 
 function catalogHintsFromProviderConfig(name: string, prov: FrogProviderConfig, id: string): Partial<CatalogModel> {
-  const hinted = applyProviderConfigHints(name, prov, { id, provider: name });
-  const { provider: _provider, id: _id, ...hints } = hinted;
-  return hints;
+  void name;
+  const contextWindow = configuredContextWindow(prov, id);
+  const inputModalities = configuredInputModalities(prov, id);
+  const reasoningEfforts = configuredReasoningEfforts(prov, id);
+  const reasoningEffortMap = reasoningEffortMapFor(prov, id);
+  return {
+    id,
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(inputModalities !== undefined ? { inputModalities } : {}),
+    ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
+    ...(reasoningEffortMap !== undefined ? { reasoningEffortMap: { ...reasoningEffortMap } } : {}),
+    ...(modelInList(prov.noReasoningModels, id) ? { noReasoning: true } : {}),
+    ...(modelInList(prov.noTemperatureModels, id) ? { noTemperature: true } : {}),
+    ...(modelInList(prov.noTopPModels, id) ? { noTopP: true } : {}),
+    ...(modelInList(prov.noPenaltyModels, id) ? { noPenalty: true } : {}),
+    ...(modelInList(prov.autoToolChoiceOnlyModels, id) ? { autoToolChoiceOnly: true } : {}),
+    ...(modelInList(prov.preserveReasoningContentModels, id) ? { preserveReasoningContent: true } : {}),
+    ...(prov.escapeBuiltinToolNames !== undefined ? { escapeBuiltinToolNames: prov.escapeBuiltinToolNames } : {}),
+  };
 }
 
-function applyConfigHintsToCachedModels(name: string, prov: FrogProviderConfig, models: CatalogModel[]): CatalogModel[] {
-  return models.map(model => applyProviderConfigHints(name, prov, model));
+function configuredModelIds(prov: FrogProviderConfig): string[] {
+  return [...new Set([...(prov.models ?? []), ...(prov.userModels ?? [])])];
+}
+
+function managedModelIds(prov: FrogProviderConfig): Set<string> {
+  if (!prov.catalogProviderId) return new Set();
+  const userModels = new Set(prov.userModels ?? []);
+  return new Set((prov.models ?? []).filter(id => !userModels.has(id)));
+}
+function mergeProviderModelMetadata(
+  name: string,
+  prov: FrogProviderConfig,
+  managedIds: ReadonlySet<string>,
+  model: CatalogModel,
+): CatalogModel {
+  const configured = catalogHintsFromProviderConfig(name, prov, model.id);
+  if (managedIds.has(model.id)) {
+    return mergeCatalogModelMetadata(model, configured);
+  }
+  return mergeCatalogModelMetadata(model, undefined, configured);
+}
+
+export function applyProviderConfigHints(name: string, prov: FrogProviderConfig, model: CatalogModel): CatalogModel {
+  return mergeProviderModelMetadata(name, prov, managedModelIds(prov), model);
 }
 
 function isGlm52ModelId(id: string): boolean {
   const normalized = id.toLowerCase();
   return normalized === "glm-5.2" || normalized === "glm-5.2[1m]";
+}
+
+function mergeLiveAndConfiguredModels(
+  name: string,
+  prov: FrogProviderConfig,
+  managedIds: ReadonlySet<string>,
+  liveModels: CatalogModel[],
+  configuredModels: CatalogModel[],
+): CatalogModel[] {
+  const live = liveModels.map(model => mergeProviderModelMetadata(name, prov, managedIds, model));
+  const liveIds = new Set(live.map(model => model.id));
+  return [...live, ...configuredModels.filter(model => !liveIds.has(model.id))];
 }
 
 function catalogHintsFromModelsApiItem(providerName: string, item: ProviderModelsApiItem): Partial<CatalogModel> {
@@ -466,10 +578,15 @@ async function fetchProviderModels(name: string, prov: FrogProviderConfig, ttlMs
   const authReady = !!apiKey;
   authReadyByProvider?.set(name, authReady);
   const markReady = (models: CatalogModel[]): CatalogModel[] => models.map(m => ({ ...m, authReady }));
-  const configured: CatalogModel[] = (prov.models ?? []).map(id => ({
+  const managedIds = managedModelIds(prov);
+  const configuredIds = prov.liveModels === false ? prov.models ?? [] : configuredModelIds(prov);
+  const configured: CatalogModel[] = configuredIds.map(id => ({
     id,
     provider: name,
     ...catalogHintsFromProviderConfig(name, prov, id),
+    ...(prov.liveModels === false
+      ? {}
+      : { supportStatus: managedIds.has(id) ? "validated" as const : "discovered" as const }),
   }));
   // No usable credential (logged-out oauth, unresolvable claude-grant, or a keyless key/static provider):
   // RETAIN the configured registry tagged authReady:false — never dropped — and skip the live /models request
@@ -480,29 +597,33 @@ async function fetchProviderModels(name: string, prov: FrogProviderConfig, ttlMs
     return markReady(configured);
   }
   const fresh = getFreshCached(name, ttlMs);
-  if (fresh) return markReady(applyConfigHintsToCachedModels(name, prov, fresh)); // dedups Claude Code's frequent /v1/models polling within the TTL
+  if (fresh) {
+    return markReady(mergeLiveAndConfiguredModels(name, prov, managedIds, fresh, configured));
+  }
   const { url, headers } = buildModelsRequest(prov, apiKey);
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
     if (!res.ok) {
       const stale = getStaleCached(name);
-      return markReady(stale ? applyConfigHintsToCachedModels(name, prov, stale) : configured);
+      return markReady(stale
+        ? mergeLiveAndConfiguredModels(name, prov, managedIds, stale, configured)
+        : configured);
     }
     const json = await res.json() as { data?: ProviderModelsApiItem[]; models?: ProviderModelsApiItem[] };
-    const live = providerModelItemsFromJson(json).map(m => applyProviderConfigHints(name, prov, {
+    const live = providerModelItemsFromJson(json).map(m => ({
       id: m.id,
       provider: name,
       owned_by: m.owned_by,
+      supportStatus: "discovered" as const,
       ...catalogHintsFromModelsApiItem(name, m),
     }));
-    const liveIds = new Set(live.map(m => m.id));
-    // Merge explicit config additions (e.g. a model not in the provider's /models, like a new endpoint).
-    const merged = [...live, ...configured.filter(m => !liveIds.has(m.id))];
-    setCached(name, merged);
-    return markReady(merged);
+    setCached(name, live);
+    return markReady(mergeLiveAndConfiguredModels(name, prov, managedIds, live, configured));
   } catch {
     const stale = getStaleCached(name);
-    return markReady(stale ? applyConfigHintsToCachedModels(name, prov, stale) : configured);
+    return markReady(stale
+      ? mergeLiveAndConfiguredModels(name, prov, managedIds, stale, configured)
+      : configured);
   }
 }
 

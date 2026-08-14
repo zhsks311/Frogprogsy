@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, type CatalogModel, gatherRoutedModels, isMediaGenerationModelId, normalizeRoutedCatalogEntry, orderForSubagents, stripRoutedCatalogEntries } from "../src/claude-catalog";
+import { augmentRoutedModelsWithJawcodeMetadata, buildCatalogEntries, type CatalogModel, gatherRoutedModels, isMediaGenerationModelId, mergeCatalogModelMetadata, normalizeRoutedCatalogEntry, orderForSubagents, stripRoutedCatalogEntries } from "../src/claude-catalog";
 import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
+import { buildEffectiveConfig } from "../src/model-catalog-config";
+import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
 import { clearModelCache, setCached } from "../src/model-cache";
 import { assertAllowedClaudeGrantTarget, type ProviderAuthDeps } from "../src/provider-auth";
 import { ClaudeGrantError } from "../src/claude-grant-auth";
@@ -210,6 +212,7 @@ describe("Claude Code catalog routed normalization", () => {
             adapter: "openai-chat",
             authMode: "key",
             liveModels: false,
+            userModels: ["user-only"],
             models: ["alpha", "beta"],
           },
         },
@@ -220,6 +223,7 @@ describe("Claude Code catalog routed normalization", () => {
         "static-provider/alpha",
         "static-provider/beta",
       ]);
+      expect(models.map(m => m.id)).not.toContain("user-only");
     } finally {
       globalThis.fetch = originalFetch;
       clearModelCache("static-provider");
@@ -305,6 +309,83 @@ describe("Claude Code catalog routed normalization", () => {
       globalThis.fetch = originalFetch;
       clearModelCache("static-toggle");
     }
+  });
+
+  test("managed fallback retirement is applied when a fresh live cache is reused", async () => {
+    clearModelCache("managed-fresh-retirement");
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({ data: [] }));
+    }) as typeof fetch;
+    const configWith = (models: string[]): FrogConfig => ({
+      port: 3764,
+      defaultProvider: "managed-fresh-retirement",
+      providers: {
+        "managed-fresh-retirement": {
+          adapter: "openai-chat",
+          baseUrl: "https://managed-fresh-retirement.test/v1",
+          apiKey: "sk-test",
+          catalogProviderId: "managed-fresh-retirement",
+          models,
+        },
+      },
+    });
+
+    const before = await gatherRoutedModels(configWith(["active", "retired"]));
+    const after = await gatherRoutedModels(configWith(["active"]));
+
+    expect(before.map(model => model.id)).toEqual(["active", "retired"]);
+    expect(after.map(model => model.id)).toEqual(["active"]);
+    expect(fetchCalls).toBe(1);
+  });
+
+  test("managed fallback retirement is applied when stale live cache handles a fetch failure", async () => {
+    clearModelCache("managed-stale-retirement");
+    let failFetch = false;
+    globalThis.fetch = (async () => failFetch
+      ? new Response("unavailable", { status: 503 })
+      : new Response(JSON.stringify({ data: [] }))) as typeof fetch;
+    const configWith = (models: string[], modelCacheTtlMs?: number): FrogConfig => ({
+      port: 3764,
+      defaultProvider: "managed-stale-retirement",
+      ...(modelCacheTtlMs !== undefined ? { modelCacheTtlMs } : {}),
+      providers: {
+        "managed-stale-retirement": {
+          adapter: "openai-chat",
+          baseUrl: "https://managed-stale-retirement.test/v1",
+          apiKey: "sk-test",
+          catalogProviderId: "managed-stale-retirement",
+          models,
+        },
+      },
+    });
+
+    const before = await gatherRoutedModels(configWith(["active", "retired"]));
+    failFetch = true;
+    const after = await gatherRoutedModels(configWith(["active"], 0));
+
+    expect(before.map(model => model.id)).toEqual(["active", "retired"]);
+    expect(after.map(model => model.id)).toEqual(["active"]);
+  });
+
+  test("empty modality intersections remain explicit in routed catalog entries", () => {
+    const merged = mergeCatalogModelMetadata(
+      {
+        id: "modality-conflict",
+        provider: "managed",
+        inputModalities: ["image"],
+      },
+      {
+        id: "modality-conflict",
+        inputModalities: ["text"],
+      },
+    );
+    const entry = buildCatalogEntries(nativeTemplate(), [], [merged])
+      .find(model => model.slug === "managed/modality-conflict");
+
+    expect(merged.inputModalities).toEqual([]);
+    expect(entry?.input_modalities).toEqual([]);
   });
 
   test("routed entries receive exact jawcode context metadata", () => {
@@ -463,6 +544,153 @@ describe("Claude Code catalog routed normalization", () => {
     expect(resolveJawcodeProvider("nanogpt")).toBeUndefined();
     expect(getJawcodeModelMetadata("moonshot", "kimi-k2.5")?.contextWindow).toBe(262_144);
     expect(getJawcodeModelMetadata("nanogpt", "some-model")).toBeUndefined();
+  });
+
+  test("merges live, managed, and user model metadata without widening managed limits", () => {
+    const merged = mergeCatalogModelMetadata(
+      {
+        id: "reasoner",
+        provider: "managed",
+        contextWindow: 128_000,
+        inputModalities: ["text"],
+        reasoningEfforts: ["high"],
+        supportStatus: "discovered",
+      },
+      {
+        id: "reasoner",
+        contextWindow: 200_000,
+        inputModalities: ["text", "image"],
+        reasoningEfforts: ["low", "high"],
+        reasoningEffortMap: { high: "max" },
+        preserveReasoningContent: true,
+      },
+      { reasoningEffortMap: { high: "unsafe", xhigh: "xhigh" } },
+    );
+
+    expect(merged.contextWindow).toBe(128_000);
+    expect(merged.inputModalities).toEqual(["text"]);
+    expect(merged.reasoningEfforts).toEqual(["high"]);
+    expect(merged.reasoningEffortMap).toEqual({ high: "max" });
+    expect(merged.preserveReasoningContent).toBe(true);
+    expect(merged.supportStatus).toBe("validated");
+  });
+
+  test("unions restrictions and keeps the strict tool-name escaping setting", () => {
+    const merged = mergeCatalogModelMetadata(
+      {
+        id: "strict-model",
+        provider: "managed",
+        noTemperature: true,
+        supportStatus: "discovered",
+      },
+      {
+        id: "strict-model",
+        noReasoning: true,
+        noTopP: true,
+        noPenalty: true,
+        autoToolChoiceOnly: true,
+        preserveReasoningContent: true,
+        escapeBuiltinToolNames: true,
+      },
+      {
+        noReasoning: false,
+        noTemperature: false,
+        noTopP: false,
+        noPenalty: false,
+        autoToolChoiceOnly: false,
+        preserveReasoningContent: false,
+        escapeBuiltinToolNames: false,
+      },
+    );
+
+    expect(merged).toMatchObject({
+      noReasoning: true,
+      noTemperature: true,
+      noTopP: true,
+      noPenalty: true,
+      autoToolChoiceOnly: true,
+      preserveReasoningContent: true,
+      escapeBuiltinToolNames: true,
+    });
+  });
+
+  test("keeps managed fallbacks and adopted retired user models with explicit support provenance", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      data: [
+        {
+          id: "managed-live",
+          metadata: {
+            limits: { max_context_length: 500_000 },
+            capabilities: { vision: true },
+          },
+        },
+        { id: "live-only" },
+      ],
+    }))) as typeof fetch;
+
+    const persisted: FrogConfig = {
+      port: 3764,
+      defaultProvider: "managed",
+      providers: {
+        managed: {
+          adapter: "openai-chat",
+          baseUrl: "https://managed.test/v1",
+          apiKey: "sk-test",
+          catalogProviderId: "managed",
+          userModels: ["adopted-managed", "retired-user"],
+          contextWindow: 64_000,
+          modelContextWindows: { "managed-live": 200_000 },
+          modelCapabilities: { "managed-live": { input: ["text", "image"] } },
+        },
+      },
+    };
+    const selected = {
+      document: {
+        schemaVersion: 1,
+        catalogRevision: 1,
+        catalogDigest: "0".repeat(64),
+        sourceCommit: "0".repeat(40),
+        generatedAt: "2026-08-12T00:00:00.000Z",
+        minFrogprogsyVersion: "0.0.0",
+        providers: [{
+          id: "managed",
+          retiredModels: ["retired-user"],
+          models: [
+            {
+              id: "managed-live",
+              contextWindow: 128_000,
+              inputModalities: ["text"],
+            },
+            { id: "adopted-managed" },
+          ],
+        }],
+      },
+      status: {
+        source: "bundled",
+        catalogRevision: 1,
+        catalogDigest: "0".repeat(64),
+        sourceCommit: "0".repeat(40),
+        generatedAt: "2026-08-12T00:00:00.000Z",
+        skippedRecords: 0,
+        warnings: [],
+      },
+    } satisfies SelectedModelCatalog;
+    const effective = buildEffectiveConfig(persisted, selected);
+
+    expect(persisted.providers.managed.userModels).toEqual(["adopted-managed", "retired-user"]);
+    expect(effective.providers.managed.userModels).toEqual(["retired-user"]);
+    const models = await gatherRoutedModels(effective);
+
+    expect(models.map(model => [model.id, model.supportStatus])).toEqual([
+      ["adopted-managed", "validated"],
+      ["live-only", "discovered"],
+      ["managed-live", "validated"],
+      ["retired-user", "discovered"],
+    ]);
+    expect(models.find(model => model.id === "managed-live")).toMatchObject({
+      contextWindow: 64_000,
+      inputModalities: ["text"],
+    });
   });
 
   test("provider config model metadata reaches Claude Code catalog for static models", async () => {

@@ -38,8 +38,12 @@ three locales in the same change.
 https://zhsks311.github.io/frog-progsy/
 ```
 
-The workflow runs on `main` pushes touching `docs-site/**` or the workflow itself, builds
-`docs-site`, uploads the artifact, and deploys with GitHub Pages.
+Every `main` push triggers the workflow; there is deliberately no path filter. Manual dispatch is
+accepted only for `refs/heads/main`, and both trigger paths fetch `origin/main` and require the checked-out
+`HEAD` to equal its current tip before generating or deploying. The workflow generates
+`catalog/v1/model-catalog.json` from `GITHUB_SHA` plus that commit's timestamp, validates its strict schema
+and digest, and adds it to the same `docs-site/out` artifact as the documentation. If provider/model data
+differs from the deployed catalog, `catalogRevision` must be greater than the deployed revision.
 
 Local validation:
 
@@ -55,13 +59,13 @@ bun run build
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | `pull_request`, `push` to `main` or `dev`, or manual dispatch when runtime/package paths change | Linux, Windows, and macOS quality gate. Every test process uses a temporary `FROGPROGSY_HOME`; tests run with Bun isolation. The GitHub-hosted macOS lane also runs the opt-in scoped Keychain grant lifecycle smoke. |
 | `.github/workflows/package-lifecycle.yml` | `pull_request`, `push` to `main` or `dev`, or manual dispatch when package/lifecycle paths change | Build one Bun tarball, then install and exercise those exact bytes on Linux, Windows, and macOS through start, explicit restore, stop, restart, final restore, and package-only removal. |
-| `.github/workflows/release.yml` | Manual dispatch only | Bun validation/dry-run plus final Trusted Publishing workflow. It requires the exact `GITHUB_SHA` to have successful Cross-platform CI and Package lifecycle runs before publish or dry-run. |
-| `.github/workflows/deploy-docs.yml` | `push` to `main` touching `docs-site/**` or the workflow, or manual dispatch | Build and publish the Next.js/Fumadocs site to GitHub Pages. |
+| `.github/workflows/release.yml` | Manual dispatch only | Bun validation/dry-run plus final Trusted Publishing workflow. Both lanes require the latest exact-`GITHUB_SHA` Cross-platform CI, Package lifecycle, and Pages runs to be completed successfully, then require the extracted npm tarball catalog to match the deployed Pages catalog's source SHA, revision, and digest. |
+| `.github/workflows/deploy-docs.yml` | Every `push` to `main`, or guarded manual dispatch from current `main` | Build and publish the Next.js/Fumadocs site plus `catalog/v1/model-catalog.json` to one GitHub Pages artifact. |
 
 
-Docs-only changes intentionally route through the docs workflow instead of the runtime gates. If a
-docs change also edits runtime/package/release files, run the relevant local checks before push and
-let `ci.yml` plus `package-lifecycle.yml` provide the three-platform confirmation.
+Docs-only changes still skip runtime workflow path filters, but every resulting `main` commit publishes
+Pages. Release preparation changes `package.json`, so the exact release commit also triggers CI and
+Package lifecycle; a missing exact-SHA run fails the release closed rather than being treated as skipped.
 
 ## Branch strategy decision
 
@@ -116,11 +120,17 @@ Development dependency installation, testing, GUI builds, tarball creation, glob
 and package-only removal use Bun. `package.json` pins the expected Bun toolchain through `packageManager`
 and exposes `bun run dev:package`.
 
-`dev:package build` runs the full local gates by default and writes an immutable tarball plus SHA-256
-manifest under the repository Git common directory. All linked worktrees share that directory. A build id
-contains package version, commit, completion timestamp, and tarball hash; `latest` means the most recently
-completed successful build, with a deterministic build-id tie break. Updating `latest.json` is serialized by
-an owner-token lock and an atomic rename, so concurrent worktrees cannot silently select an older build.
+`dev:package build` generates the bundled catalog from the full tracked `HEAD` SHA and that commit's
+timestamp before any GUI build or tarball pack. The generated file staged into the tarball is strict-schema
+and digest checked after extracting the real packed member. An already-dirty worktree still records the
+tracked SHA while preserving the manifest's existing dirty flag semantics.
+
+The command runs the full local gates by default and writes an immutable tarball plus SHA-256 manifest
+under the repository Git common directory. All linked worktrees share that directory. A build id contains
+package version, abbreviated commit, completion timestamp, and tarball hash; `latest` means the most
+recently completed successful build, with a deterministic build-id tie break. Updating `latest.json` is
+serialized by an owner-token lock and an atomic rename, so concurrent worktrees cannot silently select an
+older build.
 
 `dev:package install --yes` installs either the shared latest manifest or an explicit `--build <id>` only
 after size/hash verification. The installed package receives a local build receipt, and
@@ -177,8 +187,8 @@ The maintainer preview acceptance cycle is:
 
 1. Prove the candidate locally with `bun run dev:package reinstall --yes` and
    `bun run dev:package status`.
-2. Land the candidate on `main`, require the exact-SHA CI and Package lifecycle gates, then publish an unused
-   prerelease such as `0.2.0-preview.1`:
+2. Land the candidate on `main`, then require the latest exact-SHA CI, Package lifecycle, and Pages
+   runs to complete successfully. Publish an unused prerelease such as `0.2.0-preview.1` with
    `bun run release 0.2.0-preview.1 --tag preview --publish`.
 3. Stop the currently running proxy and replace only the global Bun package. Do not use the destructive
    product-level uninstall command:
@@ -203,10 +213,14 @@ installed, and a passing preview is not permission to bypass the stable release 
 
 1. Land the release contents on `main` through the normal branch/worktree path.
 2. Choose an unused version and update `package.json` in a dedicated release commit.
-3. Require successful Cross-platform CI and Package lifecycle runs for that exact commit SHA.
-4. Run the release workflow as a dry-run for that SHA and verify the exact Bun-built tarball.
+3. Wait for the latest Cross-platform CI, Package lifecycle, and Pages runs for that exact commit SHA
+   to complete successfully. Missing, queued, superseded, cancelled, or failed latest runs block release.
+4. Run the release workflow as a dry-run for that SHA. It extracts
+   `package/src/generated/model-catalog-v1.json` from the exact Bun-built tarball and requires it to match
+   the deployed `catalog/v1/model-catalog.json` source SHA, revision, and digest.
 5. Dispatch a real publish for the same SHA with `preview` for a prerelease version or `latest` for a
-   stable version. If `main` moved after the dry-run, repeat the dry-run on the new release SHA.
+   stable version. The real publish repeats the same catalog gate. If `main` moved after the dry-run,
+   repeat every exact-SHA gate and dry-run on the new release SHA.
 6. Require the registry smoke, immutable `v<version>` tag, and matching GitHub Release to succeed.
 7. Verify the published version and dist-tags with `bun pm view`; retain the workflow URL as the
    release receipt.
@@ -246,6 +260,12 @@ the next prerelease number. Metadata disagreement between the registry, Git tag,
 blocks automation until maintainers either repair the missing metadata at the same immutable commit
 or choose a new version. The normal release workflow does not perform ad-hoc dist-tag rollback.
 
+The Pages catalog is also recovered by fixing forward. Revert or correct the bad catalog inputs on
+`main`, increase `catalogRevision` when provider/model data changes, and wait for the new commit's Pages
+deployment. Then rebuild and release only that new exact SHA. Do not manually replace the Pages artifact,
+deploy an older SHA, lower/reuse a revision for changed data, or publish a tarball whose catalog does not
+match Pages.
+
 ## Release workflow
 
 Package development and release preparation are Bun-first. `package.json` defines the `frogprogsy` package
@@ -253,16 +273,16 @@ and the `frogp` bin — and only that bin. The package must never declare a `cla
 shadow the user's own Claude Code on `PATH` (`structure/02_config-and-claude-home.md`). Install verification
 enforces this in one direction only: a successful new install requires that any Bun-global `claude` is *not*
 frogprogsy-owned. Rollback verification does not apply that rule, because a restored older version legitimately
-owns one. `prepublishOnly` runs typecheck and GUI build; and `scripts/release.ts` uses
-Bun for registry preflight, version updates, and release orchestration. The workflow then creates one
-allowlisted, hash-recorded tarball through `scripts/dev-package.ts`. Each workflow run verifies the exact
-tarball it produced: dry-run validates it with Bun, while a real run passes that same run's verified path
-to the final `npm publish`. npm is otherwise confined to the real-publish lane, where it first updates
-itself to the OIDC-capable version and then performs Trusted Publishing. The one-time bootstrap uses
-the same lane and exact tarball with an explicitly selected short-lived secret; no normal release
-receives that credential. This exception remains because tokenless OIDC authentication and provenance
-are not currently documented for `bun publish`. Docs publishing is separate from package registry
-publishing.
+owns one. `prepublishOnly` generates the tracked-`HEAD` catalog before typecheck and GUI build, and
+`scripts/release.ts` uses Bun for registry preflight, version updates, and release orchestration. The
+workflow then creates one allowlisted, hash-recorded tarball through `scripts/dev-package.ts`. Each
+workflow run verifies the exact tarball it produced and compares its extracted strict catalog with the
+exact-SHA Pages catalog before either dry-run or real publish. Dry-run validates the tarball with Bun,
+while a real run passes that same verified path to the final `npm publish`. npm is otherwise confined to
+the real-publish lane, where it first updates itself to the OIDC-capable version and then performs Trusted
+Publishing. The one-time bootstrap uses the same lane and exact tarball with an explicitly selected
+short-lived secret; no normal release receives that credential. This exception remains because tokenless
+OIDC authentication and provenance are not currently documented for `bun publish`.
 
 ## Release metadata invariants
 

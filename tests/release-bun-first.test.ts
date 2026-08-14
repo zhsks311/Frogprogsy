@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { registryVersionListed } from "../scripts/release-registry";
+import { latestWorkflowRun, type GhRun } from "../scripts/release";
 
 const root = new URL("../", import.meta.url);
 
@@ -27,33 +28,54 @@ describe("Bun-first release and installation contract", () => {
     );
   });
 
-  test("release helper waits fail-closed on BOTH workflow gates for the exact SHA before dispatching", async () => {
+  test("release helper waits fail-closed on the latest exact-SHA CI, package, and Pages runs before dispatching", async () => {
     const source = await read("scripts/release.ts");
 
-    // Both gate workflows are named as constants and registered for waiting — matching
-    // release.yml's `require_success ci.yml` + `require_success package-lifecycle.yml`.
     expect(source).toContain('const CI_WORKFLOW = "ci.yml"');
     expect(source).toContain('const PACKAGE_LIFECYCLE_WORKFLOW = "package-lifecycle.yml"');
+    expect(source).toContain('const PAGES_WORKFLOW = "deploy-docs.yml"');
     expect(source).toContain("{ workflow: CI_WORKFLOW, label: \"Cross-platform CI\" }");
     expect(source).toContain("{ workflow: PACKAGE_LIFECYCLE_WORKFLOW, label: \"Package lifecycle\" }");
-
-    // The run lookup is pinned to the exact commit SHA.
+    expect(source).toContain("{ workflow: PAGES_WORKFLOW, label: \"Pages catalog\" }");
     expect(source).toContain("gh run list --workflow ${workflow} --commit ${sha}");
-
-    // A completed non-success run aborts immediately and names the failed workflow.
+    expect(source).toContain("const latest = latestWorkflowRun(runs)");
     expect(source).toContain("${gate.label} (${gate.workflow}) failed for ${sha}");
-    // Missing/in-progress runs keep polling inside the bounded timeout (fail-closed on expiry).
     expect(source).toContain("const deadline = Date.now() + RELEASE_GATE_WAIT_TIMEOUT_MS");
     expect(source).toContain("timed out waiting for ${gate.label}");
-
-    // The dual gate is awaited BEFORE the Release workflow is dispatched, and the old
-    // single-CI-only wait is gone.
     expect(source).toContain("await waitForReleaseGates(releaseSha)");
     expect(source).not.toContain("waitForSuccessfulCi");
     const gateIndex = source.indexOf("await waitForReleaseGates(releaseSha)");
     const dispatchIndex = source.indexOf("gh workflow run release.yml");
     expect(gateIndex).toBeGreaterThan(-1);
     expect(dispatchIndex).toBeGreaterThan(gateIndex);
+  });
+
+  test("release helper judges only the newest exact-SHA workflow attempt", () => {
+    const sha = "a".repeat(40);
+    const run = (
+      databaseId: number,
+      status: string,
+      conclusion: string | null,
+    ): GhRun => ({ databaseId, status, conclusion, headSha: sha, url: `https://example.test/${databaseId}` });
+
+    expect(latestWorkflowRun([
+      run(10, "completed", "success"),
+      run(12, "queued", null),
+      run(11, "completed", "failure"),
+    ])).toMatchObject({ databaseId: 12, status: "queued" });
+    expect(latestWorkflowRun([
+      run(20, "completed", "success"),
+      run(21, "in_progress", null),
+    ])).toMatchObject({ databaseId: 21, status: "in_progress" });
+    expect(latestWorkflowRun([
+      run(30, "completed", "success"),
+      run(31, "completed", "failure"),
+    ])).toMatchObject({ databaseId: 31, conclusion: "failure" });
+    expect(latestWorkflowRun([
+      run(40, "completed", "failure"),
+      run(41, "completed", "success"),
+    ])).toMatchObject({ databaseId: 41, conclusion: "success" });
+    expect(latestWorkflowRun([])).toBeNull();
   });
 
   test("release workflow confines npm to the final trusted-publish lane", async () => {
@@ -172,19 +194,21 @@ describe("Bun-first release and installation contract", () => {
     expect(lifecycle).toContain("timeout-minutes:");
   });
 
-  test("release is gated on successful CI and package-lifecycle runs for the exact commit SHA", async () => {
+  test("release is gated on the latest successful CI, package, and Pages runs for the exact commit SHA", async () => {
     const workflow = await read(".github/workflows/release.yml");
 
-    // Fail-closed dual gate: both workflows must have a green run for THIS commit.
-    expect(workflow).toContain("require_success() {");
-    expect(workflow).toContain("require_success ci.yml");
-    expect(workflow).toContain("require_success package-lifecycle.yml");
-
-    // The lookup is pinned to the exact commit and demands an actual success —
-    // an empty result aborts rather than being treated as passing.
+    // Fail closed on all three exact-SHA publication prerequisites. Looking up the
+    // latest run without a success filter prevents an older green retry from hiding
+    // a newer failed, cancelled, queued, or in-progress run.
+    expect(workflow).toContain("require_latest_success() {");
+    expect(workflow).toContain("require_latest_success ci.yml");
+    expect(workflow).toContain("require_latest_success package-lifecycle.yml");
+    expect(workflow).toContain("require_latest_success deploy-docs.yml");
     expect(workflow).toContain('--commit "$GITHUB_SHA"');
-    expect(workflow).toContain("--status success");
-    expect(workflow).toContain('if [ -z "$run_url" ]; then');
+    expect(workflow).not.toContain("--status success");
+    expect(workflow).toContain("databaseId,conclusion,headSha,status,url,workflowName");
+    expect(workflow).toContain('test "$gate_status" = "completed"');
+    expect(workflow).toContain('test "$gate_conclusion" = "success"');
   });
 
   test("runtime update and package removal are Bun-managed", async () => {

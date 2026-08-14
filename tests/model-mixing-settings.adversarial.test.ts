@@ -62,7 +62,7 @@ describe("model mixing settings adversarial contracts", () => {
     config.disabledModels = ["frogp/mix"];
     saveConfig(config);
 
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const first = await fetch(new URL("/api/model-mixing-settings", server.url));
       const firstBody = await first.json() as any;
@@ -94,7 +94,7 @@ describe("model mixing settings adversarial contracts", () => {
   });
 
   test("call-plan draft preview is non-persistent and malformed draft JSON returns 400", async () => {
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const research = MIX_PRESETS.find(p => p.id === "research")!.modelMixing;
       const res = await fetch(new URL(`/api/model-mixing/call-plan?draft=${encodeURIComponent(JSON.stringify(research))}`, server.url));
@@ -115,7 +115,7 @@ describe("model mixing settings adversarial contracts", () => {
   });
 
   test("call-plan draft semantic problems are warnings, not 400, and do not mutate saved config", async () => {
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const draft = { enabled: "true", combine: "fusion", agents: [{ provider: "missing", model: "ghost" }], fusion: { panel: [{ provider: "codex", model: "unknown" }] } };
       const res = await fetch(new URL(`/api/model-mixing/call-plan?draft=${encodeURIComponent(JSON.stringify(draft))}`, server.url));
@@ -165,7 +165,7 @@ describe("model mixing settings adversarial contracts", () => {
     } as any;
     saveConfig(config);
 
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const res = await fetch(new URL("/api/model-mixing-settings", server.url), {
         method: "PUT",
@@ -206,7 +206,7 @@ describe("model mixing settings adversarial contracts", () => {
     config.modelMixing = { enabled: true, aliasId: "frogp/mix", timeoutMs: 30000 };
     saveConfig(config);
 
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const res = await fetch(new URL("/api/model-mixing-settings", server.url), {
         method: "PUT",
@@ -228,7 +228,7 @@ describe("model mixing settings adversarial contracts", () => {
     config.modelMixing = { fusion: { panelWebSearch: { timeoutMs: 10000, safeSibling: { keep: true } } } } as any;
     saveConfig(config);
 
-    const server = startServer(0);
+    const server = await startServer(0);
     try {
       const res = await fetch(new URL("/api/model-mixing-settings", server.url), {
         method: "PUT",

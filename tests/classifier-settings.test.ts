@@ -147,7 +147,7 @@ describe("resolveAutoModeClassifierTarget", () => {
 
 describe("GET /api/classifier-settings", () => {
   test("returns every provider and an empty explicit target", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const res = await fetch(new URL("/api/classifier-settings", server.url));
       expect(res.status).toBe(200);
@@ -169,7 +169,7 @@ describe("GET /api/classifier-settings", () => {
 
 describe("PUT /api/classifier-settings", () => {
   test("saves one provider/model pair; GET and config reflect it", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const res = await put(server.url, { autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" } });
       expect(res.status).toBe(200);
@@ -189,7 +189,7 @@ describe("PUT /api/classifier-settings", () => {
     const config = baseConfig();
     config.autoModeClassifier = { provider: "codex", model: "gpt-5.4-mini" };
     saveConfig(config);
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const res = await put(server.url, { autoModeClassifier: null });
       expect(res.status).toBe(200);
@@ -207,7 +207,7 @@ describe("PUT /api/classifier-settings", () => {
       profiles: [{ id: "cp_work", name: "Work", claudeHome: join(testDir, ".claude-work"), routeAutoModeClassifier: true }],
     };
     saveConfig(config);
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const res = await put(server.url, { autoModeClassifier: null });
       expect(res.status).toBe(409);
@@ -218,7 +218,7 @@ describe("PUT /api/classifier-settings", () => {
   });
 
   test("rejects incomplete, unknown-provider, and unknown-model targets without persisting", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       expect((await put(server.url, { autoModeClassifier: { provider: "codex", model: "" } })).status).toBeGreaterThanOrEqual(400);
       expect((await put(server.url, { autoModeClassifier: { provider: "ghost", model: "gpt-5.4-mini" } })).status).toBeGreaterThanOrEqual(400);
@@ -234,7 +234,7 @@ describe("PUT /api/classifier-settings", () => {
       const config = baseConfig();
       config.disabledModels = [disabled];
       saveConfig(config);
-      const server = startServer(0);
+      const server = await startServer(0)
       try {
         const res = await put(server.url, { autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" } });
         expect(res.status).toBeGreaterThanOrEqual(400);
@@ -246,7 +246,7 @@ describe("PUT /api/classifier-settings", () => {
   });
 
   test("rejects legacy payloads (classifierModel / classifierFallback) instead of silently accepting", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       for (const legacy of [
         { providers: { codex: { classifierModel: "gpt-5.4-mini" } } },
@@ -262,7 +262,7 @@ describe("PUT /api/classifier-settings", () => {
   });
 
   test("malformed JSON body returns 400", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       const res = await fetch(new URL("/api/classifier-settings", server.url), {
         method: "PUT",
@@ -283,7 +283,7 @@ describe("startServer auto-mode classifier lifecycle (regression)", () => {
     const config = baseConfig();
     config.autoModeClassifier = { provider: "codex", model: "gpt-5.4-mini" };
     saveConfig(config);
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       // Old branch removed/rewrote the alias target at startup; the new startup only validates.
       expect(loadConfig().autoModeClassifier).toEqual({ provider: "codex", model: "gpt-5.4-mini" });
@@ -297,7 +297,7 @@ describe("startServer auto-mode classifier lifecycle (regression)", () => {
   });
 
   test("starting with an unset target leaves it unset (no silent creation)", async () => {
-    const server = startServer(0);
+    const server = await startServer(0)
     try {
       expect(loadConfig().autoModeClassifier).toBeUndefined();
     } finally {
@@ -305,7 +305,7 @@ describe("startServer auto-mode classifier lifecycle (regression)", () => {
     }
   });
 
-  test("fails before listening when a configured target is incomplete or disabled", () => {
+  test("fails before listening when a configured target is incomplete or disabled", async () => {
     for (const mutate of [
       (config: FrogConfig) => {
         config.autoModeClassifier = { provider: "codex", model: "" };
@@ -318,18 +318,18 @@ describe("startServer auto-mode classifier lifecycle (regression)", () => {
       const config = baseConfig();
       mutate(config);
       saveConfig(config);
-      expect(() => startServer(0)).toThrow(/Invalid autoModeClassifier/);
+      await expect(startServer(0)).rejects.toThrow(/Invalid autoModeClassifier/);
     }
   });
 
-  test("fails before listening when a static provider catalog does not contain the target", () => {
+  test("fails before listening when a static provider catalog does not contain the target", async () => {
     const config = baseConfig();
     config.autoModeClassifier = { provider: "codex", model: "invented-model" };
     saveConfig(config);
-    expect(() => startServer(0)).toThrow(/unknown_model/);
+    await expect(startServer(0)).rejects.toThrow(/unknown_model/);
   });
 
-  test("fails before listening when an opted-in home has no classifier target", () => {
+  test("fails before listening when an opted-in home has no classifier target", async () => {
     const config = baseConfig();
     config.claudeProfiles = {
       schemaVersion: 1,
@@ -341,6 +341,6 @@ describe("startServer auto-mode classifier lifecycle (regression)", () => {
       }],
     };
     saveConfig(config);
-    expect(() => startServer(0)).toThrow(/Invalid autoModeClassifier/);
+    await expect(startServer(0)).rejects.toThrow(/Invalid autoModeClassifier/);
   });
 });

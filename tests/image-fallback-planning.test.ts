@@ -115,6 +115,27 @@ describe("image fallback planning", () => {
     }
   });
 
+  test("treats an explicit empty input modality set as image unsupported", () => {
+    const noInputProvider: FrogProviderConfig = {
+      ...routedTextOnlyProvider,
+      modelCapabilities: { "no-input-model": { input: [] } },
+    };
+
+    const decision = decideImageFallback(
+      config(openAiForwardProvider, noInputProvider, false),
+      "routed",
+      noInputProvider,
+      "no-input-model",
+      parsedWithImage("routed/no-input-model"),
+      new Headers({ authorization: "Bearer chatgpt" }),
+    );
+
+    expect(decision).toMatchObject({ action: "reject", code: "text_only_model" });
+    if (decision.action === "reject") {
+      expect(decision.message).toContain("input: []");
+    }
+  });
+
   test("uses the configured fallback provider when one is selected", () => {
     const cfg = config(openAiForwardProvider);
     cfg.providers.preferred = preferredForwardProvider;

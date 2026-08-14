@@ -11,9 +11,9 @@ const cliPath = join(repoRoot, "src", "cli.ts");
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/;
 
 const STUB_MODELS = [
-  { id: "gpt-5.5", provider: "codex", namespaced: "codex/gpt-5.5", disabled: false, contextWindow: 400000, inputModalities: ["text", "image"], reasoningEfforts: ["low", "medium", "high"] },
-  { id: "gpt-5.4-mini", provider: "codex", namespaced: "codex/gpt-5.4-mini", disabled: true },
-  { id: "claude-sonnet-4-6", provider: "anthropic", namespaced: "anthropic/claude-sonnet-4-6", disabled: false },
+  { id: "gpt-5.5", provider: "codex", namespaced: "codex/gpt-5.5", disabled: false, contextWindow: 400000, inputModalities: ["text", "image"], reasoningEfforts: ["low", "medium", "high"], supportStatus: "validated", catalogSource: "remote", catalogRevision: 42, catalogSourceCommit: "1234567890abcdef1234567890abcdef12345678", catalogRefreshedAt: "2026-08-12T10:30:00.000Z" },
+  { id: "gpt-5.4-mini", provider: "codex", namespaced: "codex/gpt-5.4-mini", disabled: true, supportStatus: "discovered", catalogSource: "remote", catalogRevision: 42, catalogSourceCommit: "1234567890abcdef1234567890abcdef12345678", catalogRefreshedAt: "2026-08-12T10:30:00.000Z" },
+  { id: "claude-sonnet-4-6", provider: "anthropic", namespaced: "anthropic/claude-sonnet-4-6", disabled: false, supportStatus: "unknown", catalogSource: "remote", catalogRevision: 42, catalogSourceCommit: "1234567890abcdef1234567890abcdef12345678", catalogRefreshedAt: "2026-08-12T10:30:00.000Z" },
 ];
 
 function runCli(argv: string[], frogHome: string, extraEnv: Record<string, string> = {}) {
@@ -53,7 +53,7 @@ function writeRunningState(frogHome: string, port: number) {
   writeFileSync(join(frogHome, "frogp.port"), String(port), "utf8");
 }
 
-function startStubProxy(): { server: ReturnType<typeof Bun.serve>; port: number } {
+function startStubProxy(options: { statusAvailable?: boolean } = {}) {
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -61,6 +61,19 @@ function startStubProxy(): { server: ReturnType<typeof Bun.serve>; port: number 
       const url = new URL(req.url);
       if (url.pathname === "/healthz") return new Response("ok", { status: 200 });
       if (url.pathname === "/api/models") return Response.json(STUB_MODELS);
+      if (url.pathname === "/api/model-catalog/status") {
+        if (options.statusAvailable === false) return new Response("unavailable", { status: 503 });
+        return Response.json({
+          source: "remote",
+          catalogRevision: 42,
+          catalogDigest: "a".repeat(64),
+          sourceCommit: "1234567890abcdef1234567890abcdef12345678",
+          generatedAt: "2026-08-12T10:00:00.000Z",
+          refreshedAt: "2026-08-12T10:30:00.000Z",
+          skippedRecords: 0,
+          warnings: { count: 0, causes: [] },
+        });
+      }
       return new Response("not found", { status: 404 });
     },
   });
@@ -108,6 +121,12 @@ describe("frogp models", () => {
       expect(result.stdout).toContain("gpt-5.5");
       expect(result.stdout).toContain("disabled");
       expect(result.stdout).toContain("claude-sonnet-4-6");
+      expect(result.stdout).toContain("모델 자료: 원격");
+      expect(result.stdout).toContain("revision 42");
+      expect(result.stdout).toContain("12345678");
+      expect(result.stdout).toContain("검증됨");
+      expect(result.stdout).toContain("발견됨");
+      expect(result.stdout).toContain("확인 필요");
     } finally {
       server.stop(true);
       rmSync(home, { recursive: true, force: true });
@@ -124,6 +143,21 @@ describe("frogp models", () => {
       expect(result.stderr).toBe("");
       expect(result.stdout).not.toMatch(ANSI_PATTERN);
       expect(JSON.parse(result.stdout)).toEqual(STUB_MODELS);
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps the successful model list when the catalog status endpoint is temporarily unavailable", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-"));
+    const { server, port } = startStubProxy({ statusAvailable: false });
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync(["models"], home);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("gpt-5.5");
+      expect(result.stdout).toContain("모델 자료 상태를 확인하지 못했습니다");
     } finally {
       server.stop(true);
       rmSync(home, { recursive: true, force: true });

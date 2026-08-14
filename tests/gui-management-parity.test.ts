@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
+import { parseModelRows } from "../gui/src/pages/Models";
 
 function read(path: string): string {
   return readFileSync(path, "utf8");
@@ -85,7 +86,15 @@ describe("GUI management parity", () => {
     const ko = read("gui/src/i18n/ko.ts");
     const zh = read("gui/src/i18n/zh.ts");
 
-    expect(models).toContain("authReady: row.authReady !== false");
+    expect(parseModelRows([
+      { provider: "ready", id: "model-a", namespaced: "ready/model-a", authReady: true },
+      { provider: "blocked", id: "model-b", namespaced: "blocked/model-b", authReady: false },
+      { provider: "legacy", id: "model-c", namespaced: "legacy/model-c" },
+    ]).map(row => ({ namespaced: row.namespaced, authReady: row.authReady }))).toEqual([
+      { namespaced: "ready/model-a", authReady: true },
+      { namespaced: "blocked/model-b", authReady: false },
+      { namespaced: "legacy/model-c", authReady: true },
+    ]);
     expect(models).toContain("!row.authReady && !featuredChosen.includes(row.namespaced)");
     expect(models).toContain("`frogp login ${row.provider}`");
     expect(models).toContain('t("models.authLoginRequired")');
