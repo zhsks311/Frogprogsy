@@ -2329,9 +2329,10 @@ export const __requestLogTest = {
     req: Request,
     url: URL,
     config: FrogConfig,
-    deps: ManagementAPIDeps = {},
+    deps: ManagementAPIDeps & { captureState?: (state: RuntimeConfigState) => void } = {},
   ) {
     const state = managementTestState(config, deps.saveConfig ?? saveConfig, deps.effectiveConfig, deps.catalog);
+    deps.captureState?.(state);
     return handleManagementAPI(req, url, state, deps);
   },
   handleCountTokens,
@@ -2581,6 +2582,8 @@ function localAccessDenialResponse(decision: LocalAccessDenied, pathname: string
 
 interface ManagementAPIDeps {
   saveConfig?: (config: FrogConfig) => void;
+  /** OAuth config-recovery seam for management ordering tests. */
+  restoreOAuthProviderConfigs?: (config: FrogConfig) => boolean;
   /** Isolated home root for name-only profile creation tests; production defaults to the OS home. */
   homeDir?: string;
   /** Launcher sync seam so management API tests never touch the real config directory. */
@@ -3276,7 +3279,26 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     return { models, references };
   }
 
-  await persistProviderConfigIfChanged(restoreCredentialedOAuthProviderConfigs(config));
+  function persistModelContinuity(snapshot: FrogConfig): Response | null {
+    try {
+      state.persist();
+      return null;
+    } catch {
+      for (const key of Object.keys(config)) Reflect.deleteProperty(config, key);
+      Object.assign(config, snapshot);
+      state.persisted = config;
+      state.rebuild();
+      return jsonResponse({
+        error: "model continuity settings could not be saved",
+        code: "persist_failed",
+      }, 500);
+    }
+  }
+
+  if (url.pathname !== "/api/model-continuity") {
+    const restoreOAuthProviderConfigs = deps.restoreOAuthProviderConfigs ?? restoreCredentialedOAuthProviderConfigs;
+    await persistProviderConfigIfChanged(restoreOAuthProviderConfigs(config));
+  }
 
   const providerSummaries = () => Object.entries(state.effective.providers).map(([name, provider]) => {
     const persistedUserModels = config.providers[name]?.userModels;
@@ -4103,6 +4125,7 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
         return jsonResponse({ error: validation.error, code: "invalid_policy" }, 400);
       }
 
+      const snapshot = structuredClone(config);
       if (validation.policy.automatic === "off" && validation.policy.fallbacks.length === 0) {
         if (config.modelContinuity) {
           delete config.modelContinuity[action.primary];
@@ -4112,11 +4135,24 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
         config.modelContinuity ??= {};
         config.modelContinuity[action.primary] = validation.policy;
       }
-      state.persist();
+      const persistFailure = persistModelContinuity(snapshot);
+      if (persistFailure) return persistFailure;
       return jsonResponse({ ok: true, policy: validation.policy, warnings: validation.warnings });
     }
 
     const action = parsed.action;
+    const reference = references.find(candidate => candidate.id === action.referenceId);
+    if (!reference) {
+      return jsonResponse({ error: "unknown model reference", code: "invalid_reference" }, 400);
+    }
+    if (reference.kind !== "gateway-alias" && reference.primary !== action.expectedPrimary) {
+      return jsonResponse({
+        error: "model reference changed; reload and retry",
+        code: "stale_reference",
+      }, 409);
+    }
+
+    const snapshot = structuredClone(config);
     const replaced = replaceModelContinuityReference({
       config,
       referenceId: action.referenceId,
@@ -4139,7 +4175,8 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       const code = replaced.status === 409 ? "stale_reference" : "invalid_replacement";
       return jsonResponse({ error: replaced.error, code }, replaced.status);
     }
-    state.persist();
+    const persistFailure = persistModelContinuity(snapshot);
+    if (persistFailure) return persistFailure;
     await refreshClaudeCodeCatalogBestEffort();
     return jsonResponse({ ok: true });
   }

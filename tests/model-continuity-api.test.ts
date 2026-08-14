@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { materializeModelAliases } from "../src/model-aliases";
 import { ContinuityCircuit, type ContinuityReason, type ModelContinuityReference } from "../src/model-continuity";
 import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
+import type { RuntimeConfigState } from "../src/runtime-config-state";
 import { __requestLogTest } from "../src/server";
 import type { FrogConfig, ModelContinuityPolicy } from "../src/types";
 
@@ -50,7 +52,7 @@ function config(): FrogConfig {
         liveModels: false,
       },
     },
-    longContext: { provider: "work", model: "disabled" },
+    longContext: { thresholdTokens: 100_000, provider: "work", model: "disabled" },
     subagentModels: ["work/new"],
     modelContinuity: {
       "work/old": { fallbacks: ["work/new"], automatic: "retired" },
@@ -327,9 +329,93 @@ describe("model continuity management actions", () => {
       replacement: "work/new",
     }, configValue, deps);
     expect(replaced?.status).toBe(200);
-    expect(configValue.longContext).toEqual({ provider: "work", model: "new" });
+    expect(configValue.longContext).toEqual({ thresholdTokens: 100_000, provider: "work", model: "new" });
     expect(saves).toBe(1);
     expect(refreshes).toBe(1);
+  });
+
+  test("replace rejects dormant owners that are absent from the current reference inventory", async () => {
+    const cases: Array<{ referenceId: string; configure(configValue: FrogConfig): void }> = [
+      {
+        referenceId: "long-context",
+        configure(configValue) {
+          configValue.longContext = { provider: "work", model: "disabled" };
+        },
+      },
+      {
+        referenceId: "mix-coordinator",
+        configure(configValue) {
+          configValue.modelMixing = {
+            enabled: false,
+            coordinator: { provider: "work", model: "disabled" },
+          };
+        },
+      },
+      {
+        referenceId: "web-search-helper",
+        configure(configValue) {
+          configValue.webSearchFallback = {
+            enabled: false,
+            provider: "work",
+            model: "disabled",
+          };
+        },
+      },
+      {
+        referenceId: "image-helper",
+        configure(configValue) {
+          configValue.imageFallback = {
+            enabled: false,
+            provider: "work",
+            model: "disabled",
+          };
+        },
+      },
+    ];
+
+    for (const item of cases) {
+      const configValue = config();
+      item.configure(configValue);
+      const before = structuredClone(configValue);
+      let saves = 0;
+      let refreshes = 0;
+      const response = await request("POST", {
+        action: "replace",
+        referenceId: item.referenceId,
+        expectedPrimary: "work/disabled",
+        replacement: "work/new",
+      }, configValue, {
+        saveConfig: () => { saves += 1; },
+        refreshClaudeCodeCatalog: async () => { refreshes += 1; },
+      });
+
+      expect(response?.status).toBe(400);
+      expect(await response!.json()).toMatchObject({ code: "invalid_reference" });
+      expect(configValue).toEqual(before);
+      expect(saves).toBe(0);
+      expect(refreshes).toBe(0);
+    }
+  });
+
+  test("replace keeps the active gateway-alias rejection owned by the replacement helper", async () => {
+    const configValue = config();
+    const alias = materializeModelAliases([{ provider: "work", model: "new" }])[0]!;
+    let saves = 0;
+    let refreshes = 0;
+    const response = await request("POST", {
+      action: "replace",
+      referenceId: `gateway-alias:${alias.alias}`,
+      expectedPrimary: "stale/value",
+      replacement: "work/disabled",
+    }, configValue, {
+      saveConfig: () => { saves += 1; },
+      refreshClaudeCodeCatalog: async () => { refreshes += 1; },
+    });
+
+    expect(response?.status).toBe(400);
+    expect(await response!.json()).toMatchObject({ code: "invalid_replacement" });
+    expect(saves).toBe(0);
+    expect(refreshes).toBe(0);
   });
 
   test("strict action parsing rejects malformed or unknown fields without side effects", async () => {
@@ -359,6 +445,117 @@ describe("model continuity management actions", () => {
     expect(malformed?.status).toBe(400);
     expect(await malformed!.json()).toMatchObject({ code: "invalid_json" });
     expect(saves).toBe(0);
+    expect(refreshes).toBe(0);
+  });
+
+  test("continuity actions skip common OAuth recovery before parsing and persist only the valid action", async () => {
+    const configValue = config();
+    let restores = 0;
+    let saves = 0;
+    let refreshes = 0;
+    const deps = {
+      restoreOAuthProviderConfigs(value: FrogConfig) {
+        restores += 1;
+        value.providers.recovered = {
+          adapter: "openai-chat",
+          baseUrl: "https://recovered.invalid",
+          authMode: "oauth",
+        };
+        return true;
+      },
+      saveConfig: () => { saves += 1; },
+      refreshClaudeCodeCatalog: async () => { refreshes += 1; },
+    };
+
+    const malformed = await rawPost("{", configValue, deps);
+    expect(malformed?.status).toBe(400);
+    const unknown = await request("POST", { action: "unknown" }, configValue, deps);
+    expect(unknown?.status).toBe(400);
+    expect(restores).toBe(0);
+    expect(saves).toBe(0);
+    expect(refreshes).toBe(0);
+    expect(configValue.providers.recovered).toBeUndefined();
+
+    const valid = await request("POST", {
+      action: "set",
+      primary: "work/new",
+      fallbacks: ["noauth/login"],
+      automatic: "transient",
+    }, configValue, deps);
+    expect(valid?.status).toBe(200);
+    expect(restores).toBe(0);
+    expect(saves).toBe(1);
+    expect(refreshes).toBe(0);
+    expect(configValue.providers.recovered).toBeUndefined();
+  });
+
+  test("set restores persisted and effective state when saving throws", async () => {
+    const configValue = config();
+    const before = structuredClone(configValue);
+    let saves = 0;
+    let refreshes = 0;
+    let runtimeState: RuntimeConfigState | undefined;
+    const response = await request("POST", {
+      action: "set",
+      primary: "work/new",
+      fallbacks: ["noauth/login"],
+      automatic: "transient",
+    }, configValue, {
+      saveConfig: () => {
+        saves += 1;
+        throw new Error(`cannot save ${home}/config.json`);
+      },
+      refreshClaudeCodeCatalog: async () => { refreshes += 1; },
+      captureState: state => { runtimeState = state; },
+    });
+
+    expect(response?.status).toBe(500);
+    const error = await response!.json();
+    expect(error).toEqual({
+      error: "model continuity settings could not be saved",
+      code: "persist_failed",
+    });
+    expect(JSON.stringify(error)).not.toContain(home);
+    expect(configValue).toEqual(before);
+    expect(runtimeState?.persisted).toBe(configValue);
+    expect(runtimeState?.persisted).toEqual(before);
+    expect(runtimeState?.effective).toEqual(before);
+    expect(saves).toBe(1);
+    expect(refreshes).toBe(0);
+  });
+
+  test("replace restores the owner and does not refresh when saving throws", async () => {
+    const configValue = config();
+    const before = structuredClone(configValue);
+    let saves = 0;
+    let refreshes = 0;
+    let runtimeState: RuntimeConfigState | undefined;
+    const response = await request("POST", {
+      action: "replace",
+      referenceId: "long-context",
+      expectedPrimary: "work/disabled",
+      replacement: "work/new",
+    }, configValue, {
+      saveConfig: () => {
+        saves += 1;
+        throw new Error(`cannot save ${home}/config.json`);
+      },
+      refreshClaudeCodeCatalog: async () => { refreshes += 1; },
+      captureState: state => { runtimeState = state; },
+    });
+
+    expect(response?.status).toBe(500);
+    const error = await response!.json();
+    expect(error).toEqual({
+      error: "model continuity settings could not be saved",
+      code: "persist_failed",
+    });
+    expect(JSON.stringify(error)).not.toContain(home);
+    expect(configValue).toEqual(before);
+    expect(runtimeState?.persisted).toBe(configValue);
+    expect(runtimeState?.persisted).toEqual(before);
+    expect(runtimeState?.effective).toEqual(before);
+    expect(saves).toBe(1);
     expect(refreshes).toBe(0);
   });
 

@@ -36,3 +36,50 @@
 ## 우려
 
 전체 suite, formatter, linter, 전체 typecheck, GUI build는 요청에 따라 실행하지 않았습니다. 검증 범위는 지정된 focused Bun 테스트 3개 파일입니다.
+
+## 검토 수정 round 1
+
+### 상태
+
+완료. 비활성 owner 교체, continuity 요청 전 공통 OAuth 복구 저장, 저장 실패 뒤 메모리 불일치를 막았습니다.
+
+### 변경
+
+- `replace`가 현재 GET reference inventory에서 active owner를 먼저 확인합니다. 비활성
+  long-context, model-mixing, web-search/image helper는 `400 invalid_reference`, active owner의
+  target 변경은 `409 stale_reference`입니다. active gateway alias는 기존 replacement helper의
+  `400` 거부를 그대로 사용합니다.
+- `/api/model-continuity`는 공통 OAuth provider 복구 mutation을 건너뜁니다. malformed/unknown
+  action은 복구 대상이 있어도 저장·refresh하지 않고, 유효 action 자체만 정해진 횟수로 저장합니다.
+- `set`과 `replace`는 mutation 전 설정 snapshot을 만들고 `state.persist()` 실패 시 persisted
+  config를 같은 객체에 복원한 뒤 effective state를 rebuild합니다. 응답은 raw 오류나 경로 없이
+  `500 {error,code:\"persist_failed\"}`이며 replacement refresh는 호출하지 않습니다.
+- API 테스트가 runtime state를 직접 확인할 수 있도록 기존 management test helper에
+  `captureState` seam만 추가했습니다.
+
+### 실행 명령과 실제 결과
+
+1. RED: `bun test --isolate ./tests/model-continuity-api.test.ts`
+   - 결과: 종료 코드 1, 9 pass / 3 fail. dormant owner가 `200`으로 변경되고 set/replace 저장
+     예외가 raw 오류로 전파되는 문제를 재현했습니다.
+2. OAuth ordering seam 연결 뒤 RED: 같은 단일 테스트 명령
+   - 결과: 종료 코드 1, 8 pass / 4 fail. malformed continuity action 전에 공통 OAuth 복구가
+     저장·refresh되는 문제까지 재현했습니다.
+3. 단일 API GREEN: 같은 단일 테스트 명령
+   - 결과: 종료 코드 0, 13 pass / 0 fail / 133 expect.
+4. 최종 focused 관리 API:
+   `bun test --isolate ./tests/model-continuity-api.test.ts ./tests/provider-rest-api.test.ts ./tests/claude-profile-dashboard-api.test.ts`
+   - 결과: 종료 코드 0, 65 pass / 0 fail / 354 expect, 3개 파일.
+5. OAuth 관리 회귀:
+   `bun test --isolate ./tests/oauth-management-api.test.ts`
+   - 결과: 종료 코드 0, 2 pass / 0 fail / 8 expect.
+6. `git diff --check`
+   - 결과: 종료 코드 0, 출력 없음.
+
+### 커밋
+
+`fix: harden model continuity management mutations`
+
+### 우려
+
+전체 suite, formatter, linter, 전체 typecheck, GUI build는 요청에 따라 실행하지 않았습니다.
