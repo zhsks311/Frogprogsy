@@ -35,6 +35,14 @@ Use **Models** when you need to reload the dashboard/API model list. That refres
 
 Use **Claude Code Homes** when Claude Code's `/model` picker is stale. Refresh the target home, then run the displayed `frogp claude reload-models <profile-id>` command for that profile. Claude Code does not hot reload an already-open `/model` screen; start a new Claude Code session or resume the profile so Claude Code refetches `/v1/models`.
 
+## Replacing models that have ended
+
+The Models page checks model replacement status immediately below the page summary and before the visibility and first-shown-order controls. Models that have ended, need sign-in, or have invalid replacement settings are open first. Healthy settings stay in one collapsed section so the next action remains clear.
+
+For ordinary model requests, you can save up to three exact alternative models in order. Automatic protection can remain off, apply only when a model has ended, apply only to temporary failures, or cover both cases. This is a temporary request-time choice: it keeps the configured model unchanged and tries the saved alternatives only when the selected condition occurs.
+
+Auto-mode classification, model mixing, helper models, and subagent models are manual-only because those settings have a specific job and must not silently switch to a model with different behavior. Use **Replace permanently** for them. Permanent replacement changes the saved model used by future requests; it asks for confirmation and is different from temporarily trying an alternative.
+
 ## Model Mixing page
 
 Use **Model Mixing** when you want Claude Code to show one `frogp/mix` model that combines several models behind the scenes. It is designed to be usable without editing JSON: choose a preset, review the warning, enable it, then select `frogp/mix` in Claude Code.

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Switch, Notice } from "../ui";
 import { IconArrowDown, IconArrowUp, IconCheck, IconChevron, IconSearch } from "../icons";
-import { useT, Trans, type TFn } from "../i18n";
+import { useT, Trans, type TFn, type TKey } from "../i18n";
 import type { DeepLinkTarget } from "../navigation";
 
 export type ModelSupportStatus = "validated" | "discovered" | "unknown";
@@ -117,6 +117,623 @@ export function ModelCatalogStatusSummary({
   );
 }
 
+export type ModelContinuityAutomatic = "off" | "retired" | "transient" | "all";
+export type ModelContinuityStatus = "ready" | "retired" | "authentication_required" | "policy_invalid";
+export type ModelContinuityReferenceKind =
+  | "provider-default"
+  | "long-context"
+  | "subagent"
+  | "classifier"
+  | "mix-coordinator"
+  | "mix-agent"
+  | "mix-pipeline"
+  | "mix-panel"
+  | "mix-judge"
+  | "mix-synthesizer"
+  | "mix-rule"
+  | "web-search-helper"
+  | "image-helper"
+  | "gateway-alias";
+export type ModelContinuityReason =
+  | "retired"
+  | "connect_failure"
+  | "connect_timeout"
+  | "http_404"
+  | "http_410"
+  | "http_429"
+  | "http_5xx"
+  | "circuit_open";
+
+export interface ModelContinuityPolicy {
+  fallbacks: string[];
+  automatic: ModelContinuityAutomatic;
+}
+
+export interface ModelContinuityReference {
+  id: string;
+  kind: ModelContinuityReferenceKind;
+  primary: string;
+  status: ModelContinuityStatus;
+  automaticEligible: boolean;
+  policy: ModelContinuityPolicy;
+  supportStatus: ModelSupportStatus;
+  label?: string;
+}
+
+export interface ModelContinuityReport {
+  policies: Record<string, ModelContinuityPolicy>;
+  references: ModelContinuityReference[];
+  circuits: Array<{ primary: string; reason: ModelContinuityReason; retryAt: number }>;
+}
+
+export interface ModelContinuitySetAction {
+  action: "set";
+  primary: string;
+  referenceId: string;
+  fallbacks: string[];
+  automatic: ModelContinuityAutomatic;
+}
+
+export interface ModelContinuityReplaceAction {
+  action: "replace";
+  referenceId: string;
+  expectedPrimary: string;
+  replacement: string;
+}
+
+export type ModelContinuityAction = ModelContinuitySetAction | ModelContinuityReplaceAction;
+
+const CONTINUITY_AUTOMATIC_VALUES: Record<ModelContinuityAutomatic, true> = {
+  off: true,
+  retired: true,
+  transient: true,
+  all: true,
+};
+const CONTINUITY_STATUS_VALUES: Record<ModelContinuityStatus, true> = {
+  ready: true,
+  retired: true,
+  authentication_required: true,
+  policy_invalid: true,
+};
+const CONTINUITY_REFERENCE_KINDS: Record<ModelContinuityReferenceKind, true> = {
+  "provider-default": true,
+  "long-context": true,
+  subagent: true,
+  classifier: true,
+  "mix-coordinator": true,
+  "mix-agent": true,
+  "mix-pipeline": true,
+  "mix-panel": true,
+  "mix-judge": true,
+  "mix-synthesizer": true,
+  "mix-rule": true,
+  "web-search-helper": true,
+  "image-helper": true,
+  "gateway-alias": true,
+};
+const CONTINUITY_REASON_VALUES: Record<ModelContinuityReason, true> = {
+  retired: true,
+  connect_failure: true,
+  connect_timeout: true,
+  http_404: true,
+  http_410: true,
+  http_429: true,
+  http_5xx: true,
+  circuit_open: true,
+};
+const CONTINUITY_SUPPORT_VALUES: Record<ModelSupportStatus, true> = {
+  validated: true,
+  discovered: true,
+  unknown: true,
+};
+const MAX_CONTINUITY_FALLBACKS = 3;
+
+function recordValue(value: unknown, error: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
+  return value as Record<string, unknown>;
+}
+
+function requiredString(value: unknown, error: string): string {
+  if (typeof value !== "string" || value.trim() === "") throw new Error(error);
+  return value;
+}
+
+function parseModelContinuityPolicy(value: unknown): ModelContinuityPolicy {
+  const policy = recordValue(value, "invalid model continuity policy");
+  if (
+    !Array.isArray(policy.fallbacks)
+    || policy.fallbacks.length > MAX_CONTINUITY_FALLBACKS
+    || !policy.fallbacks.every(item => typeof item === "string" && item.trim() !== "")
+  ) {
+    throw new Error("invalid model continuity fallbacks");
+  }
+  if (CONTINUITY_AUTOMATIC_VALUES[policy.automatic as ModelContinuityAutomatic] !== true) {
+    throw new Error("invalid model continuity automatic mode");
+  }
+  return {
+    fallbacks: [...policy.fallbacks] as string[],
+    automatic: policy.automatic as ModelContinuityAutomatic,
+  };
+}
+
+export function parseModelContinuityReport(value: unknown): ModelContinuityReport {
+  const report = recordValue(value, "model continuity response must be an object");
+  const rawPolicies = recordValue(report.policies, "invalid model continuity policies");
+  if (!Array.isArray(report.references) || !Array.isArray(report.circuits)) {
+    throw new Error("invalid model continuity response lists");
+  }
+
+  const policies: Record<string, ModelContinuityPolicy> = {};
+  for (const [primary, policy] of Object.entries(rawPolicies)) {
+    requiredString(primary, "invalid model continuity policy target");
+    policies[primary] = parseModelContinuityPolicy(policy);
+  }
+
+  const references = report.references.map(value => {
+    const reference = recordValue(value, "invalid model continuity reference");
+    if (CONTINUITY_REFERENCE_KINDS[reference.kind as ModelContinuityReferenceKind] !== true) {
+      throw new Error("invalid model continuity reference kind");
+    }
+    if (CONTINUITY_STATUS_VALUES[reference.status as ModelContinuityStatus] !== true) {
+      throw new Error("invalid model continuity reference status");
+    }
+    if (typeof reference.automaticEligible !== "boolean") {
+      throw new Error("invalid model continuity automatic eligibility");
+    }
+    if (CONTINUITY_SUPPORT_VALUES[reference.supportStatus as ModelSupportStatus] !== true) {
+      throw new Error("invalid model continuity support status");
+    }
+    if (reference.label !== undefined && typeof reference.label !== "string") {
+      throw new Error("invalid model continuity display label");
+    }
+    return {
+      id: requiredString(reference.id, "invalid model continuity reference id"),
+      kind: reference.kind as ModelContinuityReferenceKind,
+      primary: requiredString(reference.primary, "invalid model continuity primary target"),
+      status: reference.status as ModelContinuityStatus,
+      automaticEligible: reference.automaticEligible,
+      policy: parseModelContinuityPolicy(reference.policy),
+      supportStatus: reference.supportStatus as ModelSupportStatus,
+      ...(reference.label === undefined ? {} : { label: reference.label }),
+    };
+  });
+
+  const circuits = report.circuits.map(value => {
+    const entry = recordValue(value, "invalid model continuity active status");
+    if (CONTINUITY_REASON_VALUES[entry.reason as ModelContinuityReason] !== true) {
+      throw new Error("invalid model continuity reason");
+    }
+    if (typeof entry.retryAt !== "number" || !Number.isFinite(entry.retryAt) || entry.retryAt < 0) {
+      throw new Error("invalid model continuity retry time");
+    }
+    return {
+      primary: requiredString(entry.primary, "invalid model continuity active target"),
+      reason: entry.reason as ModelContinuityReason,
+      retryAt: entry.retryAt,
+    };
+  });
+
+  return { policies, references, circuits };
+}
+
+export function updateModelContinuityFallback(
+  fallbacks: readonly string[],
+  index: number,
+  replacement: string,
+): string[] {
+  if (!Number.isInteger(index) || index < 0 || index >= MAX_CONTINUITY_FALLBACKS) return [...fallbacks];
+  const slots = Array.from({ length: MAX_CONTINUITY_FALLBACKS }, (_, slot) => fallbacks[slot] ?? "");
+  slots[index] = replacement;
+  return slots.filter(Boolean);
+}
+
+
+export async function saveModelContinuityPolicy(
+  reference: ModelContinuityReference,
+  draft: ModelContinuityPolicy,
+  send: (action: ModelContinuitySetAction) => Promise<boolean>,
+): Promise<ModelContinuityPolicy> {
+  try {
+    if (await send({
+      action: "set",
+      primary: reference.primary,
+      referenceId: reference.id,
+      fallbacks: [...draft.fallbacks],
+      automatic: draft.automatic,
+    })) {
+      return { fallbacks: [...draft.fallbacks], automatic: draft.automatic };
+    }
+  } catch {
+    // The caller owns the visible error; restore the last server-confirmed policy below.
+  }
+  return { fallbacks: [...reference.policy.fallbacks], automatic: reference.policy.automatic };
+}
+
+export async function confirmModelContinuityReplacement(
+  reference: ModelContinuityReference,
+  replacement: string,
+  confirm: () => boolean,
+  send: (action: ModelContinuityReplaceAction) => Promise<boolean>,
+): Promise<boolean> {
+  if (!replacement || !confirm()) return false;
+  return send({
+    action: "replace",
+    referenceId: reference.id,
+    expectedPrimary: reference.primary,
+    replacement,
+  });
+}
+
+type ModelContinuityRequest = (input: string, init: RequestInit) => Promise<Response>;
+
+export async function postModelContinuityAction(
+  request: ModelContinuityRequest,
+  apiBase: string,
+  action: ModelContinuityAction,
+  reloadStale: () => Promise<unknown> | unknown,
+): Promise<{ ok: boolean; stale: boolean; message: string }> {
+  try {
+    const response = await request(`${apiBase}/api/model-continuity`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(action),
+    });
+    const body = await response.json().catch(() => ({})) as { error?: unknown };
+    const message = typeof body.error === "string" ? body.error : "";
+    if (response.status === 409) {
+      await reloadStale();
+      return { ok: false, stale: true, message };
+    }
+    return { ok: response.ok, stale: false, message };
+  } catch {
+    return { ok: false, stale: false, message: "" };
+  }
+}
+
+const CONTINUITY_PURPOSE_KEYS: Record<ModelContinuityReferenceKind, TKey> = {
+  "provider-default": "models.continuity.purpose.default",
+  "long-context": "models.continuity.purpose.longContext",
+  subagent: "models.continuity.purpose.subagent",
+  classifier: "models.continuity.purpose.classifier",
+  "mix-coordinator": "models.continuity.purpose.mixing",
+  "mix-agent": "models.continuity.purpose.mixing",
+  "mix-pipeline": "models.continuity.purpose.mixing",
+  "mix-panel": "models.continuity.purpose.mixing",
+  "mix-judge": "models.continuity.purpose.mixing",
+  "mix-synthesizer": "models.continuity.purpose.mixing",
+  "mix-rule": "models.continuity.purpose.mixing",
+  "web-search-helper": "models.continuity.purpose.webSearch",
+  "image-helper": "models.continuity.purpose.image",
+  "gateway-alias": "models.continuity.purpose.savedName",
+};
+const CONTINUITY_REASON_KEYS: Record<ModelContinuityReason, TKey> = {
+  retired: "models.continuity.reason.retired",
+  connect_failure: "models.continuity.reason.connectFailure",
+  connect_timeout: "models.continuity.reason.connectTimeout",
+  http_404: "models.continuity.reason.notFound",
+  http_410: "models.continuity.reason.gone",
+  http_429: "models.continuity.reason.busy",
+  http_5xx: "models.continuity.reason.service",
+  circuit_open: "models.continuity.reason.temporary",
+};
+const CONTINUITY_FALLBACK_LABEL_KEYS: TKey[] = [
+  "models.continuity.fallback.first",
+  "models.continuity.fallback.second",
+  "models.continuity.fallback.third",
+];
+
+function continuityPurpose(reference: ModelContinuityReference, t: TFn): string {
+  return t(CONTINUITY_PURPOSE_KEYS[reference.kind]);
+}
+
+function continuityProblemTitle(reference: ModelContinuityReference, t: TFn): string {
+  const purpose = continuityPurpose(reference, t);
+  if (reference.status === "retired") return t("models.continuity.problem.retired", { purpose });
+  if (reference.status === "authentication_required") return t("models.continuity.problem.authentication", { purpose });
+  if (reference.status === "policy_invalid") return t("models.continuity.problem.policy", { purpose });
+  if (reference.policy.automatic !== "off" && reference.automaticEligible) {
+    return t("models.continuity.problem.automatic", { purpose });
+  }
+  return purpose;
+}
+
+function continuityImpact(reference: ModelContinuityReference, t: TFn): string {
+  if (reference.status === "retired") return t("models.continuity.impact.retired");
+  if (reference.status === "authentication_required") return t("models.continuity.impact.authentication");
+  if (reference.status === "policy_invalid") return t("models.continuity.impact.policy");
+  return t("models.continuity.impact.ready");
+}
+
+function continuityReasonText(reason: ModelContinuityReason, t: TFn): string {
+  return t(CONTINUITY_REASON_KEYS[reason]);
+}
+
+function ContinuityReferenceCard({
+  reference,
+  selectableModels,
+  t,
+  onSet,
+  onReplace,
+}: {
+  reference: ModelContinuityReference;
+  selectableModels: readonly string[];
+  t: TFn;
+  onSet: (action: ModelContinuitySetAction) => Promise<boolean>;
+  onReplace: (action: ModelContinuityReplaceAction) => Promise<boolean>;
+}) {
+  const [draft, setDraft] = useState<ModelContinuityPolicy>({
+    fallbacks: [...reference.policy.fallbacks],
+    automatic: reference.policy.automatic,
+  });
+  const [replacement, setReplacement] = useState("");
+  const [saving, setSaving] = useState(false);
+  const fieldId = useId();
+  const purpose = continuityPurpose(reference, t);
+
+  useEffect(() => {
+    setDraft({ fallbacks: [...reference.policy.fallbacks], automatic: reference.policy.automatic });
+    setReplacement("");
+  }, [reference.primary, reference.policy.automatic, reference.policy.fallbacks.join("\u0000")]);
+
+  const saveDraft = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      setDraft(await saveModelContinuityPolicy(reference, draft, onSet));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const replace = async () => {
+    if (saving || !replacement) return;
+    setSaving(true);
+    try {
+      const replaced = await confirmModelContinuityReplacement(
+        reference,
+        replacement,
+        () => window.confirm(t("models.continuity.replaceConfirm", { purpose, model: replacement })),
+        onReplace,
+      );
+      if (replaced) setReplacement("");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const candidateModels = selectableModels.filter(model => model !== reference.primary);
+
+  return (
+    <article className={`continuity-card${reference.status === "ready" ? "" : " attention"}`}>
+      <div className="continuity-card-head">
+        <div>
+          <h4>{continuityProblemTitle(reference, t)}</h4>
+          <p>{continuityImpact(reference, t)}</p>
+        </div>
+        <span className={`badge ${reference.status === "ready" ? "badge-green" : "badge-amber"}`}>
+          {reference.status === "ready" ? t("models.continuity.status.ready") : t("models.continuity.status.attention")}
+        </span>
+      </div>
+
+      <dl className="continuity-facts">
+        <div><dt>{t("models.continuity.currentModel")}</dt><dd><code className="text-anywhere">{reference.primary}</code></dd></div>
+        <div>
+          <dt>{t("models.continuity.reason")}</dt>
+          <dd>{reference.status === "ready" ? t("models.continuity.reason.ready") : continuityImpact(reference, t)}</dd>
+        </div>
+        <div>
+          <dt>{t("models.continuity.savedFallbacks")}</dt>
+          <dd>
+            {reference.policy.fallbacks.length > 0
+              ? <ol className="continuity-fallback-order">{reference.policy.fallbacks.map(model => <li key={model}><code className="text-anywhere">{model}</code></li>)}</ol>
+              : t("models.continuity.noFallbacks")}
+          </dd>
+        </div>
+      </dl>
+
+      {reference.automaticEligible ? (
+        <div className="continuity-policy-editor">
+          <div className="continuity-field">
+            <label htmlFor={`${fieldId}-automatic`}>{t("models.continuity.automaticScope")}</label>
+            <select
+              id={`${fieldId}-automatic`}
+              className="select-sm"
+              value={draft.automatic}
+              disabled={saving}
+              aria-label={t("models.continuity.automaticScope")}
+              onChange={event => setDraft(current => ({
+                ...current,
+                automatic: event.target.value as ModelContinuityAutomatic,
+              }))}
+            >
+              <option value="off">{t("models.continuity.automatic.off")}</option>
+              <option value="retired">{t("models.continuity.automatic.retired")}</option>
+              <option value="transient">{t("models.continuity.automatic.transient")}</option>
+              <option value="all">{t("models.continuity.automatic.all")}</option>
+            </select>
+          </div>
+
+          <div className="continuity-fallback-fields">
+            {CONTINUITY_FALLBACK_LABEL_KEYS.map((labelKey, index) => {
+              const currentValue = draft.fallbacks[index] ?? "";
+              const options = candidateModels.filter(model =>
+                model === currentValue || !draft.fallbacks.some((selected, selectedIndex) => selectedIndex !== index && selected === model)
+              );
+              const enabled = index === 0 || Boolean(draft.fallbacks[index - 1]);
+              return (
+                <div className="continuity-field" key={labelKey}>
+                  <label htmlFor={`${fieldId}-fallback-${index}`}>{t(labelKey)}</label>
+                  <select
+                    id={`${fieldId}-fallback-${index}`}
+                    className="select-sm"
+                    value={currentValue}
+                    disabled={saving || !enabled}
+                    aria-label={t(labelKey)}
+                    onChange={event => setDraft(current => ({
+                      ...current,
+                      fallbacks: updateModelContinuityFallback(current.fallbacks, index, event.target.value),
+                    }))}
+                  >
+                    <option value="">{t("models.continuity.fallback.none")}</option>
+                    {currentValue && !candidateModels.includes(currentValue) && (
+                      <option value={currentValue}>{currentValue} · {t("models.continuity.fallback.unavailable")}</option>
+                    )}
+                    {options.map(model => <option key={model} value={model}>{model}</option>)}
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={saving}
+            aria-label={t("models.continuity.saveAutomatic")}
+            onClick={() => void saveDraft()}
+          >
+            {saving ? t("prov.savingDefault") : t("models.continuity.saveAutomatic")}
+          </button>
+        </div>
+      ) : (
+        <p className="continuity-manual-only">{t("models.continuity.manualOnly")}</p>
+      )}
+
+      <div className="continuity-replace">
+        <div className="continuity-field">
+          <label htmlFor={`${fieldId}-replacement`}>{t("models.continuity.replaceModel")}</label>
+          <select
+            id={`${fieldId}-replacement`}
+            className="select-sm"
+            value={replacement}
+            disabled={saving}
+            aria-label={t("models.continuity.replaceModel")}
+            onChange={event => setReplacement(event.target.value)}
+          >
+            <option value="">{t("models.continuity.replaceChoose")}</option>
+            {candidateModels.map(model => <option key={model} value={model}>{model}</option>)}
+          </select>
+        </div>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={saving || !replacement}
+          aria-label={t("models.continuity.replace")}
+          onClick={() => void replace()}
+        >
+          {t("models.continuity.replace")}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+export function ModelContinuityPanel({
+  report,
+  selectableModels = [],
+  t,
+  onSet,
+  onReplace,
+}: {
+  report: ModelContinuityReport;
+  selectableModels?: readonly string[];
+  t: TFn;
+  onSet: (action: ModelContinuitySetAction) => Promise<boolean>;
+  onReplace: (action: ModelContinuityReplaceAction) => Promise<boolean>;
+}) {
+  const attention = report.references.filter(reference => reference.status !== "ready");
+  const automatic = report.references.filter(reference =>
+    reference.status === "ready"
+    && reference.automaticEligible
+    && reference.policy.automatic !== "off"
+  );
+  const normal = report.references.filter(reference =>
+    reference.status === "ready"
+    && (!reference.automaticEligible || reference.policy.automatic === "off")
+  );
+
+  return (
+    <section className="panel continuity-panel" aria-labelledby="model-continuity-title">
+      <div className="continuity-panel-head">
+        <div>
+          <div className="eyebrow">{t("models.continuity.eyebrow")}</div>
+          <h3 id="model-continuity-title">{attention.length > 0 ? t("models.continuity.titleAttention") : t("models.continuity.titleReady")}</h3>
+          <p>{attention.length > 0 ? t("models.continuity.introAttention") : t("models.continuity.introReady")}</p>
+        </div>
+        <span className={`badge ${attention.length > 0 ? "badge-amber" : "badge-green"}`}>
+          {attention.length > 0
+            ? t("models.continuity.attentionCount", { n: attention.length })
+            : t("models.continuity.status.ready")}
+        </span>
+      </div>
+
+      {report.circuits.length > 0 && (
+        <div className="continuity-active-status" role="status">
+          <strong>{t("models.continuity.activeTitle")}</strong>
+          <p>{t("models.continuity.activeImpact")}</p>
+          <ul>
+            {report.circuits.map(entry => (
+              <li key={entry.primary}>
+                <code className="text-anywhere">{entry.primary}</code>
+                <span>{continuityReasonText(entry.reason, t)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {attention.length > 0 && (
+        <div className="continuity-card-list">
+          {attention.map(reference => (
+            <ContinuityReferenceCard
+              key={reference.id}
+              reference={reference}
+              selectableModels={selectableModels}
+              t={t}
+              onSet={onSet}
+              onReplace={onReplace}
+            />
+          ))}
+        </div>
+      )}
+
+      {automatic.length > 0 && (
+        <div className="continuity-automatic-list">
+          <h4>{t("models.continuity.automaticActive")}</h4>
+          {automatic.map(reference => (
+            <ContinuityReferenceCard
+              key={reference.id}
+              reference={reference}
+              selectableModels={selectableModels}
+              t={t}
+              onSet={onSet}
+              onReplace={onReplace}
+            />
+          ))}
+        </div>
+      )}
+
+      {normal.length > 0 && (
+        <details className="continuity-normal-list">
+          <summary>{t("models.continuity.normalSummary", { n: normal.length })}</summary>
+          <div className="continuity-card-list">
+            {normal.map(reference => (
+              <ContinuityReferenceCard
+                key={reference.id}
+                reference={reference}
+                selectableModels={selectableModels}
+                t={t}
+                onSet={onSet}
+                onReplace={onReplace}
+              />
+            ))}
+          </div>
+        </details>
+      )}
+    </section>
+  );
+}
+
 export function parseModelRows(value: unknown): ModelRow[] {
   if (!Array.isArray(value)) throw new Error("models response must be an array");
   return value.map(item => {
@@ -170,6 +787,10 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [catalogStatus, setCatalogStatus] = useState<ModelCatalogStatus | null>(null);
+  const [continuityReport, setContinuityReport] = useState<ModelContinuityReport | null>(null);
+  const [continuityLoading, setContinuityLoading] = useState(true);
+  const [continuityStatus, setContinuityStatus] = useState("");
+  const [continuityOk, setContinuityOk] = useState(false);
 
   const [featuredAvailable, setFeaturedAvailable] = useState<string[]>([]);
   const [featuredChosen, setFeaturedChosen] = useState<string[]>([]);
@@ -207,7 +828,24 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     }
   };
 
+  const loadContinuity = async (): Promise<boolean> => {
+    try {
+      const response = await fetch(`${apiBase}/api/model-continuity`);
+      if (!response.ok) throw new Error("model continuity load failed");
+      setContinuityReport(parseModelContinuityReport(await response.json()));
+      setContinuityStatus("");
+      return true;
+    } catch {
+      setContinuityOk(false);
+      setContinuityStatus(t("models.continuity.loadFailed"));
+      return false;
+    } finally {
+      setContinuityLoading(false);
+    }
+  };
+
   const load = async () => {
+    const continuityRequest = loadContinuity();
     try {
       const [modelsResponse, catalogResponse] = await Promise.all([
         fetch(`${apiBase}/api/models`),
@@ -229,6 +867,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     } catch {
       setOk(false); setStatus(t("models.loadFail"));
     } finally {
+      await continuityRequest;
       setLoading(false);
     }
   };
@@ -313,6 +952,13 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     return rows;
   }, [models, disabled, featuredAvailable]);
 
+  const selectableContinuityModels = useMemo(
+    () => models
+      .filter(model => !disabled.has(model.namespaced) && model.authReady)
+      .map(model => model.namespaced),
+    [models, disabled],
+  );
+
   const featuredRows = useMemo<ModelControlRow[]>(() => {
     const byName = new Map(controlRows.map(row => [row.namespaced, row]));
     return featuredChosen.map(model => {
@@ -346,6 +992,35 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     }
     return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [filteredRows]);
+
+  const submitContinuityAction = async (
+    action: ModelContinuityAction,
+    successMessage: TKey,
+  ): Promise<boolean> => {
+    setContinuityStatus("");
+    const result = await postModelContinuityAction(
+      (input, init) => fetch(input, init),
+      apiBase,
+      action,
+      loadContinuity,
+    );
+    if (result.ok) {
+      await Promise.all([load(), loadFeatured(true)]);
+      setContinuityOk(true);
+      setContinuityStatus(t(successMessage));
+      return true;
+    }
+    setContinuityOk(false);
+    if (result.stale) {
+      setContinuityStatus(t("models.continuity.stale"));
+    } else if (result.message) {
+      setContinuityStatus(t("models.continuity.saveFailedWithReason", { reason: result.message }));
+    } else {
+      setContinuityStatus(t("models.continuity.saveFailed"));
+    }
+    return false;
+  };
+
 
 
   const apply = async (next: Set<string>, nextFeatured?: string[]) => {
@@ -529,6 +1204,22 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
         </div>
         <ModelCatalogStatusSummary status={catalogStatus} t={t} onRefresh={refreshAll} />
       </div>
+
+      {continuityLoading && (
+        <section className="panel continuity-panel" aria-label={t("models.continuity.loading")}>
+          <div className="row muted"><span className="spin" /> {t("models.continuity.loading")}</div>
+        </section>
+      )}
+      {continuityStatus && <Notice tone={continuityOk ? "ok" : "err"}>{continuityStatus}</Notice>}
+      {continuityReport && (
+        <ModelContinuityPanel
+          report={continuityReport}
+          selectableModels={selectableContinuityModels}
+          t={t}
+          onSet={action => submitContinuityAction(action, "models.continuity.saved")}
+          onReplace={action => submitContinuityAction(action, "models.continuity.replaced")}
+        />
+      )}
 
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
 
