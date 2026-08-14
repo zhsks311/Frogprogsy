@@ -155,6 +155,10 @@ export function resolvePersistedModelAlias(alias: string): ModelAliasEntry | und
   return readState().aliases[alias];
 }
 
+export function listPersistedModelAliases(): ModelAliasEntry[] {
+  return Object.values(readState().aliases).map(entry => ({ ...entry }));
+}
+
 export function resolveConfiguredModelAlias(config: FrogConfig, alias: string): ModelAliasEntry | undefined {
   const persisted = resolvePersistedModelAlias(alias);
   if (persisted) return persisted;
