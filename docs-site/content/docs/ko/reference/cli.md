@@ -12,8 +12,7 @@ description: "설정, 시작/종료, 로그인, refresh, models, 대시보드, �
 - FrogProgsy가 소유한 Claude Code settings/catalog/cache entry를 주입하거나 갱신하거나 복원한다.
 - provider credential, 모델 가시성, dashboard, diagnostic output을 관리한다.
 
-Help, status, models, version 계열은 read-only입니다. `start`, `stop`, `restore`, `refresh`, `init`, `login`, `logout`,
-`uninstall`은 로컬 상태를 바꿉니다.
+Help, status, 일반 models, 모델 연속성 보고서, version 계열은 read-only입니다. `start`, `stop`, `restore`, `refresh`, `init`, `login`, `logout`, `uninstall`, 모델 연속성 `set`/`replace`는 로컬 상태를 바꿉니다.
 
 ## 기본 문법과 공통 규칙
 
@@ -31,9 +30,9 @@ frogp --version
 
 ### 기계 출력과 색상
 
-- `frogp status --json`과 `frogp models --json`이 기계 출력 모드입니다. JSON 모드에서 stdout에는 JSON 문서 정확히 하나(+개행)만 나오고, 진단 메시지는 전부 stderr로 가며, JSON에는 ANSI 색상 코드가 절대 포함되지 않습니다.
+- `frogp status --json`, `frogp models --json`, `frogp models continuity --json`이 기계 출력 모드입니다. JSON 모드에서 stdout에는 JSON 문서 정확히 하나(+개행)만 나오고, 진단 메시지는 전부 stderr로 가며, JSON에는 ANSI 색상 코드가 절대 포함되지 않습니다.
 - 사람용 출력은 최소한의 ANSI 팔레트를 쓸 수 있습니다. 색상은 TTY 출력에서만 켜지고, `NO_COLOR`가 비어 있지 않은 값으로 설정되면 항상 꺼지며(최우선), 파이프/리다이렉트(non-TTY)에서는 기본적으로 꺼지고, `FORCE_COLOR=1`이면 non-TTY에서도 강제로 켜집니다(단 비어 있지 않은 `NO_COLOR`가 이깁니다).
-- `status`/`models`의 알 수 없는 플래그는 exit code 1과 stderr usage 안내로 실패합니다.
+- `status`, `models`, `models continuity`의 알 수 없는 옵션은 exit code 1과 stderr usage 안내로 실패합니다.
 
 ## Setup and relay lifecycle
 
@@ -90,6 +89,11 @@ Claude Code가 Claude 구독 로그인을 소유합니다. FrogProgsy는 Claude 
 | Command | Mutates | Effect |
 | --- | --- | --- |
 | `frogp models [--json]` | 없음 | 실행 중인 proxy의 모델 목록을 보여주는 온라인 전용 명령입니다. 텍스트 출력은 provider별로 모델을 묶고, 검증된 호환 정보가 있는 모델은 **검증됨**, AI 서비스 응답이나 사용자의 직접 추가로만 찾은 모델은 **발견됨**으로 표시합니다. 현재 모델 자료가 원격, 저장된 사본, 설치 버전 기본 제공 중 어디에서 왔는지도 보여줍니다. `--json`은 안정된 `supportStatus`와 `catalogSource` 값을 포함한 `GET /api/models` 배열을 변형 없이 출력합니다. relay가 꺼져 있으면 `frogp start`, 기록은 있는데 응답이 없으면 `frogp status`/`frogp refresh`를 안내합니다. 오프라인 모델 목록은 만들지 않습니다. |
+| `frogp models continuity [--json]` | 없음 | 실행 중인 proxy에서 정렬된 모델 연속성 보고서를 읽습니다. 텍스트 출력은 영향을 받은 reference를 먼저 보여주고 바로 실행할 다음 명령을 안내합니다. `--json`은 `GET /api/model-continuity` 문서를 변형 없이 출력합니다. |
+| `frogp models continuity set <provider/model> --fallback <provider/model>... --auto off\|retired\|transient\|all` | config | 실행 중인 proxy를 통해 fallback 순서와 자동 모드를 저장합니다. `--fallback`을 반복한 순서가 실제 시도 순서입니다. |
+| `frogp models continuity replace <reference-id> <provider/model>` | config와 해당 Claude Code 모델 캐시 | 현재 보고서의 reference 한 곳이 가리키는 모델을 영구 교체합니다. Reference id는 보고서를 읽은 뒤 대상이 바뀐 경우 잘못된 곳을 수정하지 않도록 막습니다. |
+
+자동 연속성은 **기본적으로 꺼져 있습니다**. `retired`는 기본 모델이 사용 종료된 reference만 전환하고, `transient`는 대상이 되는 일시적 실패를 처리하며, `all`은 둘 다 켭니다. 자동 연속성은 일반 모델 요청 경로에만 적용됩니다. Classifier reference는 수동 교체만 지원합니다. 정확한 `replace` 명령으로 바꿀 수 있지만 classifier 요청에는 자동 연속성이 적용되지 않습니다.
 
 ## Catalog and Claude Code cache
 

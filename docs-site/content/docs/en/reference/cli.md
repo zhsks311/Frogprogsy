@@ -11,7 +11,7 @@ This docs site is FrogProgsy's official full documentation surface. The README s
 - inject, refresh, or restore FrogProgsy-owned Claude Code settings, catalog entries, and cache entries;
 - manage provider credentials, model visibility, dashboard access, and diagnostic output.
 
-Help, status, models, and version commands are read-only. `start`, `stop`, `restore`, `refresh`, `init`, `login`, `logout`, and `uninstall` mutate local state.
+Help, status, plain models, model continuity reports, and version commands are read-only. `start`, `stop`, `restore`, `refresh`, `init`, `login`, `logout`, `uninstall`, and model continuity `set`/`replace` mutate local state.
 
 ## Basic syntax and common rules
 
@@ -29,9 +29,9 @@ frogp --version
 
 ### Machine output and color
 
-- `frogp status --json` and `frogp models --json` are the machine-output modes. In JSON mode, stdout carries exactly one JSON document (plus trailing newline); all diagnostics go to stderr, and JSON never contains ANSI color codes.
+- `frogp status --json`, `frogp models --json`, and `frogp models continuity --json` are the machine-output modes. In JSON mode, stdout carries exactly one JSON document (plus trailing newline); all diagnostics go to stderr, and JSON never contains ANSI color codes.
 - Human output may use a minimal ANSI palette. Color is enabled only for TTY output, disabled when `NO_COLOR` is set to a non-empty value (always wins), disabled for non-TTY/piped output by default, and forced by `FORCE_COLOR=1` unless `NO_COLOR` is also set to a non-empty value.
-- Unknown flags on `status` and `models` fail with exit code 1 and a usage hint on stderr.
+- Unknown options on `status`, `models`, and `models continuity` fail with exit code 1 and a usage hint on stderr.
 
 ## Setup and relay lifecycle
 
@@ -88,6 +88,11 @@ Claude Code owns Claude subscription login. FrogProgsy never stores, imports, re
 | Command | Mutates | Effect |
 | --- | --- | --- |
 | `frogp models [--json]` | none | Online-only view of the running proxy's model list. Text output groups models by provider, marks catalog-backed compatibility as **Validated** and provider- or user-discovered IDs as **Discovered**, and shows whether the active model data is remote, a saved copy, or bundled with the installed release. `--json` prints the raw `GET /api/models` array unchanged, including stable `supportStatus` and `catalogSource` values. When the relay is stopped it fails with `frogp start` guidance; a recorded-but-unreachable relay points at `frogp status` / `frogp refresh`. It never synthesizes an offline model list. |
+| `frogp models continuity [--json]` | none | Reads the running proxy's sorted model continuity report. Text puts affected references first and gives an executable next action. `--json` prints the `GET /api/model-continuity` document unchanged. |
+| `frogp models continuity set <provider/model> --fallback <provider/model>... --auto off\|retired\|transient\|all` | config | Saves the ordered fallback targets and the automatic mode through the running proxy. Repeat `--fallback` to set the exact attempt order. |
+| `frogp models continuity replace <reference-id> <provider/model>` | config and affected Claude Code model cache | Permanently replaces the model held by one reference from the current report. The reference id guards against changing a reference that moved after the report was read. |
+
+Automatic continuity is **off by default**. `retired` moves only references whose primary model has retired, `transient` handles eligible temporary failures, and `all` enables both. Automatic continuity applies only to ordinary routed model requests. Classifier references are manual-only: you can replace one with the exact `replace` command, but classifier requests never use automatic continuity.
 
 ## Catalog and Claude Code cache
 

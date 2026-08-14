@@ -11,11 +11,45 @@ const cliPath = join(repoRoot, "src", "cli.ts");
 
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/;
 
+
 const STUB_MODELS = [
   { id: "gpt-5.5", provider: "codex", namespaced: "codex/gpt-5.5", disabled: false, contextWindow: 400000, inputModalities: ["text", "image"], reasoningEfforts: ["low", "medium", "high"], supportStatus: "validated", catalogSource: "remote", catalogRevision: 42, catalogSourceCommit: "1234567890abcdef1234567890abcdef12345678", catalogRefreshedAt: "2026-08-12T10:30:00.000Z" },
   { id: "gpt-5.4-mini", provider: "codex", namespaced: "codex/gpt-5.4-mini", disabled: true, supportStatus: "discovered", catalogSource: "remote", catalogRevision: 42, catalogSourceCommit: "1234567890abcdef1234567890abcdef12345678", catalogRefreshedAt: "2026-08-12T10:30:00.000Z" },
   { id: "claude-sonnet-4-6", provider: "anthropic", namespaced: "anthropic/claude-sonnet-4-6", disabled: false, supportStatus: "unknown", catalogSource: "remote", catalogRevision: 42, catalogSourceCommit: "1234567890abcdef1234567890abcdef12345678", catalogRefreshedAt: "2026-08-12T10:30:00.000Z" },
 ];
+
+const STUB_CIRCUIT_RETRY_AT = Date.UTC(2026, 7, 14, 12, 0, 30);
+
+const STUB_CONTINUITY_REPORT = {
+  policies: {
+    "work/old": { fallbacks: ["work/new"], automatic: "off" },
+  },
+  references: [
+    {
+      id: "provider-default:work",
+      kind: "provider-default",
+      primary: "work/old",
+      status: "retired",
+      automaticEligible: true,
+      policy: { fallbacks: ["work/new"], automatic: "off" },
+      supportStatus: "validated",
+      label: "Provider default",
+    },
+    {
+      id: "subagent:0",
+      kind: "subagent",
+      primary: "codex/gpt-x",
+      status: "ready",
+      automaticEligible: false,
+      policy: { fallbacks: [], automatic: "off" },
+      supportStatus: "validated",
+      label: "Subagent 1",
+    },
+  ],
+  circuits: [
+    { primary: "work/old", reason: "http_5xx", retryAt: STUB_CIRCUIT_RETRY_AT },
+  ],
+};
 
 function runCli(argv: string[], frogHome: string, extraEnv: Record<string, string> = {}) {
   const claudeHome = join(frogHome, "claude");
@@ -54,11 +88,12 @@ function writeRunningState(frogHome: string, port: number) {
   writeFileSync(join(frogHome, "frogp.port"), String(port), "utf8");
 }
 
-function startStubProxy(options: { statusAvailable?: boolean } = {}) {
+function startStubProxy(options: { statusAvailable?: boolean; rejectSetPrimary?: string } = {}) {
+  const actions: Array<Record<string, unknown>> = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(req) {
+    async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === "/healthz") return new Response("ok", { status: 200 });
       if (url.pathname === "/api/models") return Response.json(STUB_MODELS);
@@ -75,10 +110,24 @@ function startStubProxy(options: { statusAvailable?: boolean } = {}) {
           warnings: { count: 0, causes: [] },
         });
       }
+      if (url.pathname === "/api/model-continuity" && req.method === "GET") {
+        return Response.json(STUB_CONTINUITY_REPORT);
+      }
+      if (url.pathname === "/api/model-continuity" && req.method === "POST") {
+        const action = await req.json() as Record<string, unknown>;
+        actions.push(action);
+        if (action.action === "set" && action.primary === options.rejectSetPrimary) {
+          return Response.json(
+            { error: "fallback target is invalid", code: "invalid_policy" },
+            { status: 400 },
+          );
+        }
+        return Response.json({ ok: true });
+      }
       return new Response("not found", { status: 404 });
     },
   });
-  return { server, port: server.port };
+  return { server, port: server.port, actions };
 }
 
 describe("frogp models", () => {
@@ -173,6 +222,148 @@ describe("frogp models", () => {
       expect(result.stderr).toContain("Unknown models option: --all");
       expect(result.stderr).toContain("Usage: frogp models [--json]");
     } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("models continuity prints problem, impact, executable action, and circuit status in report order", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const { server, port } = startStubProxy();
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync(["models", "continuity"], home);
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("[retired] Provider default · work/old");
+      expect(result.stdout).toContain("Automatic: off");
+      expect(result.stdout).toContain("Fallbacks: work/new");
+      expect(result.stdout).toContain("Impact: Provider default points to a retired model.");
+      expect(result.stdout).toContain("frogp models continuity replace provider-default:work work/new");
+      expect(result.stdout.indexOf("[retired]")).toBeLessThan(result.stdout.indexOf("[ready]"));
+      expect(result.stdout).not.toContain("subagent:0");
+      expect(result.stdout).toContain("[http_5xx] work/old");
+      expect(result.stdout).toContain(new Date(STUB_CIRCUIT_RETRY_AT).toISOString());
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("models continuity --json prints the API document unchanged without ANSI", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const { server, port } = startStubProxy();
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync(
+        ["models", "continuity", "--json"],
+        home,
+        { FORCE_COLOR: "1" },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).not.toMatch(ANSI_PATTERN);
+      expect(JSON.parse(result.stdout)).toEqual(STUB_CONTINUITY_REPORT);
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("models continuity fails without a running proxy instead of synthesizing offline state", () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    try {
+      const result = runCli(["models", "continuity"], home);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("Proxy not running. Start it with: frogp start");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    ["unknown report option", ["models", "continuity", "--wat"], "Unknown continuity option: --wat"],
+    ["duplicate report option", ["models", "continuity", "--json", "--json"], "--json may be supplied once"],
+    ["missing fallback value", ["models", "continuity", "set", "work/old", "--fallback", "--auto", "all"], "Missing value for --fallback"],
+    ["missing auto value", ["models", "continuity", "set", "work/old", "--fallback", "work/new", "--auto"], "Missing value for --auto"],
+    ["duplicate auto option", ["models", "continuity", "set", "work/old", "--fallback", "work/new", "--auto", "all", "--auto", "off"], "exactly one --auto"],
+    ["missing replace argument", ["models", "continuity", "replace", "provider-default:work"], "exactly a reference id and replacement"],
+    ["extra replace argument", ["models", "continuity", "replace", "provider-default:work", "work/new", "extra"], "exactly a reference id and replacement"],
+  ])("rejects %s before contacting the proxy", (_name, argv, message) => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    try {
+      const result = runCli(argv, home);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain(message);
+      expect(result.stderr).not.toContain("Proxy not running");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("set preserves repeated fallback order", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const { server, port, actions } = startStubProxy();
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync([
+        "models", "continuity", "set", "work/old",
+        "--fallback", "work/new",
+        "--fallback", "codex/gpt-x",
+        "--auto", "all",
+      ], home);
+      expect(result.status).toBe(0);
+      expect(actions.at(-1)).toEqual({
+        action: "set",
+        primary: "work/old",
+        fallbacks: ["work/new", "codex/gpt-x"],
+        automatic: "all",
+      });
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("replace resolves the current primary and posts the exact guarded action", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const { server, port, actions } = startStubProxy();
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync([
+        "models", "continuity", "replace", "provider-default:work", "work/new",
+      ], home);
+      expect(result.status).toBe(0);
+      expect(actions.at(-1)).toEqual({
+        action: "replace",
+        referenceId: "provider-default:work",
+        expectedPrimary: "work/old",
+        replacement: "work/new",
+      });
+      expect(result.stdout).not.toContain("provider-default:work");
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("prints the API safe code and message on a rejected action", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const { server, port } = startStubProxy({ rejectSetPrimary: "work/rejected" });
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync([
+        "models", "continuity", "set", "work/rejected",
+        "--fallback", "work/new",
+        "--auto", "retired",
+      ], home);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("invalid_policy");
+      expect(result.stderr).toContain("fallback target is invalid");
+    } finally {
+      server.stop(true);
       rmSync(home, { recursive: true, force: true });
     }
   });

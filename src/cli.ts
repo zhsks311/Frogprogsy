@@ -221,7 +221,13 @@ function printSubcommandUsage(name: string | undefined): boolean {
       console.log("Usage: frogp status [--json]\n\nCheck proxy server status. --json prints a stable machine-readable snapshot (stdout is JSON only).");
       break;
     case "models":
-      console.log("Usage: frogp models [--json]\n\nList routed models from the RUNNING proxy (same list as the dashboard, via GET /api/models). Requires the proxy to be up: frogp start. --json prints the raw /api/models array.");
+      console.log(`Usage:
+  frogp models [--json]
+  frogp models continuity [--json]
+  frogp models continuity set <provider/model> --fallback <provider/model>... --auto off|retired|transient|all
+  frogp models continuity replace <reference-id> <provider/model>
+
+List routed models or inspect and change model continuity through the running proxy.`);
       break;
     case "login":
       console.log("Usage: frogp login [--list|<provider>]\n\nOAuth or API-key login for a provider. --list shows available OAuth and API-key providers.");
@@ -940,12 +946,311 @@ function renderHumanModels(models: Record<string, unknown>[], paint: boolean, ca
   }
 }
 
+type CliModelContinuityAutomatic = "off" | "retired" | "transient" | "all";
+
+interface CliModelContinuityPolicy {
+  fallbacks: string[];
+  automatic: CliModelContinuityAutomatic;
+}
+
+interface CliModelContinuityReference {
+  id: string;
+  kind: string;
+  primary: string;
+  status: "ready" | "retired" | "authentication_required" | "policy_invalid";
+  automaticEligible: boolean;
+  policy: CliModelContinuityPolicy;
+  supportStatus: "validated" | "discovered" | "unknown";
+  label: string;
+}
+
+interface CliModelContinuityReport {
+  policies: Record<string, CliModelContinuityPolicy>;
+  references: CliModelContinuityReference[];
+  circuits: Array<{ primary: string; reason: string; retryAt: number }>;
+}
+
+type ParsedModelsContinuityCommand =
+  | { command: "report"; json: boolean }
+  | {
+    command: "set";
+    primary: string;
+    fallbacks: string[];
+    automatic: CliModelContinuityAutomatic;
+  }
+  | { command: "replace"; referenceId: string; replacement: string };
+
+const MODELS_CONTINUITY_USAGE = `Usage:
+  frogp models continuity [--json]
+  frogp models continuity set <provider/model> --fallback <provider/model>... --auto off|retired|transient|all
+  frogp models continuity replace <reference-id> <provider/model>`;
+
+function failModelsContinuity(message: string): never {
+  console.error(`${message}\n${MODELS_CONTINUITY_USAGE}`);
+  process.exit(1);
+}
+
+function parseModelsContinuityCommand(values: string[]): ParsedModelsContinuityCommand {
+  const subcommand = values[0];
+  if (subcommand === undefined) return { command: "report", json: false };
+  if (subcommand === "--json") {
+    if (values.length > 1) {
+      const unexpected = values[1];
+      if (unexpected === "--json") failModelsContinuity("--json may be supplied once.");
+      if (unexpected.startsWith("-")) failModelsContinuity(`Unknown continuity option: ${unexpected}`);
+      failModelsContinuity(`Unexpected continuity argument: ${unexpected}`);
+    }
+    return { command: "report", json: true };
+  }
+  if (subcommand.startsWith("-")) {
+    failModelsContinuity(`Unknown continuity option: ${subcommand}`);
+  }
+  if (subcommand === "set") {
+    const primary = values[1];
+    if (!primary || primary.startsWith("-")) {
+      if (primary?.startsWith("-")) failModelsContinuity(`Unknown continuity set option: ${primary}`);
+      failModelsContinuity("Missing primary model for continuity set.");
+    }
+    const fallbacks: string[] = [];
+    let automatic: CliModelContinuityAutomatic | undefined;
+    let automaticCount = 0;
+    for (let index = 2; index < values.length; index += 1) {
+      const option = values[index];
+      if (option === "--fallback") {
+        const fallback = values[index + 1];
+        if (!fallback || fallback.startsWith("-")) {
+          failModelsContinuity("Missing value for --fallback.");
+        }
+        fallbacks.push(fallback);
+        index += 1;
+        continue;
+      }
+      if (option === "--auto") {
+        const value = values[index + 1];
+        if (!value || value.startsWith("-")) failModelsContinuity("Missing value for --auto.");
+        if (value !== "off" && value !== "retired" && value !== "transient" && value !== "all") {
+          failModelsContinuity(`Invalid --auto value: ${value}`);
+        }
+        automatic = value;
+        automaticCount += 1;
+        index += 1;
+        continue;
+      }
+      if (option.startsWith("-")) failModelsContinuity(`Unknown continuity set option: ${option}`);
+      failModelsContinuity(`Unexpected continuity set argument: ${option}`);
+    }
+    if (fallbacks.length === 0) {
+      failModelsContinuity("Continuity set requires at least one --fallback value.");
+    }
+    if (automaticCount !== 1 || automatic === undefined) {
+      failModelsContinuity("Continuity set requires exactly one --auto value.");
+    }
+    return { command: "set", primary, fallbacks, automatic };
+  }
+  if (subcommand === "replace") {
+    const operands = values.slice(1);
+    const unknownOption = operands.find(value => value.startsWith("-"));
+    if (unknownOption) failModelsContinuity(`Unknown continuity replace option: ${unknownOption}`);
+    if (operands.length !== 2) {
+      failModelsContinuity("Continuity replace requires exactly a reference id and replacement.");
+    }
+    return { command: "replace", referenceId: operands[0], replacement: operands[1] };
+  }
+  failModelsContinuity(`Unknown continuity command: ${subcommand}`);
+}
+
+async function runningProxyApiBaseForContinuity(): Promise<string> {
+  if (!readPid()) {
+    console.error("❌ Proxy not running. Start it with: frogp start");
+    process.exit(1);
+  }
+  const config = loadConfig();
+  const port = readActivePort() ?? config.port ?? DEFAULT_PORT;
+  if (!(await proxyHealthy(port))) {
+    console.error(`❌ Proxy is not answering on port ${port}. Check: frogp status, then recover with: frogp refresh (or frogp start)`);
+    process.exit(1);
+  }
+  return `http://${healthHost(config.hostname)}:${port}`;
+}
+
+async function requestModelContinuity(
+  apiBase: string,
+  action?: Record<string, unknown>,
+): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase}/api/model-continuity`, {
+      method: action ? "POST" : "GET",
+      headers: {
+        ...sameMachineAccessHeaders(),
+        ...(action ? { "content-type": "application/json" } : {}),
+      },
+      ...(action ? { body: JSON.stringify(action) } : {}),
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch {
+    console.error("❌ Could not reach the model continuity API. Check: frogp status, then recover with: frogp refresh");
+    process.exit(1);
+  }
+  let document: unknown;
+  try {
+    document = await response.json();
+  } catch {
+    console.error("❌ Model continuity API returned an invalid response.");
+    process.exit(1);
+  }
+  if (!response.ok) {
+    const errorDocument = document && typeof document === "object"
+      ? document as Record<string, unknown>
+      : {};
+    const code = typeof errorDocument.code === "string" ? errorDocument.code : `http_${response.status}`;
+    const message = typeof errorDocument.error === "string"
+      ? errorDocument.error
+      : "model continuity request failed";
+    console.error(`❌ ${code}: ${message}`);
+    process.exit(1);
+  }
+  return document;
+}
+
+function modelContinuityReport(document: unknown): CliModelContinuityReport {
+  if (!document || typeof document !== "object" || Array.isArray(document)) {
+    failModelsContinuity("Model continuity API returned an invalid report.");
+  }
+  const candidate = document as Record<string, unknown>;
+  if (
+    !candidate.policies
+    || typeof candidate.policies !== "object"
+    || Array.isArray(candidate.policies)
+    || !Array.isArray(candidate.references)
+    || !Array.isArray(candidate.circuits)
+  ) {
+    failModelsContinuity("Model continuity API returned an invalid report.");
+  }
+  for (const reference of candidate.references) {
+    if (
+      !reference
+      || typeof reference !== "object"
+      || typeof reference.id !== "string"
+      || typeof reference.kind !== "string"
+      || typeof reference.primary !== "string"
+      || typeof reference.label !== "string"
+      || (reference.status !== "ready"
+        && reference.status !== "retired"
+        && reference.status !== "authentication_required"
+        && reference.status !== "policy_invalid")
+      || typeof reference.automaticEligible !== "boolean"
+      || !reference.policy
+      || typeof reference.policy !== "object"
+      || !Array.isArray(reference.policy.fallbacks)
+      || !reference.policy.fallbacks.every(fallback => typeof fallback === "string")
+      || (reference.policy.automatic !== "off"
+        && reference.policy.automatic !== "retired"
+        && reference.policy.automatic !== "transient"
+        && reference.policy.automatic !== "all")
+    ) {
+      failModelsContinuity("Model continuity API returned an invalid report.");
+    }
+  }
+  for (const circuit of candidate.circuits) {
+    if (
+      !circuit
+      || typeof circuit !== "object"
+      || typeof circuit.primary !== "string"
+      || typeof circuit.reason !== "string"
+      || typeof circuit.retryAt !== "number"
+    ) {
+      failModelsContinuity("Model continuity API returned an invalid report.");
+    }
+  }
+  return candidate as unknown as CliModelContinuityReport;
+}
+
+function renderHumanModelContinuity(report: CliModelContinuityReport, paint: boolean): void {
+  if (report.references.length === 0) {
+    console.log("No configured model references were reported.");
+  }
+  for (const reference of report.references) {
+    const header = `[${reference.status}] ${reference.label} · ${reference.primary}`;
+    if (reference.status === "ready") console.log(success(header, paint));
+    else if (reference.status === "policy_invalid") console.log(errorText(header, paint));
+    else console.log(warn(header, paint));
+    console.log(`  Automatic: ${reference.policy.automatic}`);
+    console.log(`  Fallbacks: ${reference.policy.fallbacks.length > 0 ? reference.policy.fallbacks.join(", ") : "none"}`);
+    if (reference.status === "retired") {
+      console.log(`  Impact: ${reference.label} points to a retired model.`);
+    } else if (reference.status === "authentication_required") {
+      console.log(`  Impact: ${reference.label} cannot authenticate this model.`);
+    } else if (reference.status === "policy_invalid") {
+      console.log(`  Impact: ${reference.label} has an invalid continuity policy.`);
+    }
+    const replacement = reference.policy.fallbacks[0];
+    if (reference.status === "retired" && replacement) {
+      console.log(`  Replace: frogp models continuity replace ${reference.id} ${replacement}`);
+    } else if (reference.status === "authentication_required") {
+      console.log(`  Sign in: frogp login ${reference.primary.split("/", 1)[0]}`);
+    } else if (reference.status === "policy_invalid") {
+      console.log(`  Inspect: frogp models continuity --json`);
+    }
+  }
+  if (report.circuits.length > 0) {
+    console.log(warn("Open continuity circuits", paint));
+    for (const circuit of report.circuits) {
+      console.log(warn(`[${circuit.reason}] ${circuit.primary}`, paint));
+      console.log(`  Automatic retry after: ${new Date(circuit.retryAt).toISOString()}`);
+    }
+  }
+}
+
+async function handleModelsContinuity(values: string[]): Promise<void> {
+  const parsed = parseModelsContinuityCommand(values);
+  const apiBase = await runningProxyApiBaseForContinuity();
+  if (parsed.command === "report") {
+    const document = await requestModelContinuity(apiBase);
+    const report = modelContinuityReport(document);
+    if (parsed.json) {
+      printJson(document);
+      return;
+    }
+    renderHumanModelContinuity(report, humanColorEnabled());
+    return;
+  }
+  if (parsed.command === "set") {
+    await requestModelContinuity(apiBase, {
+      action: "set",
+      primary: parsed.primary,
+      fallbacks: parsed.fallbacks,
+      automatic: parsed.automatic,
+    });
+    console.log(`Continuity policy updated for ${parsed.primary}.`);
+    return;
+  }
+  const document = await requestModelContinuity(apiBase);
+  const report = modelContinuityReport(document);
+  const reference = report.references.find(candidate => candidate.id === parsed.referenceId);
+  if (!reference) {
+    console.error(`❌ Unknown model reference. Refresh the report with: frogp models continuity`);
+    process.exit(1);
+  }
+  await requestModelContinuity(apiBase, {
+    action: "replace",
+    referenceId: parsed.referenceId,
+    expectedPrimary: reference.primary,
+    replacement: parsed.replacement,
+  });
+  console.log(`Replaced ${reference.label} with ${parsed.replacement}.`);
+}
+
 /**
  * Online-only model listing: delegates to the running proxy's existing GET /api/models
  * (the same list the dashboard and Claude Code catalog use). Never synthesizes an
  * offline list from config/registry/catalog state.
  */
 async function handleModels(flags: string[]) {
+  if (flags[0] === "continuity") {
+    await handleModelsContinuity(flags.slice(1));
+    return;
+  }
   const unknown = flags.filter(flag => flag !== "--json");
   if (unknown.length > 0) {
     console.error(`Unknown models option: ${unknown.join(" ")}\nUsage: frogp models [--json]`);
