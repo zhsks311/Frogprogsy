@@ -30,6 +30,11 @@ function configWithRenamedManagedProvider(): FrogConfig {
         baseUrl: "https://anthropic.invalid",
         models: ["claude-old"],
       },
+      anthropic: {
+        adapter: "anthropic",
+        baseUrl: "https://same-name.invalid",
+        models: ["claude-old"],
+      },
       offlineManaged: {
         adapter: "anthropic",
         baseUrl: "https://offline.invalid",
@@ -119,6 +124,7 @@ describe("model retirement identity", () => {
     expect(retired.has("work/claude-old")).toBeTrue();
     expect(retired.has("offlineManaged/claude-old")).toBeTrue();
     expect(retired.has("custom/claude-old")).toBeFalse();
+    expect(retired.has("anthropic/claude-old")).toBeFalse();
   });
 });
 
