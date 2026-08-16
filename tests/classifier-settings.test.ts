@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, saveConfig } from "../src/config";
@@ -208,9 +208,10 @@ describe("PUT /api/classifier-settings", () => {
       expect(response.status).toBe(200);
       const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
       expect(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
-      expect(loadConfig().claudeProfiles?.profiles).toEqual([
-        expect.objectContaining({ id: "cp_default", claudeHome: realpathSync(claudeHome) }),
-      ]);
+      const materializedProfile = loadConfig().claudeProfiles?.profiles.find(profile => profile.id === "cp_default");
+      expect(materializedProfile).toBeDefined();
+      const materializedSettings = JSON.parse(readFileSync(join(materializedProfile!.claudeHome, "settings.json"), "utf8"));
+      expect(materializedSettings.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
     } finally {
       await server.stop(true);
       if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
