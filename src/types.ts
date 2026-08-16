@@ -264,8 +264,6 @@ export interface ClaudeProfileRecord {
   lastInjectedAt?: string;
   lastSeenAt?: string;
   authState?: ClaudeProfileAuthState;
-  /** Opt-in: inject the reserved auto-mode classifier alias for this profile so its auto-mode side-queries route to `autoModeClassifier`. */
-  routeAutoModeClassifier?: boolean;
 }
 
 export interface ClaudeProfilesConfig {
@@ -370,6 +368,8 @@ export interface FrogConfig {
   webSearchFallback?: FrogWebSearchFallbackConfig;
   /** Image fallback helper. Disabled unless explicitly enabled; implemented in-process, not as a separate app. */
   imageFallback?: FrogImageFallbackConfig;
+  /** Global opt-in for auto-mode review routing across every managed Claude Code home and enrolled project. */
+  autoModeClassifierEnabled?: boolean;
   /**
    * Single explicit target for the Claude Code auto-mode side-classifier. ONLY the reserved alias
    * `claude-frogp-auto-classifier` (AUTO_MODE_CLASSIFIER_ALIAS) routes here; there is no model-name-shape

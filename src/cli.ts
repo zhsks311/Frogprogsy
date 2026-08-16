@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { suggestClosest } from "./cli-suggest";
 import { dim, error as errorText, shouldColor, success, warn } from "./cli-color";
-import { restoreNativeClaudeCode } from "./claude-inject";
+import { injectClaudeCodeConfig, restoreNativeClaudeCode } from "./claude-inject";
 import { cleanupClaudeProjectsForRemovedProfile, reapplyEnrolledClaudeProjects, restoreManagedClaudeRouting } from "./claude-routing-lifecycle";
 import {
   clearShutdownIntent,
@@ -43,7 +43,6 @@ import {
   removeClaudeProfile,
   renameClaudeProfile,
   resolveClaudeProfile,
-  resolveClaudeProfileClassifierFlag,
 } from "./claude-profiles";
 import {
   addClaudeProject,
@@ -58,6 +57,7 @@ import {
   injectClaudeProjectSettings,
   readClaudeGatewayState,
   readClaudeProjectGatewayState,
+  restoreClaudeCodeSettings,
   restoreClaudeProjectSettings,
 } from "./claude-settings";
 import { buildClaudeDoctorReport, resolveRawClaudeOnPath, sanitizeClaudeDoctorReport, type ApiModelRow, type ClaudeDoctorReport } from "./claude-doctor";
@@ -72,7 +72,7 @@ import {
   removeClaudeGrant,
   resolveClaudeGrant,
 } from "./claude-grants";
-import type { ClaudeGrantRecord, FrogConfig } from "./types";
+import type { ClaudeGrantRecord, ClaudeProfileRecord, FrogConfig } from "./types";
 import type { ClaudeCodeCatalogRefreshResult } from "./claude-refresh";
 import { deleteClaudeGrantCredential, inspectClaudeGrantStatus, type ClaudeGrantStatusState } from "./claude-grant-auth";
 import { ClaudeGrantProbeError, runClaudeGrantLiveProbe } from "./claude-grant-probe";
@@ -551,7 +551,7 @@ async function handleStart(options: { block?: boolean } = {}) {
       claudeHome: profile.claudeHome,
       profileId: profile.id,
       gatewayAuthCarrier: startConfig.gatewayAuthCarrier,
-      routeAutoModeClassifier: profile.routeAutoModeClassifier === true,
+      routeAutoModeClassifier: startConfig.autoModeClassifierEnabled === true,
     });
     markClaudeProfileInjected(startConfig, profile.id, true);
   }
@@ -1173,7 +1173,7 @@ async function handleClaudeProjectCommand(values: string[], config: ReturnType<t
         projectPath: project.projectPath,
         routingProfileId: project.routingProfileId,
         gatewayAuthCarrier: config.gatewayAuthCarrier,
-        routeAutoModeClassifier: resolveClaudeProfileClassifierFlag(config, project.routingProfileId),
+        routeAutoModeClassifier: config.autoModeClassifierEnabled === true,
       });
       if (!result.success) {
         console.error(`❌ ${result.message}`);
@@ -1262,6 +1262,10 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         console.error("Usage: frogp claude add <account-name> [--home <existing-path>]");
         process.exit(1);
       }
+      if (config.autoModeClassifierEnabled === true && process.env.FROGPROGSY_NO_CLAUDE_WRITES === "1") {
+        console.error("❌ Claude Code writes are blocked; the account was not created.");
+        process.exit(1);
+      }
 
       let home: string;
       let createdHome = false;
@@ -1295,12 +1299,49 @@ async function handleClaudeCommand(values: string[]): Promise<void> {
         }
       }
 
-      let profile: ReturnType<typeof addClaudeProfile>;
+      let profile: ClaudeProfileRecord;
       try {
         profile = addClaudeProfile(config, { name, claudeHome: home });
-        saveConfig(config);
       } catch (error) {
         console.error(`❌ Account registration failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (createdHome) console.error("   The new empty home directory was kept; frogprogsy does not delete account directories automatically.");
+        process.exit(1);
+      }
+
+      let classifierSettingsUpdated = false;
+      if (config.autoModeClassifierEnabled === true) {
+        const result = await injectClaudeCodeConfig(config.port ?? DEFAULT_PORT, config, {
+          claudeHome: profile.claudeHome,
+          profileId: profile.id,
+        });
+        if (!result.success) {
+          removeClaudeProfile(config, profile.id);
+          const rollback = result.mayHaveMutated
+            ? restoreClaudeCodeSettings({
+              claudeHome: profile.claudeHome,
+              profileId: profile.id,
+            })
+            : { success: true, message: "" };
+          console.error(`❌ Account registration failed: the global auto-mode review route could not be applied (${result.message})`);
+          if (!rollback.success) console.error(`   Rollback failed: ${rollback.message}`);
+          if (createdHome) console.error("   The new empty home directory was kept; frogprogsy does not delete account directories automatically.");
+          process.exit(1);
+        }
+        classifierSettingsUpdated = true;
+      }
+
+      try {
+        saveConfig(config);
+      } catch (error) {
+        removeClaudeProfile(config, profile.id);
+        const rollback = classifierSettingsUpdated
+          ? restoreClaudeCodeSettings({
+            claudeHome: profile.claudeHome,
+            profileId: profile.id,
+          })
+          : { success: true, message: "" };
+        console.error(`❌ Account registration failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (!rollback.success) console.error(`   Rollback failed: ${rollback.message}`);
         if (createdHome) console.error("   The new empty home directory was kept; frogprogsy does not delete account directories automatically.");
         process.exit(1);
       }

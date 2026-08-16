@@ -3,7 +3,7 @@ import { DEFAULT_PORT } from "./config";
 
 import { restoreNativeClaudeCode } from "./claude-inject";
 import { clearClaudeProjectsForRoutingProfile, findClaudeProjectsForRoutingProfile } from "./claude-projects";
-import { managedClaudeProfiles, resolveClaudeProfileClassifierFlag } from "./claude-profiles";
+import { managedClaudeProfiles } from "./claude-profiles";
 import { clearClaudeProjectRoutingProfileHeader, injectClaudeProjectSettings, restoreClaudeProjectSettings } from "./claude-settings";
 import type { ClaudeProjectRecord, FrogConfig } from "./types";
 
@@ -34,8 +34,8 @@ export interface RemovedProfileProjectCleanupResult {
 }
 
 /**
- * Remove a profile's auto-mode reviewer alias from enrolled project settings before clearing the
- * routing-profile metadata. Both CLI and management API use this single safety-sensitive routine.
+ * Remove a deleted profile's routing header from enrolled projects while preserving the global
+ * auto-mode reviewer state. Both CLI and management API use this routine.
  */
 export function cleanupClaudeProjectsForRemovedProfile(
   config: FrogConfig,
@@ -50,7 +50,7 @@ export function cleanupClaudeProjectsForRemovedProfile(
         projectPath: project.projectPath,
         routingProfileId: profileId,
         gatewayAuthCarrier: config.gatewayAuthCarrier,
-        routeAutoModeClassifier: false,
+        routeAutoModeClassifier: config.autoModeClassifierEnabled === true,
       });
       if (!updated.success) {
         return {
@@ -157,7 +157,7 @@ export function reapplyEnrolledClaudeProjects(config: FrogConfig, port: number):
       projectPath: project.projectPath,
       routingProfileId: project.routingProfileId,
       gatewayAuthCarrier: config.gatewayAuthCarrier,
-      routeAutoModeClassifier: resolveClaudeProfileClassifierFlag(config, project.routingProfileId),
+      routeAutoModeClassifier: config.autoModeClassifierEnabled === true,
     });
     success = success && result.success;
     messages.push(`[project ${project.name}] ${result.message}`);

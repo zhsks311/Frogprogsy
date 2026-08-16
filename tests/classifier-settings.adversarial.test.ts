@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, saveConfig } from "../src/config";
 import { AUTO_MODE_CLASSIFIER_ALIAS } from "../src/classifier-settings";
-import { startServer } from "../src/server";
+import { __requestLogTest, startServer } from "../src/server";
 import type { FrogConfig } from "../src/types";
 
 let testDir = "";
@@ -31,6 +31,11 @@ function adversarialConfig(): FrogConfig {
         models: ["claude-sonnet-5", "claude-opus-4-8"],
       },
     },
+    claudeProfiles: {
+      schemaVersion: 1,
+      defaultProfileId: "cp_default",
+      profiles: [{ id: "cp_default", name: "Default", claudeHome: join(testDir, "claude-default") }],
+    },
   };
 }
 
@@ -45,6 +50,7 @@ async function put(serverUrl: URL, body: unknown): Promise<Response> {
 beforeEach(() => {
   previousFrogHome = process.env.FROGPROGSY_HOME;
   testDir = mkdtempSync(join(tmpdir(), "frog-auto-classifier-api-"));
+  mkdirSync(join(testDir, "claude-default"));
   process.env.FROGPROGSY_HOME = testDir;
   saveConfig(adversarialConfig());
 });
@@ -81,7 +87,7 @@ describe("PUT /api/classifier-settings", () => {
   test("persists one known provider/model pair", async () => {
     const server = await startServer(0)
     try {
-      const response = await put(server.url, { autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" } });
+      const response = await put(server.url, { autoModeClassifierEnabled: true, autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" } });
       expect(response.status).toBe(200);
       const body = await response.json() as { autoModeClassifier: { provider: string; model: string } };
       expect(body.autoModeClassifier).toEqual({ provider: "codex", model: "gpt-5.4-mini" });
@@ -94,7 +100,7 @@ describe("PUT /api/classifier-settings", () => {
   test("rejects a model absent from a non-empty known catalog without persisting it", async () => {
     const server = await startServer(0)
     try {
-      const response = await put(server.url, { autoModeClassifier: { provider: "codex", model: "invented-model" } });
+      const response = await put(server.url, { autoModeClassifierEnabled: true, autoModeClassifier: { provider: "codex", model: "invented-model" } });
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(loadConfig().autoModeClassifier).toBeUndefined();
     } finally {
@@ -105,7 +111,7 @@ describe("PUT /api/classifier-settings", () => {
   test("rejects a missing provider", async () => {
     const server = await startServer(0)
     try {
-      const response = await put(server.url, { autoModeClassifier: { provider: "ghost", model: "gpt-5.4-mini" } });
+      const response = await put(server.url, { autoModeClassifierEnabled: true, autoModeClassifier: { provider: "ghost", model: "gpt-5.4-mini" } });
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(loadConfig().autoModeClassifier).toBeUndefined();
     } finally {
@@ -121,7 +127,7 @@ describe("PUT /api/classifier-settings", () => {
         { provider: "", model: "gpt-5.4-mini" },
         { provider: "  ", model: "  " },
       ]) {
-        const response = await put(server.url, { autoModeClassifier: target });
+        const response = await put(server.url, { autoModeClassifierEnabled: true, autoModeClassifier: target });
         expect(response.status).toBeGreaterThanOrEqual(400);
       }
       expect(loadConfig().autoModeClassifier).toBeUndefined();
@@ -137,7 +143,7 @@ describe("PUT /api/classifier-settings", () => {
       saveConfig(config);
       const server = await startServer(0)
       try {
-        const response = await put(server.url, { autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" } });
+        const response = await put(server.url, { autoModeClassifierEnabled: true, autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" } });
         expect(response.status).toBeGreaterThanOrEqual(400);
         expect(loadConfig().autoModeClassifier).toBeUndefined();
       } finally {
@@ -146,36 +152,46 @@ describe("PUT /api/classifier-settings", () => {
     }
   });
 
-  test("clears the target only when no profile depends on it", async () => {
+  test("clears the disabled target only with an explicit false switch", async () => {
     const config = adversarialConfig();
     config.autoModeClassifier = { provider: "codex", model: "gpt-5.4-mini" };
     saveConfig(config);
     const server = await startServer(0)
     try {
-      const response = await put(server.url, { autoModeClassifier: null });
+      const response = await put(server.url, {
+        autoModeClassifierEnabled: false,
+        autoModeClassifier: null,
+      });
       expect(response.status).toBe(200);
+      expect(loadConfig().autoModeClassifierEnabled).toBe(false);
       expect(loadConfig().autoModeClassifier).toBeUndefined();
     } finally {
       await server.stop(true);
     }
   });
 
-  test("rejects clearing while an opted-in Claude Code home depends on the target", async () => {
+  test("disables while retaining an active target that disappeared from the catalog", async () => {
     const config = adversarialConfig();
-    config.autoModeClassifier = { provider: "codex", model: "gpt-5.4-mini" };
-    config.claudeProfiles = {
-      schemaVersion: 1,
-      profiles: [{ id: "cp_work", name: "Work", claudeHome: join(testDir, "claude-work"), routeAutoModeClassifier: true }],
-    };
-    saveConfig(config);
-    const server = await startServer(0)
-    try {
-      const response = await put(server.url, { autoModeClassifier: null });
-      expect(response.status).toBe(409);
-      expect(loadConfig().autoModeClassifier).toEqual({ provider: "codex", model: "gpt-5.4-mini" });
-    } finally {
-      await server.stop(true);
-    }
+    config.autoModeClassifierEnabled = true;
+    config.autoModeClassifier = { provider: "codex", model: "retired-review-model" };
+
+    const response = await __requestLogTest.handleManagementAPI(
+      new Request("http://localhost/api/classifier-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          autoModeClassifierEnabled: false,
+          autoModeClassifier: { provider: "codex", model: "retired-review-model" },
+        }),
+      }),
+      new URL("http://localhost/api/classifier-settings"),
+      config,
+      { saveConfig: () => {} },
+    );
+
+    expect(response?.status).toBe(200);
+    expect(config.autoModeClassifierEnabled).toBe(false);
+    expect(config.autoModeClassifier).toEqual({ provider: "codex", model: "retired-review-model" });
   });
 
   test("rejects legacy payloads instead of silently accepting them", async () => {
@@ -213,6 +229,7 @@ describe("management mutations preserve the configured classifier target", () =>
   test("rejects disabling the configured target without persisting the new disabled list", async () => {
     const config = adversarialConfig();
     config.autoModeClassifier = { provider: "codex", model: "gpt-5.4-mini" };
+    config.autoModeClassifierEnabled = true;
     saveConfig(config);
     const server = await startServer(0)
     try {
@@ -232,6 +249,7 @@ describe("management mutations preserve the configured classifier target", () =>
   test("rejects deleting the configured classifier provider", async () => {
     const config = adversarialConfig();
     config.autoModeClassifier = { provider: "codex", model: "gpt-5.4-mini" };
+    config.autoModeClassifierEnabled = true;
     saveConfig(config);
     const server = await startServer(0)
     try {

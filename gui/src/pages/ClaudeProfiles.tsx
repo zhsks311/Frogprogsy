@@ -17,7 +17,6 @@ interface ClaudeProfile {
   id: string;
   name: string;
   claudeHome: string;
-  routeAutoModeClassifier?: boolean;
   injected?: boolean;
   lastInjectedAt?: string;
   lastSeenAt?: string;
@@ -261,6 +260,7 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   const t = useT();
   const [profiles, setProfiles] = useState<ClaudeProfile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [autoModeClassifierEnabled, setAutoModeClassifierEnabled] = useState(false);
   const [models, setModels] = useState<ModelRow[]>([]);
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
@@ -311,7 +311,11 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
   const loadProfiles = async () => {
     const res = await fetch(`${apiBase}/api/claude-profiles`);
     if (!res.ok) throw new Error("profiles load failed");
-    const next = parseProfiles(await res.json());
+    const data: unknown = await res.json();
+    const next = parseProfiles(data);
+    setAutoModeClassifierEnabled(
+      Boolean(data && typeof data === "object" && (data as { autoModeClassifierEnabled?: unknown }).autoModeClassifierEnabled),
+    );
     setProfiles(next);
     setSelectedId(prev => next.some(profile => profile.id === prev) ? prev : next[0]?.id ?? null);
     return next;
@@ -705,32 +709,14 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
             <label><span>{t("claudeProfiles.rename")}</span><input className="input" value={renameValue} onChange={e => setRenameValue(e.target.value)} /></label>
             <div style={{ alignSelf: "end" }}><button className="btn btn-primary" onClick={() => patchSelected({ name: renameValue }, t("claudeProfiles.renamed"))} disabled={busy || !renameValue.trim()}>{t("common.save")}</button></div>
           </div>
-          <section className="panel-soft" style={{ marginTop: 16 }}>
-            <div className="panel-head">
-              <div>
-                <div style={{ fontWeight: 650 }}>{t("claudeProfiles.autoModeClassifierTitle")}</div>
-                <div className="muted" style={{ fontSize: 13 }}>{t("claudeProfiles.autoModeClassifierHint")}</div>
+          {autoModeClassifierEnabled && (
+            <section className="panel-soft" style={{ marginTop: 16 }}>
+              <div className="panel-head">
+                <div>
+                  <div style={{ fontWeight: 650 }}>{t("claudeProfiles.autoModeClassifierTitle")}</div>
+                  <div className="muted" style={{ fontSize: 13 }}>{t("claudeProfiles.autoModeClassifierHint")}</div>
+                </div>
               </div>
-              <button
-                className={`switch ${selected.routeAutoModeClassifier ? "on" : ""}`}
-                type="button"
-                aria-label={t("claudeProfiles.autoModeClassifierTitle")}
-                aria-pressed={selected.routeAutoModeClassifier === true}
-                disabled={busy}
-                onClick={() => {
-                  // Toggling routing invalidates the previous Sonnet command and its copy result.
-                  setSelectedSonnet("");
-                  setSonnetCopyState("idle");
-                  void patchSelected(
-                    { routeAutoModeClassifier: !selected.routeAutoModeClassifier },
-                    t(selected.routeAutoModeClassifier ? "claudeProfiles.autoModeClassifierDisabled" : "claudeProfiles.autoModeClassifierEnabled"),
-                  );
-                }}
-              >
-                <span className="knob" />
-              </button>
-            </div>
-            {selected.routeAutoModeClassifier === true && (
               <div style={{ marginTop: 12 }}>
                 <Notice tone="err">{t("claudeProfiles.autoModeClassifierCaveat")}</Notice>
                 {modelsLoading ? (
@@ -784,8 +770,8 @@ export default function ClaudeProfiles({ apiBase, navigate }: { apiBase: string;
                   </div>
                 )}
               </div>
-            )}
-          </section>
+            </section>
+          )}
 
           <section className="panel-soft" style={{ marginTop: 16 }}>
             <div className="panel-head">

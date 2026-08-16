@@ -33,6 +33,88 @@ function claudeProjectSettingsBackupPath(settingsPath: string): string {
   return join(getConfigDir(), "claude-projects", "settings-backups", `${digest}.json`);
 }
 
+export interface ClaudeSettingsFilesSnapshot {
+  settingsPath: string;
+  settingsContent: Uint8Array | null;
+  backupPath: string;
+  backupContent: Uint8Array | null;
+  settingsScope: "home" | "project";
+}
+
+function readFileSnapshot(path: string): Uint8Array | null {
+  return existsSync(path) ? readFileSync(path) : null;
+}
+
+export function captureClaudeCodeSettingsFiles(options: {
+  claudeHome?: string;
+  profileId?: string;
+} = {}): ClaudeSettingsFilesSnapshot {
+  const settingsPath = claudeSettingsFilePath(options.claudeHome);
+  const backupPath = claudeSettingsBackupPath(options.profileId);
+  return {
+    settingsPath,
+    settingsContent: readFileSnapshot(settingsPath),
+    backupPath,
+    backupContent: readFileSnapshot(backupPath),
+    settingsScope: "home",
+  };
+}
+
+export function captureClaudeProjectSettingsFiles(projectPath: string): ClaudeSettingsFilesSnapshot {
+  const settingsPath = claudeProjectSettingsFilePath(projectPath);
+  const backupPath = claudeProjectSettingsBackupPath(settingsPath);
+  return {
+    settingsPath,
+    settingsContent: readFileSnapshot(settingsPath),
+    backupPath,
+    backupContent: readFileSnapshot(backupPath),
+    settingsScope: "project",
+  };
+}
+
+function restoreSnapshotFile(
+  path: string,
+  content: Uint8Array | null,
+  scope: "home" | "project" | "backup",
+): void {
+  if (scope === "backup") ensureConfigDirForWrite("restore Claude settings backup snapshot");
+  else if (scope === "home") assertSafeClaudeHomeWrite("restore Claude settings snapshot", path);
+  if (content === null) {
+    if (existsSync(path)) unlinkSync(path);
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  atomicWriteFile(path, content);
+}
+
+function removeBackupFile(path: string, operation: string): void {
+  ensureConfigDirForWrite(operation);
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+export function restoreClaudeSettingsFilesSnapshot(
+  snapshot: ClaudeSettingsFilesSnapshot,
+): { success: boolean; message: string } {
+  const errors: string[] = [];
+  try {
+    restoreSnapshotFile(snapshot.settingsPath, snapshot.settingsContent, snapshot.settingsScope);
+  } catch (error) {
+    errors.push(`settings: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    restoreSnapshotFile(snapshot.backupPath, snapshot.backupContent, "backup");
+  } catch (error) {
+    errors.push(`backup: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return errors.length === 0
+    ? { success: true, message: "Restored exact pre-update Claude settings files." }
+    : { success: false, message: errors.join("; ") };
+}
+
 export const OWNED_CLAUDE_ENV_KEYS = [
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
@@ -147,7 +229,7 @@ export interface ClaudeSettingsInjectionOptions {
   gatewayAuthCarrier?: GatewayAuthCarrier;
   claudeHome?: string;
   profileId?: string;
-  /** Inject the reserved auto-mode classifier alias (ANTHROPIC_DEFAULT_SONNET_MODEL) when the resolved profile opts in. */
+  /** Inject the reserved auto-mode classifier alias when the global review switch is enabled. */
   routeAutoModeClassifier?: boolean;
 }
 
@@ -177,6 +259,7 @@ export interface ClaudeGatewayState {
   settingsPath: string;
   settingsFound: boolean;
   applied: boolean;
+  autoModeClassifierApplied: boolean;
   expectedBaseUrl: string;
   actualBaseUrl: string | undefined;
   baseUrlMatchesExpected: boolean;
@@ -252,11 +335,13 @@ function readGatewayStateFrom(
   const profileHeaderMatches = matchProfileHeader(env.ANTHROPIC_CUSTOM_HEADERS);
   const authTokenSet = typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim() !== "";
   const carrier = resolveObservedGatewayCarrier(env);
+  const autoModeClassifierApplied = env.ANTHROPIC_DEFAULT_SONNET_MODEL === AUTO_MODE_CLASSIFIER_ALIAS;
   const applied = baseUrlMatchesExpected && gatewayDiscovery && profileHeaderMatches;
   return {
     settingsPath,
     settingsFound,
     applied,
+    autoModeClassifierApplied,
     expectedBaseUrl,
     actualBaseUrl,
     baseUrlMatchesExpected,
@@ -386,7 +471,12 @@ function writeProjectJson(path: string, value: unknown): void {
   atomicWriteFile(path, JSON.stringify(value, null, 2) + "\n");
 }
 
-export function injectClaudeCodeSettings(port: number, options: ClaudeSettingsInjectionOptions = {}): { success: boolean; message: string } {
+export function injectClaudeCodeSettings(port: number, options: ClaudeSettingsInjectionOptions = {}): {
+  success: boolean;
+  message: string;
+  mayHaveMutated?: boolean;
+} {
+  let mayHaveMutated = false;
   try {
     const profileId = options.profileId;
     const backupPath = claudeSettingsBackupPath(profileId);
@@ -395,13 +485,18 @@ export function injectClaudeCodeSettings(port: number, options: ClaudeSettingsIn
     const existingBackup = readBackup(profileId);
     const { settings: next, backup } = mergeClaudeCodeSettings(settings, port, existingBackup, options);
     writeJson(backupPath, backup, "write Claude settings backup");
+    mayHaveMutated = true;
     writeJson(settingsPath, next, "write Claude settings");
     return {
       success: true,
       message: `Injected frogprogsy env into Claude Code settings at ${settingsPath}. Backup: ${backupPath}.`,
     };
   } catch (err) {
-    return { success: false, message: err instanceof Error ? err.message : String(err) };
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : String(err),
+      ...(mayHaveMutated ? { mayHaveMutated: true } : {}),
+    };
   }
 }
 
@@ -413,7 +508,7 @@ export interface ClaudeProjectSettingsOptions {
   includeAuthToken?: boolean;
   /** Configured carrier threaded from FrogConfig.gatewayAuthCarrier. Absent => token-free (default). */
   gatewayAuthCarrier?: GatewayAuthCarrier;
-  /** Inject the reserved auto-mode classifier alias for this project when the routing profile opts in. */
+  /** Inject the reserved auto-mode classifier alias when the global review switch is enabled. */
   routeAutoModeClassifier?: boolean;
 }
 
@@ -448,7 +543,12 @@ export function mergeClaudeProjectSettings(
   return merged;
 }
 
-export function injectClaudeProjectSettings(port: number, options: ClaudeProjectSettingsOptions): { success: boolean; message: string } {
+export function injectClaudeProjectSettings(port: number, options: ClaudeProjectSettingsOptions): {
+  success: boolean;
+  message: string;
+  mayHaveMutated?: boolean;
+} {
+  let mayHaveMutated = false;
   try {
     if (options.skipGitProtection !== true) ensureClaudeProjectSettingsExcluded(options.projectPath);
     const settingsPath = claudeProjectSettingsFilePath(options.projectPath);
@@ -457,13 +557,18 @@ export function injectClaudeProjectSettings(port: number, options: ClaudeProject
     const existingBackup = readBackupPath(backupPath);
     const { settings: next, backup } = mergeClaudeProjectSettings(settings, port, existingBackup, options);
     writeJson(backupPath, backup, "write Claude project settings backup");
+    mayHaveMutated = true;
     writeProjectJson(settingsPath, next);
     return {
       success: true,
       message: `Injected frogprogsy env into Claude Code project settings at ${settingsPath}. Backup: ${backupPath}.`,
     };
   } catch (err) {
-    return { success: false, message: err instanceof Error ? err.message : String(err) };
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : String(err),
+      ...(mayHaveMutated ? { mayHaveMutated: true } : {}),
+    };
   }
 }
 
@@ -481,7 +586,7 @@ export function restoreClaudeProjectSettings(projectPath: string): { success: bo
     }
     const restored = restoreClaudeCodeSettingsFromBackup(settings, backup);
     writeProjectJson(settingsPath, restored);
-    try { ensureConfigDirForWrite("remove Claude project settings backup"); unlinkSync(backupPath); } catch { /* ignore */ }
+    removeBackupFile(backupPath, "remove Claude project settings backup");
     return { success: true, message: `Restored Claude Code project settings at ${settingsPath}.` };
   } catch (err) {
     return { success: false, message: err instanceof Error ? err.message : String(err) };
@@ -552,7 +657,7 @@ export function restoreClaudeCodeSettings(options: { claudeHome?: string; profil
     }
     const restored = restoreClaudeCodeSettingsFromBackup(settings, backup);
     writeJson(settingsPath, restored, "write Claude settings");
-    try { ensureConfigDirForWrite("remove Claude settings backup"); unlinkSync(backupPath); } catch { /* ignore */ }
+    removeBackupFile(backupPath, "remove Claude settings backup");
     return { success: true, message: `Restored Claude Code settings at ${settingsPath}.` };
   } catch (err) {
     return { success: false, message: err instanceof Error ? err.message : String(err) };

@@ -1683,7 +1683,14 @@ export async function runClaudeProfile(
     await refreshManagedProfileCatalog(config, profile, options.refreshCatalog);
     const carrier = config.gatewayAuthCarrier ?? "token-free";
     const runtimeAccessToken = config.localAccess?.enabled === true ? readLocalAccessToken() ?? undefined : undefined;
-    env = buildClaudeProfileRunEnv(profile, readActivePort() ?? config.port ?? DEFAULT_PORT, carrier, process.env, runtimeAccessToken);
+    env = buildClaudeProfileRunEnv(
+      profile,
+      readActivePort() ?? config.port ?? DEFAULT_PORT,
+      carrier,
+      process.env,
+      runtimeAccessToken,
+      config.autoModeClassifierEnabled === true,
+    );
   } else {
     env = buildClaudeProfileNativeEnv(profile);
   }

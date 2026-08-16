@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { AUTO_MODE_CLASSIFIER_ALIAS } from "../src/classifier-settings";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
@@ -282,6 +283,48 @@ describe("CLI subcommand help", () => {
       expect(existsSync(workHome)).toBe(true);
       if (process.platform !== "win32") expect(statSync(workHome).mode & 0o777).toBe(0o700);
       expect(existsSync(join(frogHome, "bin", process.platform === "win32" ? "claude-work.cmd" : "claude-work"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("claude add applies the enabled global auto-mode route to the new home", () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-claude-global-add-"));
+    const frogHome = join(root, "frog");
+    const userHome = join(root, "user");
+    const defaultClaudeHome = join(userHome, ".claude");
+    mkdirSync(defaultClaudeHome, { recursive: true });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: userHome,
+      USERPROFILE: userHome,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: defaultClaudeHome,
+      CLAUDE_CONFIG_DIR: defaultClaudeHome,
+      FROGP_REAL_CLAUDE: process.platform === "win32" ? process.execPath : "/usr/bin/true",
+    };
+    delete env.FROGPROGSY_NO_CLAUDE_WRITES;
+    try {
+      const first = spawnSync(process.execPath, [cliPath, "claude", "add", "seed"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      expect(first.status).toBe(0);
+      const configPath = join(frogHome, "config.json");
+      const saved = JSON.parse(readFileSync(configPath, "utf8"));
+      saved.autoModeClassifierEnabled = true;
+      saved.autoModeClassifier = { provider: "codex", model: "gpt-5.4-mini" };
+      writeFileSync(configPath, JSON.stringify(saved));
+
+      const added = spawnSync(process.execPath, [cliPath, "claude", "add", "review"], {
+        cwd: repoRoot,
+        env,
+        encoding: "utf8",
+      });
+      expect(added.status).toBe(0);
+      const settings = JSON.parse(readFileSync(join(userHome, ".claude-review", "settings.json"), "utf8"));
+      expect(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(AUTO_MODE_CLASSIFIER_ALIAS);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -8,9 +8,9 @@ let _atomicSeq = 0;
  * Write a file atomically (temp + rename) so concurrent writers — e.g. `frogp stop` and the
  * proxy's own shutdown handler both restoring Claude Code — can never leave a half-written file.
  */
-export function atomicWriteFile(path: string, content: string): void {
+export function atomicWriteFile(path: string, content: string | Uint8Array): void {
   const tmp = `${path}.frogp.${process.pid}.${++_atomicSeq}.tmp`;
-  writeFileSync(tmp, content, { encoding: "utf-8", mode: 0o600 });
+  writeFileSync(tmp, content, { mode: 0o600 });
   renameSync(tmp, path);
 }
 

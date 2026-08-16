@@ -55,10 +55,11 @@ frogprogsy-owned env keys under `<profile-home>/settings.json`:
   }
 }
 ```
-A profile with `routeAutoModeClassifier:true` additionally owns
+When global `autoModeClassifierEnabled:true`, every managed profile home and enrolled project additionally owns
 `ANTHROPIC_DEFAULT_SONNET_MODEL:"claude-frogp-auto-classifier"`. The exact pre-injection value is part of the same
-backup/restore contract. The shared built-in `sonnet` shortcut limitation and the Claude Code 2.1.220 verification
-boundary are defined in `structure/07_classifier-routing.md`.
+backup/restore contract. Turning the global switch off restores it everywhere. The shared built-in `sonnet`
+shortcut limitation and the Claude Code 2.1.220 verification boundary are defined in
+`structure/07_classifier-routing.md`.
 
 Settings intentionally do not store frogprogsy's local discovery auth token by default. Managed settings,
 project enrollment, and launcher environments are token-free: they set the gateway base URL and discovery
