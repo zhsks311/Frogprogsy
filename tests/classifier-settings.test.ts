@@ -305,8 +305,10 @@ describe("PUT /api/classifier-settings", () => {
       const disabledHome = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
       const disabledIdle = JSON.parse(readFileSync(join(idleHome, "settings.json"), "utf8"));
       const disabledProject = JSON.parse(readFileSync(join(projectRoot, ".claude", "settings.local.json"), "utf8"));
+      expect(disabledHome.env.ANTHROPIC_BASE_URL).toBe("http://localhost:0");
       expect(disabledHome.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
-      expect(disabledIdle.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+      expect(disabledIdle.env).toBeUndefined();
+      expect(disabledProject.env.ANTHROPIC_BASE_URL).toBe("http://localhost:0");
       expect(disabledProject.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
       expect(loadConfig().autoModeClassifierEnabled).toBe(false);
     } finally {
@@ -321,7 +323,7 @@ describe("PUT /api/classifier-settings", () => {
     const config = baseConfig();
     config.claudeProfiles = {
       schemaVersion: 1,
-      profiles: [{ id: "cp_stale", name: "Stale", claudeHome }],
+      profiles: [{ id: "cp_stale", name: "Stale", claudeHome, injected: true }],
     };
     config.claudeProjects = {
       schemaVersion: 1,
@@ -364,6 +366,8 @@ describe("PUT /api/classifier-settings", () => {
     const directHome = join(testDir, "claude-direct-rollback");
     mkdirSync(claudeHome);
     mkdirSync(directHome);
+    const originalAppliedSettings = { env: { USER_SETTING: "work" } };
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify(originalAppliedSettings));
     const originalDirectSettings = { env: { USER_SETTING: "keep" } };
     writeFileSync(join(directHome, "settings.json"), JSON.stringify(originalDirectSettings));
     const config = baseConfig();
@@ -394,21 +398,29 @@ describe("PUT /api/classifier-settings", () => {
       expect(loadConfig().autoModeClassifierEnabled).not.toBe(true);
       const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
       const directSettings = JSON.parse(readFileSync(join(directHome, "settings.json"), "utf8"));
-      expect(settings.env?.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+      expect(settings).toEqual(originalAppliedSettings);
       expect(directSettings).toEqual(originalDirectSettings);
     } finally {
       await server.stop(true);
     }
   });
-  test("rolls back earlier homes when a later managed home cannot be inspected", async () => {
+  test("restores exact settings and backup bytes when a later managed home cannot be inspected", async () => {
     const appliedHome = join(testDir, "claude-applied-before-missing");
     const missingHome = join(testDir, "claude-missing");
+    const settingsPath = join(appliedHome, "settings.json");
+    const backupDir = join(testDir, "claude-profiles", "cp_applied");
+    const backupPath = join(backupDir, "claude-settings-backup.json");
     mkdirSync(appliedHome);
+    mkdirSync(backupDir, { recursive: true });
+    const originalSettings = `{"env":{"ANTHROPIC_BASE_URL":"http://localhost:65535","CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY":"1","USER_SETTING":"keep"}}\n`;
+    const originalBackup = `{"schemaVersion":1,"settingsPath":"legacy","env":{"ANTHROPIC_BASE_URL":{"existed":false}}}\n`;
+    writeFileSync(settingsPath, originalSettings);
+    writeFileSync(backupPath, originalBackup);
     const config = baseConfig();
     config.claudeProfiles = {
       schemaVersion: 1,
       profiles: [
-        { id: "cp_applied", name: "Applied", claudeHome: appliedHome },
+        { id: "cp_applied", name: "Applied", claudeHome: appliedHome, injected: true },
         { id: "cp_missing", name: "Missing", claudeHome: missingHome },
       ],
     };
@@ -421,8 +433,8 @@ describe("PUT /api/classifier-settings", () => {
       });
       expect(response.status).toBe(409);
       expect(loadConfig().autoModeClassifierEnabled).not.toBe(true);
-      const settings = JSON.parse(readFileSync(join(appliedHome, "settings.json"), "utf8"));
-      expect(settings.env?.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+      expect(readFileSync(settingsPath, "utf8")).toBe(originalSettings);
+      expect(readFileSync(backupPath, "utf8")).toBe(originalBackup);
     } finally {
       await server.stop(true);
     }
@@ -527,6 +539,15 @@ describe("PUT /api/classifier-settings", () => {
       })).status).toBe(400);
       expect((await put(server.url, {
         autoModeClassifierEnabled: true,
+      })).status).toBe(400);
+      expect((await put(server.url, {
+        autoModeClassifierEnabled: true,
+        autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" },
+        profileId: "cp_default",
+      })).status).toBe(400);
+      expect((await put(server.url, {
+        autoModeClassifierEnabled: "true",
+        autoModeClassifier: { provider: "codex", model: "gpt-5.4-mini" },
       })).status).toBe(400);
       expect(loadConfig().autoModeClassifier).toBeUndefined();
     } finally {

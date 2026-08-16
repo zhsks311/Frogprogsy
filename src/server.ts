@@ -57,11 +57,15 @@ import { effectiveKeyCandidates } from "./provider-keys";
 import { testProviderConnection as runProviderConnectionTest } from "./provider-test";
 import { resolveGuiBuildIdentity } from "./build-identity";
 import {
+  captureClaudeCodeSettingsFiles,
+  captureClaudeProjectSettingsFiles,
   injectClaudeProjectSettings,
   readClaudeGatewayState,
   readClaudeProjectGatewayState,
   restoreClaudeCodeSettings,
   restoreClaudeProjectSettings,
+  restoreClaudeSettingsFilesSnapshot,
+  type ClaudeSettingsFilesSnapshot,
 } from "./claude-settings";
 import { DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, setCached } from "./model-cache";
 import {
@@ -3833,39 +3837,18 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       autoModeClassifierEnabled: enabled,
       autoModeClassifier: nextTarget,
     };
-    const previousConfig: FrogConfig = {
-      ...state.effective,
-      autoModeClassifierEnabled: previousEnabled,
-    };
-    if (previousTarget) previousConfig.autoModeClassifier = previousTarget;
-    else delete previousConfig.autoModeClassifier;
 
     const classifierPort = config.port ?? DEFAULT_PORT;
-    const updatedProfiles: Array<{ profile: ClaudeProfileRecord; wasApplied: boolean }> = [];
-    const updatedProjects: Array<{ project: ClaudeProjectRecord; wasApplied: boolean }> = [];
+    const updatedProfiles: Array<{ profile: ClaudeProfileRecord; snapshot: ClaudeSettingsFilesSnapshot }> = [];
+    const updatedProjects: Array<{ project: ClaudeProjectRecord; snapshot: ClaudeSettingsFilesSnapshot }> = [];
     const rollbackRoutingChanges = async (): Promise<string[]> => {
       const rollbackErrors: string[] = [];
-      for (const { project, wasApplied } of [...updatedProjects].reverse()) {
-        const result = wasApplied
-          ? injectClaudeProjectSettings(classifierPort, {
-            projectPath: project.projectPath,
-            routingProfileId: project.routingProfileId,
-            gatewayAuthCarrier: config.gatewayAuthCarrier,
-            routeAutoModeClassifier: previousEnabled,
-          })
-          : restoreClaudeProjectSettings(project.projectPath);
+      for (const { project, snapshot } of [...updatedProjects].reverse()) {
+        const result = restoreClaudeSettingsFilesSnapshot(snapshot);
         if (!result.success) rollbackErrors.push(`[${project.id}] ${result.message}`);
       }
-      for (const { profile, wasApplied } of [...updatedProfiles].reverse()) {
-        const result = wasApplied
-          ? await injectClaudeCodeConfig(classifierPort, previousConfig, {
-            claudeHome: profile.claudeHome,
-            profileId: profile.id,
-          })
-          : restoreClaudeCodeSettings({
-            claudeHome: profile.claudeHome,
-            profileId: profile.id,
-          });
+      for (const { profile, snapshot } of [...updatedProfiles].reverse()) {
+        const result = restoreClaudeSettingsFilesSnapshot(snapshot);
         if (!result.success) rollbackErrors.push(`[${profile.id}] ${result.message}`);
       }
       return rollbackErrors;
@@ -3884,17 +3867,27 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       const errors: string[] = [];
       for (const profile of managedProfiles) {
         try {
+          const snapshot = captureClaudeCodeSettingsFiles({
+            claudeHome: profile.claudeHome,
+            profileId: profile.id,
+          });
           const gatewayState = readClaudeGatewayState(classifierPort, {
             claudeHome: profile.claudeHome,
             profileId: profile.id,
           });
           const wasApplied = gatewayState.applied || gatewayState.autoModeClassifierApplied;
           if (!enabled && !wasApplied) continue;
-          const result = await injectClaudeCodeConfig(classifierPort, nextConfig, {
-            claudeHome: profile.claudeHome,
-            profileId: profile.id,
-          });
-          if (result.success || result.mayHaveMutated) updatedProfiles.push({ profile, wasApplied });
+          if (!enabled && profile.injected !== true && !gatewayState.autoModeClassifierApplied) continue;
+          updatedProfiles.push({ profile, snapshot });
+          const result = !enabled && profile.injected !== true
+            ? restoreClaudeCodeSettings({
+              claudeHome: profile.claudeHome,
+              profileId: profile.id,
+            })
+            : await injectClaudeCodeConfig(classifierPort, nextConfig, {
+              claudeHome: profile.claudeHome,
+              profileId: profile.id,
+            });
           if (!result.success) errors.push(`[${profile.id}] ${result.message}`);
         } catch (error) {
           errors.push(`[${profile.id}] ${error instanceof Error ? error.message : String(error)}`);
@@ -3906,19 +3899,20 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
             errors.push(`[${project.id}] Project path is missing; routing settings were not changed`);
             continue;
           }
+          const snapshot = captureClaudeProjectSettingsFiles(project.projectPath);
           const gatewayState = readClaudeProjectGatewayState(classifierPort, {
             projectPath: project.projectPath,
             routingProfileId: project.routingProfileId,
           });
           const wasApplied = gatewayState.applied || gatewayState.autoModeClassifierApplied;
           if (!enabled && !wasApplied) continue;
+          updatedProjects.push({ project, snapshot });
           const result = injectClaudeProjectSettings(classifierPort, {
             projectPath: project.projectPath,
             routingProfileId: project.routingProfileId,
             gatewayAuthCarrier: config.gatewayAuthCarrier,
             routeAutoModeClassifier: enabled,
           });
-          if (result.success || result.mayHaveMutated) updatedProjects.push({ project, wasApplied });
           if (!result.success) errors.push(`[${project.id}] ${result.message}`);
         } catch (error) {
           errors.push(`[${project.id}] ${error instanceof Error ? error.message : String(error)}`);

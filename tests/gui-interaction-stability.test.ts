@@ -269,6 +269,8 @@ describe("GUI interaction stability", () => {
     expect(developer).toContain("classifierEnabledDraft");
     expect(developer).toContain("autoModeClassifierEnabled: enabled");
     expect(developer).toContain("{classifierEnabledDraft && (");
+    expect(developer).toContain("!classifierEnabledDraft && classifier?.autoModeClassifier.provider");
+    expect(developer).toContain("saveClassifier(false, null)");
     expect(profiles).not.toContain("routeAutoModeClassifier");
     expect(profiles).toContain("autoModeClassifierEnabled");
   });

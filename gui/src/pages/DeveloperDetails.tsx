@@ -451,11 +451,21 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
                   onChange={event => {
                     const enabled = event.target.checked;
                     setClassifierEnabledDraft(enabled);
-                    if (!enabled && classifier) void saveClassifier(false, classifier.autoModeClassifier);
+                    if (!enabled && classifier?.autoModeClassifierEnabled) void saveClassifier(false, classifier.autoModeClassifier);
                   }}
                 />
                 <span>{t("dash.classifierEnabled")}</span>
               </label>
+              {!classifierEnabledDraft && classifier?.autoModeClassifier.provider && classifier.autoModeClassifier.model && (
+                <button
+                  className="btn btn-sm"
+                  type="button"
+                  disabled={classifierSaving}
+                  onClick={() => saveClassifier(false, null)}
+                >
+                  {t("dash.classifierTargetClear")}
+                </button>
+              )}
             </div>
           </div>
           {classifierEnabledDraft && (

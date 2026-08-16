@@ -33,6 +33,88 @@ function claudeProjectSettingsBackupPath(settingsPath: string): string {
   return join(getConfigDir(), "claude-projects", "settings-backups", `${digest}.json`);
 }
 
+export interface ClaudeSettingsFilesSnapshot {
+  settingsPath: string;
+  settingsContent: Uint8Array | null;
+  backupPath: string;
+  backupContent: Uint8Array | null;
+  settingsScope: "home" | "project";
+}
+
+function readFileSnapshot(path: string): Uint8Array | null {
+  return existsSync(path) ? readFileSync(path) : null;
+}
+
+export function captureClaudeCodeSettingsFiles(options: {
+  claudeHome?: string;
+  profileId?: string;
+} = {}): ClaudeSettingsFilesSnapshot {
+  const settingsPath = claudeSettingsFilePath(options.claudeHome);
+  const backupPath = claudeSettingsBackupPath(options.profileId);
+  return {
+    settingsPath,
+    settingsContent: readFileSnapshot(settingsPath),
+    backupPath,
+    backupContent: readFileSnapshot(backupPath),
+    settingsScope: "home",
+  };
+}
+
+export function captureClaudeProjectSettingsFiles(projectPath: string): ClaudeSettingsFilesSnapshot {
+  const settingsPath = claudeProjectSettingsFilePath(projectPath);
+  const backupPath = claudeProjectSettingsBackupPath(settingsPath);
+  return {
+    settingsPath,
+    settingsContent: readFileSnapshot(settingsPath),
+    backupPath,
+    backupContent: readFileSnapshot(backupPath),
+    settingsScope: "project",
+  };
+}
+
+function restoreSnapshotFile(
+  path: string,
+  content: Uint8Array | null,
+  scope: "home" | "project" | "backup",
+): void {
+  if (scope === "backup") ensureConfigDirForWrite("restore Claude settings backup snapshot");
+  else if (scope === "home") assertSafeClaudeHomeWrite("restore Claude settings snapshot", path);
+  if (content === null) {
+    if (existsSync(path)) unlinkSync(path);
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  atomicWriteFile(path, content);
+}
+
+function removeBackupFile(path: string, operation: string): void {
+  ensureConfigDirForWrite(operation);
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+export function restoreClaudeSettingsFilesSnapshot(
+  snapshot: ClaudeSettingsFilesSnapshot,
+): { success: boolean; message: string } {
+  const errors: string[] = [];
+  try {
+    restoreSnapshotFile(snapshot.settingsPath, snapshot.settingsContent, snapshot.settingsScope);
+  } catch (error) {
+    errors.push(`settings: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    restoreSnapshotFile(snapshot.backupPath, snapshot.backupContent, "backup");
+  } catch (error) {
+    errors.push(`backup: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return errors.length === 0
+    ? { success: true, message: "Restored exact pre-update Claude settings files." }
+    : { success: false, message: errors.join("; ") };
+}
+
 export const OWNED_CLAUDE_ENV_KEYS = [
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
@@ -504,7 +586,7 @@ export function restoreClaudeProjectSettings(projectPath: string): { success: bo
     }
     const restored = restoreClaudeCodeSettingsFromBackup(settings, backup);
     writeProjectJson(settingsPath, restored);
-    try { ensureConfigDirForWrite("remove Claude project settings backup"); unlinkSync(backupPath); } catch { /* ignore */ }
+    removeBackupFile(backupPath, "remove Claude project settings backup");
     return { success: true, message: `Restored Claude Code project settings at ${settingsPath}.` };
   } catch (err) {
     return { success: false, message: err instanceof Error ? err.message : String(err) };
@@ -575,7 +657,7 @@ export function restoreClaudeCodeSettings(options: { claudeHome?: string; profil
     }
     const restored = restoreClaudeCodeSettingsFromBackup(settings, backup);
     writeJson(settingsPath, restored, "write Claude settings");
-    try { ensureConfigDirForWrite("remove Claude settings backup"); unlinkSync(backupPath); } catch { /* ignore */ }
+    removeBackupFile(backupPath, "remove Claude settings backup");
     return { success: true, message: `Restored Claude Code settings at ${settingsPath}.` };
   } catch (err) {
     return { success: false, message: err instanceof Error ? err.message : String(err) };

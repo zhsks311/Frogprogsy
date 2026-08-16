@@ -4,11 +4,13 @@ This document defines FrogProgsy's Claude Code auto-mode review routing. It is i
 **Claude Code 2.1.220**. Auto-mode is a safety boundary, so routing must be explicit, deterministic, observable,
 and removable.
 
-## Implementation status — 2026-08-13
+## Implementation status
 
-Status: **implemented in the current working tree, not yet committed, merged, packaged, installed, or restarted**.
-The previously merged per-home switch remains historical behavior of commit `930ced4`; the current source replaces
-it with one global switch.
+Status: **implemented and committed in the same source revision as this document**. Public packaging, installation,
+restart, and runtime state are separate release or local-environment facts and are not asserted here.
+
+The previously merged per-home switch remains historical behavior of commit `930ced4`; this source replaces it
+with one global switch.
 
 The current behavior is:
 
@@ -154,9 +156,12 @@ disabled, or a non-empty known catalog does not contain the model.
 
 Provider deletion/overwrite and `disabledModels` updates are rejected when they would invalidate the saved target.
 
-Changing the global switch immediately reapplies every previously applied home and enrolled project. A transition
-is rejected before writing when Claude Code settings writes are blocked. Partial failures roll back successful
-writes and leave the persisted switch unchanged. Startup rejects structurally invalid/disabled targets and unknown
+Changing the global switch immediately updates every managed home and enrolled project. If enabling the switch
+temporarily injects gateway settings into a profile currently marked as Claude-direct, disabling it restores that
+profile's full pre-toggle settings; already-injected homes and enrolled projects keep their gateway settings and
+only remove the reserved alias. A transition is rejected before writing when Claude Code settings writes are
+blocked. Partial failures restore the exact pre-update settings and backup file bytes and leave the persisted
+switch unchanged. Startup rejects structurally invalid/disabled targets and unknown
 targets for static provider catalogs when the global switch is enabled. Live-catalog targets are validated when
 saved because startup does not perform a network catalog refresh.
 

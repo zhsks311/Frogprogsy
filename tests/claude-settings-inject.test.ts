@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { buildClaudeCodeEnv, injectClaudeCodeSettings, injectClaudeProjectSettings, mergeClaudeCodeSettings, mergeClaudeProjectSettings, readClaudeGatewayState, readClaudeProjectGatewayState, removeOrphanedFrogProgsySettings, restoreClaudeCodeSettings, restoreClaudeCodeSettingsFromBackup, restoreClaudeProjectSettings } from "../src/claude-settings";
+import { dirname, join } from "node:path";
+import { buildClaudeCodeEnv, captureClaudeCodeSettingsFiles, injectClaudeCodeSettings, injectClaudeProjectSettings, mergeClaudeCodeSettings, mergeClaudeProjectSettings, readClaudeGatewayState, readClaudeProjectGatewayState, removeOrphanedFrogProgsySettings, restoreClaudeCodeSettings, restoreClaudeCodeSettingsFromBackup, restoreClaudeProjectSettings, restoreClaudeSettingsFilesSnapshot } from "../src/claude-settings";
 import { ensureClaudeProjectSettingsExcluded, getClaudeProjectGitProtection } from "../src/claude-projects";
 import { AUTO_MODE_CLASSIFIER_ALIAS } from "../src/classifier-settings";
 import { buildClaudeProfileNativeEnv, buildClaudeProfileRunEnv } from "../src/claude-profiles";
@@ -699,6 +699,34 @@ describe("Claude Code settings injection", () => {
     // Native launches always strip FrogProgsy's reserved alias, never a user's own default.
     expect(buildClaudeProfileNativeEnv(profile, { ANTHROPIC_DEFAULT_SONNET_MODEL: AUTO_MODE_CLASSIFIER_ALIAS }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
     expect(buildClaudeProfileNativeEnv(profile, { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5" }).ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-sonnet-4-5");
+  });
+
+  test("restores settings and backup snapshots byte-for-byte", () => {
+    const frogHome = mkdtempSync(join(tmpdir(), "frog-snapshot-bytes-"));
+    const claudeHome = mkdtempSync(join(tmpdir(), "frog-claude-snapshot-bytes-"));
+    const previousFrogHome = process.env.FROGPROGSY_HOME;
+    process.env.FROGPROGSY_HOME = frogHome;
+    try {
+      const paths = captureClaudeCodeSettingsFiles({ claudeHome, profileId: "cp_bytes" });
+      const settingsBytes = Uint8Array.from([0xff, 0x00, 0x61]);
+      const backupBytes = Uint8Array.from([0x62, 0xfe, 0x00]);
+      writeFileSync(paths.settingsPath, settingsBytes);
+      mkdirSync(dirname(paths.backupPath), { recursive: true });
+      writeFileSync(paths.backupPath, backupBytes);
+      const snapshot = captureClaudeCodeSettingsFiles({ claudeHome, profileId: "cp_bytes" });
+
+      writeFileSync(paths.settingsPath, "changed");
+      writeFileSync(paths.backupPath, "changed");
+
+      expect(restoreClaudeSettingsFilesSnapshot(snapshot).success).toBe(true);
+      expect(readFileSync(paths.settingsPath)).toEqual(Buffer.from(settingsBytes));
+      expect(readFileSync(paths.backupPath)).toEqual(Buffer.from(backupBytes));
+    } finally {
+      if (previousFrogHome === undefined) delete process.env.FROGPROGSY_HOME;
+      else process.env.FROGPROGSY_HOME = previousFrogHome;
+      rmSync(frogHome, { recursive: true, force: true });
+      rmSync(claudeHome, { recursive: true, force: true });
+    }
   });
 
 
