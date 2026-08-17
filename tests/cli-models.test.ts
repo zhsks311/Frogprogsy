@@ -494,7 +494,6 @@ describe("frogp models", () => {
       port: 0,
       fetch(req) {
         const path = new URL(req.url).pathname;
-        if (path === "/healthz") return new Response("ok");
         if (path.endsWith("/models")) {
           return Response.json({ data: [{ id: "claude-old" }, { id: "claude-new" }] });
         }
