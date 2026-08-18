@@ -36,7 +36,7 @@ and exits the process. The GUI sidebar stop button calls this endpoint.
 
 `RuntimeConfigState` derives retirement only from the selected remote, cached, or bundled managed catalog's exact `retiredModels` entries. A managed default that retires stays configured so API, CLI, and the Models dashboard can diagnose it; startup never silently replaces it with a catalog default.
 
-Automatic continuity is off by default and runs only in the ordinary `/v1/messages` attempt loop. An opted-in policy names at most three exact `provider/model` targets in order. The router never infers targets from model names, prices, families, provider defaults, or `fallbackProviders`. A shared 30-second circuit lives only in the server process; it adds no polling, worker, or persistence.
+Automatic continuity is off by default and runs only in the ordinary `/v1/messages` attempt loop. An opted-in policy names one primary target plus at most three exact fallback `provider/model` targets in order. The router never infers targets from model names, prices, families, provider defaults, or `fallbackProviders`. A shared 30-second circuit lives only in the server process; it adds no polling, worker, or persistence.
 
 The auto-mode classifier remains pinned to one configured target and is automatic-ineligible. Model-mixing internals, web-search and image helpers, and `subagentModels` are also diagnosis-and-permanent-replacement surfaces only; they do not use automatic continuity. Automatic attempts never mutate the persisted owner.
 

@@ -733,7 +733,8 @@ export async function syncCatalogModels(
   // alias identity is the single source of route resolution and is independent of picker visibility.
   // Gather every non-retired routed model from the management registry, add non-retired native
   // OpenAI slugs, and materialize ONCE with prune so stale aliases are dropped without exposing tombstones.
-  const goModels = (await gatherRoutedModels(config))
+  const gatheredModels = await gatherRoutedModels(config);
+  const goModels = gatheredModels
     .filter(model => options.retiredTargets?.has(`${model.provider}/${model.id}`) !== true);
   const nativeAliasSources = config.providers.openai
     ? nativeOpenAiSlugs()
@@ -747,6 +748,7 @@ export async function syncCatalogModels(
 
   const catalog = loadCatalogForSync(catalogPath);
   if (!catalog) return { added: 0, path: catalogPath };
+  if (gatheredModels.length === 0) return { added: 0, path: catalogPath };
 
   const template = findNativeTemplate(catalog);
 

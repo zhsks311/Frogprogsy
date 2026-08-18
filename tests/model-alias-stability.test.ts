@@ -283,6 +283,37 @@ describe("Claude-visible model aliases", () => {
     }
   });
 
+  test("empty routed discovery preserves the existing Claude model catalog", async () => {
+    const { claudeHome, cleanup } = makeHomes();
+    const catalogPath = join(claudeHome, "frogprogsy-catalog.json");
+    const original = `${JSON.stringify({
+      models: [
+        {
+          slug: "gpt-5.5",
+          display_name: "gpt-5.5",
+          priority: 1,
+          base_instructions: "Native model fixture",
+        },
+        {
+          slug: "work/existing",
+          display_name: "work/existing",
+          priority: 2,
+          base_instructions: "Existing routed model fixture",
+        },
+      ],
+    }, null, 2)}\n`;
+    try {
+      writeFileSync(catalogPath, original);
+
+      const result = await syncCatalogModels(nativeOnlyConfig, { claudeHome });
+
+      expect(result).toEqual({ added: 0, path: catalogPath });
+      expect(readFileSync(catalogPath, "utf8")).toBe(original);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("subset gateway-cache materialization does not prune canonical native aliases", async () => {
     const { claudeHome, aliasesPath, cleanup } = makeHomes();
     try {

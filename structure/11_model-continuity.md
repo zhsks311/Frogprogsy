@@ -61,7 +61,7 @@ The optional top-level `modelContinuity` map uses the exact ordinary route targe
 - `transient`: use the explicit sequence only after an eligible transient failure; or
 - `all`: enable both conditions.
 
-Absent configuration is `off`. A sequence contains at most three exact `provider/model` targets. Validation rejects an unconfigured provider, the primary target itself, duplicates, hidden models, retired fallback targets, and more than three targets. A provider-discovered target is allowed with a warning that the managed catalog has not validated it.
+Absent configuration is `off`. A policy is keyed by one exact primary target and contains at most three exact fallback `provider/model` targets. Validation rejects an unconfigured provider, the primary target itself, duplicates, hidden models, retired fallback targets, and more than three fallback targets. A provider-discovered target is allowed with a warning that the managed catalog has not validated it.
 Policy validation may report missing authentication, but it does not reject a configured fallback solely from a management-time authentication snapshot: forwarded credentials are request-dependent. Automatic resolution performs normal authentication for each exact candidate and skips a candidate that is unusable for that request.
 
 The existing `fallbackProviders` setting remains independent and never contributes a continuity candidate. Effective configuration keeps a retired managed provider default unchanged so the inventory can diagnose it. Only an explicit `replace` action mutates its owner; an opted-in exact continuity sequence may temporarily route an ordinary request elsewhere.

@@ -334,6 +334,36 @@ describe("model continuity management actions", () => {
     expect(refreshes).toBe(1);
   });
 
+  test("replace repairs an active reference after its provider was removed", async () => {
+    const configValue = config();
+    configValue.longContext = {
+      thresholdTokens: 100_000,
+      provider: "removed",
+      model: "old",
+    };
+    let saves = 0;
+    let refreshes = 0;
+
+    const response = await request("POST", {
+      action: "replace",
+      referenceId: "long-context",
+      expectedPrimary: "removed/old",
+      replacement: "work/new",
+    }, configValue, {
+      saveConfig: () => { saves += 1; },
+      refreshClaudeCodeCatalog: async () => { refreshes += 1; },
+    });
+
+    expect(response?.status).toBe(200);
+    expect(configValue.longContext).toEqual({
+      thresholdTokens: 100_000,
+      provider: "work",
+      model: "new",
+    });
+    expect(saves).toBe(1);
+    expect(refreshes).toBe(1);
+  });
+
   test("replace rejects dormant owners that are absent from the current reference inventory", async () => {
     const cases: Array<{ referenceId: string; configure(configValue: FrogConfig): void }> = [
       {

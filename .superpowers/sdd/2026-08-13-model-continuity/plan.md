@@ -13,7 +13,7 @@
 - Work only in the existing linked worktree `/Users/d66hjkxwt9/orca/workspaces/frogprogsy/모델-하위호환` on branch `feature/model-fadeout`.
 - `structure/11_model-continuity.md` is the approved design and must remain the source of truth.
 - Automatic fallback defaults to `off`; never infer a target from a model name, family, price, prompt, or provider default.
-- A continuity sequence contains at most three exact configured `provider/model` targets in user order.
+- A continuity policy contains one primary target plus at most three exact configured `provider/model` fallback targets in user order.
 - Keep `fallbackProviders` independent; it must never supply a continuity candidate.
 - Keep the auto-mode classifier pinned to one explicit target; its inventory row supports permanent replacement but rejects automatic continuity.
 - First implementation automates only ordinary routed `/v1/messages` requests. Mixing internals and web-search/image helper calls receive diagnosis and permanent replacement only.
@@ -1125,7 +1125,7 @@ Document this exact shape in English, Korean, and Chinese:
 }
 ```
 
-State the four modes, maximum three targets, default off, ordinary-route-only automatic boundary, no inferred targets, 30-second memory-only circuit, and classifier manual-only rule.
+State the four modes, maximum three fallback targets in addition to the primary, default off, ordinary-route-only automatic boundary, no inferred targets, 30-second memory-only circuit, and classifier manual-only rule.
 
 - [ ] **Step 5: Update troubleshooting and README summaries**
 
@@ -1190,3 +1190,72 @@ git commit -m "docs: publish model continuity workflow"
 - [ ] **Step 11: Request final code review before merge**
 
 Review the complete branch against `structure/11_model-continuity.md`. Resolve every verified HIGH/CRITICAL issue, rerun the affected focused test, then rerun all three completion gates. Do not push. Merge to `main` only after the human confirms the final verified branch.
+
+---
+
+### Task 9: Minimal post-review corrections
+
+**Files:**
+- Modify: `src/server.ts`
+- Modify: `src/claude-catalog.ts`
+- Modify: `tests/model-continuity-runtime.test.ts`
+- Modify: `tests/model-continuity-api.test.ts`
+- Modify: `tests/model-alias-stability.test.ts`
+- Modify: `README.md`
+- Modify: `README.ko.md`
+- Modify: `README.zh-CN.md`
+- Modify: `structure/01_runtime.md`
+- Modify: `structure/11_model-continuity.md`
+- Modify: `gui/src/i18n/ko.ts`
+- Modify: `docs-site/content/docs/ko/guides/claude-integration.md`
+- Modify: `docs-site/content/docs/ko/guides/web-dashboard.md`
+- Modify: `docs-site/content/docs/ko/reference/configuration.md`
+- Modify: `tests/gui-management-parity.test.ts`
+- Modify: `tests/gui-provider-ux-smoke.test.ts`
+- Modify: `tests/docs-i18n-parity.test.ts`
+
+**Interfaces:**
+- Consumes: the implemented exact continuity attempt loop, permanent replacement API, and Claude catalog sync.
+- Produces: only the originally approved behavior under missing credentials, empty discovery, invalid saved owners, and exhausted retired candidates. It adds no retry mode, inferred target, background work, or persistent state.
+
+- [ ] **Step 1: Add four focused failing regressions**
+
+Add tests that prove:
+
+```text
+1. A continuity candidate whose omitted authMode has no effective key is skipped, so the next exact candidate runs.
+2. A Claude catalog with existing routed entries is preserved when model gathering returns no routed models.
+3. A policy_invalid mutable owner that points to a removed provider can be replaced with a valid configured model.
+4. A retired primary with no usable exact candidate returns the existing actionable 410 response.
+```
+
+Run only the named tests and confirm each fails for its reported behavior before changing production code.
+
+- [ ] **Step 2: Implement the smallest runtime corrections**
+
+- Treat every non-`forward`, non-`oauth`, non-`claude-grant` continuity candidate as key-auth and require `effectiveKeyCandidates(provider).length > 0`.
+- Restore the empty-gather catalog early return before any existing Claude catalog model entries are rewritten. Do not add retry or cache behavior.
+- Validate a permanent replacement as a candidate model independently from the broken existing primary; retain provider-default same-provider and owner-specific classifier checks.
+- Reuse the existing retired 410 response when attempt filtering leaves no candidate. Do not change eligible failure classes or retry order.
+
+- [ ] **Step 3: Correct public wording only**
+
+- Replace the incorrect lowercase GitHub Pages repository path in the three root README continuity links with `/Frogprogsy/`.
+- In Korean user-facing copy, replace `자동 모드 심사` with `auto mode`; do not rename config keys, aliases, route kinds, or TypeScript symbols.
+- State consistently that the policy has one primary plus at most three fallback targets.
+- Add static assertions for the canonical README links and the Korean `auto mode` copy.
+
+- [ ] **Step 4: Keep the LAN-host CLI finding out of scope**
+
+Do not change request-origin handling, management API access control, hostname behavior, or CLI headers in this task.
+
+- [ ] **Step 5: Run focused and full completion gates**
+
+```bash
+bun test --isolate ./tests/model-continuity-runtime.test.ts ./tests/model-continuity-api.test.ts ./tests/model-alias-stability.test.ts ./tests/gui-management-parity.test.ts ./tests/gui-provider-ux-smoke.test.ts ./tests/docs-i18n-parity.test.ts
+bun run typecheck
+bun test --isolate ./tests
+bun run build:gui
+```
+
+Expected: all commands exit 0. No new dependency, feature surface, fallback mode, or compatibility shim is permitted.

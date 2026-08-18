@@ -72,12 +72,15 @@ describe("GUI management parity", () => {
     expect(usage).toContain('t("usage.heatmap.tooltip"');
 
     expect(en).toContain('"mix.boundaryTitle": "Separate from command approval"');
-    // Auto-mode review keys use the plain "심사/审查" naming; model-mixing's judge is the
-    // separate "분류기/分类器" concept and may use those words in mix.* keys only.
-    expect(ko).toContain('"dash.classifierTitle": "자동 모드 심사 경로"');
+    // Korean user-facing copy names the Claude Code feature "auto mode"; model-mixing's judge keeps
+    // the separate "분류기/分类器" concept and may use those words in mix.* keys only.
+    expect(ko).toContain('"dash.classifierTitle": "auto mode 경로"');
     expect(zh).toContain('"dash.classifierTitle": "自动模式审查路由"');
     const dashSectionKo = ko.slice(ko.indexOf('"dash.classifierTitle"'), ko.indexOf('"dash.classifierPolicyTitle"'));
     expect(dashSectionKo).not.toContain("분류기");
+    expect(ko).toContain('"models.continuity.problem.retired": "{purpose}에서 선택한 모델의 제공이 끝났습니다"');
+    expect(ko).toContain('"models.continuity.problem.automatic": "{purpose}에 자동 대응을 사용하고 있습니다"');
+    expect(ko).toContain('"models.continuity.replaceConfirm": "{purpose} 설정을 {model}(으)로 영구 교체할까요?');
   });
 
   test("model registry keeps auth-not-ready rows with redacted login guidance", () => {

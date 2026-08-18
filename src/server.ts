@@ -50,6 +50,7 @@ import {
   continuityCandidates,
   isContinuityEligibleHttpFailure,
   normalizeContinuityPolicy,
+  qualifiedModelTarget,
   replaceModelContinuityReference,
   validateContinuityPolicy,
   type ContinuityReason,
@@ -908,7 +909,7 @@ async function handleMessages(
       && route.provider.authMode !== "claude-grant"
       && continuityAttemptHasUsableAuth(route.provider, req.headers)
     );
-    if (circuitOpen && !primaryIsRetired && !hasUsableContinuityCandidate) {
+    if ((circuitOpen || primaryIsRetired) && !hasUsableContinuityCandidate) {
       for (const route of continuityRoutes) {
         if (route.provider.authMode !== "oauth" && route.provider.authMode !== "claude-grant") continue;
         try {
@@ -917,7 +918,7 @@ async function handleMessages(
           hasUsableContinuityCandidate = true;
           break;
         } catch {
-          // An open circuit may skip primary only when at least one exact candidate can authenticate now.
+          // Primary may be skipped only when at least one exact candidate can authenticate now.
         }
       }
     }
@@ -941,6 +942,16 @@ async function handleMessages(
       (!skipPrimary || attempt.source !== "primary")
       && !isRouteDisabled(config, attempt.providerName, attempt.modelId, responseModelId)
     );
+    if (primaryIsRetired && (!hasUsableContinuityCandidate || attempts.length === 0)) {
+      setRouteLog(logCtx, built.primaryRoute, built.primaryRoute.routeKind, built.primaryRoute.ambiguousCandidates);
+      recordLogPhase(logCtx, "route", "error", "model_retired", routeStarted);
+      finalizeRequestLog(logCtx, "internal_error", 410, { kind: "routing", code: "model_retired" });
+      return formatAnthropicErrorResponse(
+        410,
+        "invalid_request_error",
+        `Model "${responseModelId}" was retired. Run: frogp models continuity`,
+      );
+    }
     setRouteLog(logCtx, built.primaryRoute, built.primaryRoute.routeKind, built.primaryRoute.ambiguousCandidates);
     recordLogPhase(logCtx, "route", "ok", undefined, routeStarted);
   } catch (err) {
@@ -1453,8 +1464,8 @@ function continuityAttemptHasUsableAuth(provider: FrogProviderConfig, headers: H
     }
     return false;
   }
-  if (provider.authMode === "key") return effectiveKeyCandidates(provider).length > 0;
-  return true;
+  if (provider.authMode === "oauth" || provider.authMode === "claude-grant") return true;
+  return effectiveKeyCandidates(provider).length > 0;
 }
 
 type ProviderConnectionTestCode =
@@ -4167,15 +4178,18 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       replacement: action.replacement,
       models,
       validateTarget: target => {
-        const validation = validateContinuityPolicy({
-          primaryTarget: action.expectedPrimary,
-          config: ordinaryRouteConfig,
-          retiredTargets: state.retiredTargets,
-          models,
-          automatic: "off",
-          fallbacks: [target],
-        });
-        return validation.ok ? null : validation.error;
+        const replacement = qualifiedModelTarget(target);
+        if (!replacement) return `Invalid replacement target: ${target}`;
+        if (!ordinaryRouteConfig.providers[replacement.provider]) {
+          return `Unconfigured replacement provider: ${replacement.provider}`;
+        }
+        if (state.retiredTargets.has(target)) return `Retired replacement target: ${target}`;
+        const row = models.find(model => model.namespaced === target);
+        if (!row) return `Unknown replacement model: ${target}`;
+        if (row.disabled === true || (ordinaryRouteConfig.disabledModels ?? []).includes(target)) {
+          return `Disabled replacement target: ${target}`;
+        }
+        return null;
       },
     });
     if (!replaced.ok) {

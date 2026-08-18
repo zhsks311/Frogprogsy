@@ -469,7 +469,7 @@ describe("model continuity UX", () => {
       }),
     );
 
-    expect(markup).toContain("기본 모델이 종료됐습니다");
+    expect(markup).toContain("기본 모델에서 선택한 모델의 제공이 끝났습니다");
     expect(markup).toContain("이 모델을 사용하는 새 요청은 시작할 수 없습니다");
     expect(markup).toContain("영구 교체");
     expect(markup).not.toContain("provider-default:work");
@@ -484,7 +484,7 @@ describe("model continuity UX", () => {
         onReplace: async () => "applied",
       }),
     );
-    const attention = markup.indexOf("기본 모델이 종료됐습니다");
+    const attention = markup.indexOf("기본 모델에서 선택한 모델의 제공이 끝났습니다");
     const active = markup.indexOf("저장한 대체 모델을 사용 중입니다");
     const normal = markup.indexOf('<details class="continuity-normal-list">');
 
@@ -510,7 +510,7 @@ describe("model continuity UX", () => {
       }),
     );
 
-    expect(markup).toContain("자동 모드 심사");
+    expect(markup).toContain("auto mode");
     expect(markup).toContain("영구 교체만 사용할 수 있습니다");
     expect(markup).not.toContain("자동 대응 범위");
     expect(markup).toContain('<details class="continuity-normal-list">');

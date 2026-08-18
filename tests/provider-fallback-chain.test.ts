@@ -440,6 +440,47 @@ describe("provider fallback chain", () => {
     }
   });
 
+  test("continuity skips a key-auth fallback with no effective key", async () => {
+    const cfg = baseConfig();
+    cfg.providers.missingKey = {
+      adapter: "anthropic",
+      baseUrl: "https://missing-key.test",
+      defaultModel: "missing-key-model",
+      models: ["missing-key-model"],
+    };
+    cfg.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: ["missingKey/missing-key-model", "fallback/fallback-other"],
+        automatic: "transient",
+      },
+    };
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async url => {
+      const target = String(url);
+      calls.push(target);
+      return target.startsWith("https://primary.test")
+        ? new Response(JSON.stringify({ error: { type: "server_error", message: "primary down" } }), {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          })
+        : anthropicOk("exact fallback");
+    }) as typeof fetch;
+
+    try {
+      const response = await invokeMessages(cfg, messagesBody(), {
+        continuityCircuit: new ContinuityCircuit(),
+      });
+      expect(response.status).toBe(200);
+      expect(calls).toEqual([
+        "https://primary.test/v1/messages",
+        "https://fallback.test/v1/messages",
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test.each([400, 401, 402, 403])("continuity leaves HTTP %i terminal", async status => {
     const cfg = baseConfig();
     cfg.modelContinuity = {
@@ -541,6 +582,63 @@ describe("provider fallback chain", () => {
       ]);
       const [entry] = __requestLogTest.requestLogSnapshot();
       expect(entry.continuityReason).toBe("retired");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("retired mode with no usable exact fallback keeps the actionable 410 response", async () => {
+    const cfg = baseConfig();
+    cfg.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: ["removed/no-longer-available"],
+        automatic: "retired",
+      },
+    };
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async url => {
+      calls.push(String(url));
+      return anthropicOk("must not be called");
+    }) as typeof fetch;
+
+    try {
+      const response = await invokeMessages(cfg, messagesBody(), {
+        continuityCircuit: new ContinuityCircuit(),
+        retiredTargets: new Set(["primary/primary-model"]),
+      });
+      expect(response.status).toBe(410);
+      expect(await response.text()).toContain("frogp models continuity");
+      expect(calls).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("retired mode returns 410 when the exact fallback has no usable authentication", async () => {
+    const cfg = baseConfig();
+    delete cfg.providers.fallback!.apiKey;
+    cfg.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: ["fallback/fallback-other"],
+        automatic: "retired",
+      },
+    };
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async url => {
+      calls.push(String(url));
+      return anthropicOk("must not be called");
+    }) as typeof fetch;
+
+    try {
+      const response = await invokeMessages(cfg, messagesBody(), {
+        continuityCircuit: new ContinuityCircuit(),
+        retiredTargets: new Set(["primary/primary-model"]),
+      });
+      expect(response.status).toBe(410);
+      expect(await response.text()).toContain("frogp models continuity");
+      expect(calls).toEqual([]);
     } finally {
       globalThis.fetch = originalFetch;
     }
