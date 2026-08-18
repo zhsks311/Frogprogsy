@@ -260,15 +260,16 @@ describe("model continuity management actions", () => {
 
   test("classifier reference rejects automatic policy while the same ordinary route remains eligible", async () => {
     const classifierConfig = config();
-    classifierConfig.autoModeClassifier = { provider: "work", model: "old" };
+    classifierConfig.providers.work!.defaultModel = "new";
+    classifierConfig.autoModeClassifier = { provider: "work", model: "new" };
     let saves = 0;
     const deps = { saveConfig: () => { saves += 1; } };
 
     const rejected = await request("POST", {
       action: "set",
       referenceId: "classifier",
-      primary: "work/old",
-      fallbacks: ["work/new"],
+      primary: "work/new",
+      fallbacks: ["noauth/login"],
       automatic: "all",
     }, classifierConfig, deps);
     expect(rejected?.status).toBe(400);
@@ -277,13 +278,19 @@ describe("model continuity management actions", () => {
 
     const accepted = await request("POST", {
       action: "set",
-      primary: "work/old",
-      fallbacks: ["work/new"],
+      primary: "work/new",
+      fallbacks: ["noauth/login"],
       automatic: "all",
     }, classifierConfig, deps);
     expect(accepted?.status).toBe(200);
-    expect(classifierConfig.modelContinuity?.["work/old"]?.automatic).toBe("all");
+    expect(classifierConfig.modelContinuity?.["work/new"]?.automatic).toBe("all");
     expect(saves).toBe(1);
+
+    const reportResponse = await request("GET", undefined, classifierConfig);
+    expect(reportResponse?.status).toBe(200);
+    const report = await reportResponse!.json() as ContinuityReport;
+    expect(report.references.find(reference => reference.id === "provider-default:work")?.status).toBe("ready");
+    expect(report.references.find(reference => reference.id === "classifier")?.status).toBe("ready");
   });
 
   test("set rejects disabled and retired fallback targets without persisting", async () => {

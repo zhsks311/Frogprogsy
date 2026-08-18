@@ -70,7 +70,7 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 
 未配置时默认为 `off`。每个 key 与 fallback 都必须是精确的 `provider/model`。FrogProgsy 不会根据模型名称、系列、价格、默认 provider 或 `fallbackProviders` 推断目标。自动连续性只适用于普通模型路由请求。自动模式判断、Model Mixing 内部调用、网页搜索与图像处理、`subagentModels` 只支持手动永久替换。
 
-临时故障会为精确的主目标打开一个仅保存在内存中的 30 秒 circuit。FrogProgsy 不会添加 health polling，也不会持久化 circuit 状态。自动尝试不会改写已保存的主模型；只有显式永久替换才会修改该设置。命令详见 [frogp 命令](/frog-progsy/zh-cn/reference/cli/#models)，界面流程详见[替换已停止提供的模型](/frog-progsy/zh-cn/guides/web-dashboard/#替换已停止提供的模型)。
+临时故障会为精确的主目标打开一个仅保存在内存中的 30 秒 circuit。FrogProgsy 不会添加 health polling，也不会持久化 circuit 状态。自动尝试不会改写已保存的主模型；只有显式永久替换才会修改该设置。命令详见 [frogp 命令](/Frogprogsy/zh-cn/reference/cli/#models)，界面流程详见[替换已停止提供的模型](/Frogprogsy/zh-cn/guides/web-dashboard/#替换已停止提供的模型)。
 
 ## Relay access keys
 

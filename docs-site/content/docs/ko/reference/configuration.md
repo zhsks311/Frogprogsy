@@ -70,7 +70,7 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 
 설정이 없으면 `off`입니다. 모든 key와 fallback은 정확한 `provider/model` 값이어야 합니다. FrogProgsy는 모델 이름, 계열, 가격, 기본 서비스, `fallbackProviders`를 보고 대상을 추측하지 않습니다. 자동 대응은 일반 모델 요청에만 적용됩니다. auto mode, Model Mixing 내부 호출, 웹 검색·이미지 처리, `subagentModels`는 영구 교체만 지원합니다.
 
-일시적 실패가 생기면 정확한 주 대상의 회로를 메모리에서만 30초 동안 엽니다. 상태 확인 polling이나 회로 상태 저장은 하지 않습니다. 자동 대응은 저장된 주 모델을 바꾸지 않으며, 사용자가 영구 교체를 명시했을 때만 해당 설정이 바뀝니다. 자세한 명령은 [frogp 명령](/frog-progsy/ko/reference/cli/#models), 화면 사용법은 [종료된 모델 교체하기](/frog-progsy/ko/guides/web-dashboard/#종료된-모델-교체하기)에서 확인하세요.
+일시적 실패가 생기면 정확한 주 대상의 회로를 메모리에서만 30초 동안 엽니다. 상태 확인 polling이나 회로 상태 저장은 하지 않습니다. 자동 대응은 저장된 주 모델을 바꾸지 않으며, 사용자가 영구 교체를 명시했을 때만 해당 설정이 바뀝니다. 자세한 명령은 [frogp 명령](/Frogprogsy/ko/reference/cli/#models), 화면 사용법은 [종료된 모델 교체하기](/Frogprogsy/ko/guides/web-dashboard/#종료된-모델-교체하기)에서 확인하세요.
 
 ## Relay access keys
 

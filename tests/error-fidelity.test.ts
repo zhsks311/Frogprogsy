@@ -63,6 +63,19 @@ describe("error fidelity", () => {
     });
   });
 
+  test("upstream error parsing preserves a top-level detail message", () => {
+    expect(parseUpstreamErrorDetails(
+      500,
+      "upstream_error",
+      "Provider error 500",
+      JSON.stringify({ detail: "real provider failure" }),
+    )).toEqual({
+      type: "upstream_error",
+      message: "real provider failure",
+      code: null,
+    });
+  });
+
   test("upstream error parsing preserves structured context type or code without a message", () => {
     expect(parseUpstreamErrorDetails(
       500,

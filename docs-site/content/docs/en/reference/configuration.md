@@ -70,7 +70,7 @@ The JSON fields map to the runtime `ProviderConfig` objects under `providers.*` 
 
 Missing configuration defaults to `off`. Every key and fallback is an exact `provider/model`; FrogProgsy never infers targets from names, families, prices, provider defaults, or `fallbackProviders`. Automatic continuity applies only to ordinary routed model requests. The auto-mode classifier, model-mixing internals, web-search and image helpers, and `subagentModels` are manual-replacement-only.
 
-A transient failure opens a 30-second, memory-only circuit for the exact primary target. FrogProgsy adds no health polling or persisted circuit state. Automatic attempts never rewrite the configured owner; only an explicit permanent replacement does that. See the [CLI reference](/frog-progsy/reference/cli/#models) and [Models dashboard workflow](/frog-progsy/guides/web-dashboard/#replacing-models-that-have-ended).
+A transient failure opens a 30-second, memory-only circuit for the exact primary target. FrogProgsy adds no health polling or persisted circuit state. Automatic attempts never rewrite the configured owner; only an explicit permanent replacement does that. See the [CLI reference](/Frogprogsy/reference/cli/#models) and [Models dashboard workflow](/Frogprogsy/guides/web-dashboard/#replacing-models-that-have-ended).
 
 ## Relay access keys
 

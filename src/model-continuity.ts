@@ -215,10 +215,11 @@ export function collectModelContinuityReferences(
   return owners.map(owner => {
     const row = rows.get(owner.primary);
     const policy = normalizeContinuityPolicy(input.config.modelContinuity?.[owner.primary]);
+    const automaticEligible = NON_AUTOMATIC_KINDS[owner.kind] !== true;
     return {
       ...owner,
-      status: referenceStatus(owner.primary, input, row, policy),
-      automaticEligible: NON_AUTOMATIC_KINDS[owner.kind] !== true,
+      status: referenceStatus(owner.primary, automaticEligible, input, row, policy),
+      automaticEligible,
       policy,
       supportStatus: row?.supportStatus ?? "unknown",
     };
@@ -443,6 +444,7 @@ function targetOwner(
 
 function referenceStatus(
   primary: string,
+  automaticEligible: boolean,
   input: CollectModelContinuityReferencesInput,
   row: ModelContinuityModelRow | undefined,
   policy: ModelContinuityPolicy,
@@ -458,12 +460,17 @@ function referenceStatus(
   ) {
     return "policy_invalid";
   }
+  const classifier = input.config.autoModeClassifier;
+  const classifierTarget = classifier ? `${classifier.provider}/${classifier.model}` : null;
+  const validationConfig = automaticEligible && classifierTarget === primary
+    ? { ...input.config, autoModeClassifier: undefined }
+    : input.config;
   const policyResult = validateContinuityPolicy({
     primaryTarget: primary,
-    config: input.config,
+    config: validationConfig,
     retiredTargets: input.retiredTargets,
     models: input.models,
-    automatic: policy.automatic,
+    automatic: automaticEligible ? policy.automatic : "off",
     fallbacks: policy.fallbacks,
   });
   if (!policyResult.ok) return "policy_invalid";

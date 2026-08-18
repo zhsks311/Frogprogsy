@@ -110,11 +110,18 @@ describe("docs i18n parity (en is the source of truth)", () => {
     }
   });
 
-  test("README documentation links use the canonical case-sensitive Pages path", () => {
-    for (const file of ["README.md", "README.ko.md", "README.zh-CN.md"]) {
+  test("documentation links use the canonical case-sensitive Pages path", () => {
+    for (const file of [
+      "README.md",
+      "README.ko.md",
+      "README.zh-CN.md",
+      `${DOCS_ROOT}/en/reference/configuration.md`,
+      `${DOCS_ROOT}/ko/reference/configuration.md`,
+      `${DOCS_ROOT}/zh-cn/reference/configuration.md`,
+    ]) {
       const text = readFileSync(file, "utf8");
-      expect(text).toContain("https://zhsks311.github.io/Frogprogsy/");
-      expect(text).not.toContain("https://zhsks311.github.io/frog-progsy/");
+      expect(text, file).toContain("/Frogprogsy/");
+      expect(text, file).not.toContain("/frog-progsy/");
     }
   });
 
