@@ -9,7 +9,7 @@ import {
   syncClaudeCodeGatewayModelsCache,
 } from "../src/claude-refresh";
 import type { CatalogModel } from "../src/claude-catalog";
-import type { ModelAliasEntry } from "../src/model-aliases";
+import { materializeModelAliases, reconcileRetiredModelAliases, resolvePersistedModelAlias, type ModelAliasEntry } from "../src/model-aliases";
 import type { FrogConfig } from "../src/types";
 
 const config = {
@@ -65,7 +65,7 @@ describe("Claude Code catalog refresh", () => {
       },
       syncClaudeCodeModelsCacheFromCatalog: (path) => { syncedFrom = path; },
       existsSync: () => true,
-    });
+    }, { retiredTargets: new Set() });
 
     expect(result).toEqual({
       added: 0,
@@ -93,7 +93,7 @@ describe("Claude Code catalog refresh", () => {
       },
       syncClaudeCodeModelsCacheFromCatalog: () => { synced = true; },
       existsSync: () => false,
-    });
+    }, { retiredTargets: new Set() });
 
     expect(result.catalogExists).toBe(false);
     expect(result.cacheSynced).toBe(false);
@@ -188,6 +188,95 @@ describe("Claude Code catalog refresh", () => {
     }
   });
 
+  test("live discovery cannot republish a retired model through the gateway cache", async () => {
+    const { claudeHome, cachePath, cleanup } = makeHomes();
+    try {
+      const [retired] = materializeModelAliases([{ provider: "work", model: "old" }], { prune: true });
+      const retiredTargets = new Set(["work/old"]);
+      reconcileRetiredModelAliases(retiredTargets);
+      const result = await syncClaudeCodeGatewayModelsCache(config, { claudeHome, retiredTargets }, {
+        gatherRoutedModels: async () => [
+          { provider: "work", id: "old", authReady: true },
+          { provider: "work", id: "new", authReady: true },
+        ] as CatalogModel[],
+      });
+
+      expect(result).toMatchObject({ status: "written", modelCount: 1 });
+      expect(JSON.parse(readFileSync(cachePath, "utf8"))).toMatchObject({
+        models: [{ display_name: "work/new" }],
+      });
+      expect(resolvePersistedModelAlias(retired!.alias)).toMatchObject({
+        routeKey: "work/old",
+        status: "retired",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("all-retired discovery rewrites catalog and models cache to native-only", async () => {
+    const { claudeHome, cleanup } = makeHomes();
+    try {
+      const catalogPath = join(claudeHome, "frogprogsy-catalog.json");
+      const modelsCachePath = join(claudeHome, "models_cache.json");
+      const seeded = {
+        models: [
+          {
+            slug: "gpt-5.5",
+            display_name: "gpt-5.5",
+            priority: 1,
+            base_instructions: "Native model fixture",
+          },
+          {
+            slug: "work/old",
+            display_name: "work/old",
+            priority: 2,
+            base_instructions: "Previously injected routed fixture",
+          },
+        ],
+      };
+      writeFileSync(catalogPath, `${JSON.stringify(seeded)}\n`);
+      writeFileSync(modelsCachePath, `${JSON.stringify(seeded)}\n`);
+      const retiredTargets = new Set(["work/old"]);
+      const retiredOnlyConfig: FrogConfig = {
+        port: 10100,
+        defaultProvider: "work",
+        providers: {
+          work: {
+            adapter: "openai-chat",
+            baseUrl: "https://work.invalid/v1",
+            apiKey: "test-key",
+            liveModels: false,
+            models: ["old"],
+          },
+        },
+      };
+
+      const result = await refreshClaudeCodeModelCatalog(
+        retiredOnlyConfig,
+        undefined,
+        { claudeHome, retiredTargets },
+      );
+      const catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as {
+        models: Array<{ slug: string }>;
+      };
+      const cache = JSON.parse(readFileSync(modelsCachePath, "utf8")) as {
+        models: Array<{ slug: string }>;
+      };
+
+      expect(result).toMatchObject({
+        added: 0,
+        catalogExists: true,
+        cacheSynced: true,
+        gatewayCache: { status: "written", modelCount: 0 },
+      });
+      expect(catalog.models.map(model => model.slug)).toEqual(["gpt-5.5"]);
+      expect(cache.models.map(model => model.slug)).toEqual(["gpt-5.5"]);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("enforces the fail-closed cache write contract: 0600 on POSIX, atomic write on Windows", async () => {
     const { claudeHome, cachePath, cleanup } = makeHomes();
     try {
@@ -254,7 +343,7 @@ describe("Claude Code catalog refresh", () => {
         syncClaudeCodeGatewayModelsCache: async () => { throw new Error("boom"); },
         syncClaudeCodeModelsCacheFromCatalog: () => {},
         existsSync: () => true,
-      }, { claudeHome });
+      }, { claudeHome, retiredTargets: new Set() });
 
       expect(result.gatewayCache.status).toBe("retained_after_error");
       expect(result.gatewayCache.path).toBe(cachePath);
@@ -283,7 +372,7 @@ describe("Claude Code catalog refresh", () => {
         syncClaudeCodeGatewayModelsCache: async () => { throw new Error("boom"); },
         syncClaudeCodeModelsCacheFromCatalog: () => {},
         existsSync: () => true,
-      }, { claudeHome });
+      }, { claudeHome, retiredTargets: new Set() });
 
       expect(result.gatewayCache.status).toBe("failed");
       expect(result.gatewayCache.status).not.toBe("retained_after_error");
@@ -307,7 +396,7 @@ describe("Claude Code catalog refresh", () => {
         syncClaudeCodeGatewayModelsCache: async () => { throw new Error("boom"); },
         syncClaudeCodeModelsCacheFromCatalog: () => {},
         existsSync: () => true,
-      }, { claudeHome });
+      }, { claudeHome, retiredTargets: new Set() });
 
       expect(result.gatewayCache.status).toBe("failed");
       expect(result.gatewayCache.status).not.toBe("retained_after_error");
@@ -338,7 +427,7 @@ describe("Claude Code catalog refresh", () => {
           syncClaudeCodeGatewayModelsCache: async () => { throw new Error("boom"); },
           syncClaudeCodeModelsCacheFromCatalog: () => {},
           existsSync: () => true,
-        }, { claudeHome });
+        }, { claudeHome, retiredTargets: new Set() });
 
         expect(result.gatewayCache.status).toBe("failed");
         expect(result.gatewayCache.warning).toContain("stale/legacy cache deleted");
@@ -359,7 +448,7 @@ describe("Claude Code catalog refresh", () => {
         syncClaudeCodeGatewayModelsCache: async () => { throw new Error("boom"); },
         syncClaudeCodeModelsCacheFromCatalog: () => {},
         existsSync: () => true,
-      }, { claudeHome });
+      }, { claudeHome, retiredTargets: new Set() });
 
       expect(result.gatewayCache.status).toBe("failed");
       expect(result.gatewayCache.warning).toContain("no last-known-good cache to retain");

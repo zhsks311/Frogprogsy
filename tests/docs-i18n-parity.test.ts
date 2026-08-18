@@ -109,4 +109,33 @@ describe("docs i18n parity (en is the source of truth)", () => {
       expect(decimalTokens(loc), `${file}: numeric claims must match README.md`).toEqual(decimalTokens(en));
     }
   });
+
+  test("documentation links use the canonical case-sensitive Pages path", () => {
+    for (const file of [
+      "README.md",
+      "README.ko.md",
+      "README.zh-CN.md",
+      `${DOCS_ROOT}/en/reference/configuration.md`,
+      `${DOCS_ROOT}/ko/reference/configuration.md`,
+      `${DOCS_ROOT}/zh-cn/reference/configuration.md`,
+    ]) {
+      const text = readFileSync(file, "utf8");
+      expect(text, file).toContain("/Frogprogsy/");
+      expect(text, file).not.toContain("/frog-progsy/");
+    }
+  });
+
+  test("Korean user-facing copy names the feature auto mode", () => {
+    for (const file of [
+      "README.ko.md",
+      "gui/src/i18n/ko.ts",
+      `${DOCS_ROOT}/ko/guides/claude-integration.md`,
+      `${DOCS_ROOT}/ko/guides/web-dashboard.md`,
+      `${DOCS_ROOT}/ko/reference/configuration.md`,
+    ]) {
+      const text = readFileSync(file, "utf8");
+      expect(text, file).toContain("auto mode");
+      expect(text, file).not.toContain("자동 모드 심사");
+    }
+  });
 });

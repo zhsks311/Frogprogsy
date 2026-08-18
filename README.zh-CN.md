@@ -99,6 +99,8 @@ frogp claude reload-models <profile-id>
 
 FrogProgsy 会在 proxy 启动时检查经过验证的最新模型资料。要启用更新后的列表，请重启 proxy；检查失败时，FrogProgsy 会比较上次验证后保存的副本与当前安装版本自带的模型资料，并使用 catalog revision 较高的一份。API key、已选默认模型和手动添加的模型不会改变。运行 `frogp models` 可以查看每个模型是**已验证**还是**仅发现**，以及当前模型资料的来源。
 
+已配置的模型停止提供或暂时失败时，可以在 dashboard **Models** 页面或 `frogp models continuity` 中查看受影响的设置和精确修复操作。自动替代在你显式启用前保持关闭，也不会自动改写已选择的模型。完整说明见 [frogp 命令](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/cli/#models)、[配置参考](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/configuration/#模型连续性)与[仪表盘流程](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/web-dashboard/#替换已停止提供的模型)。
+
 `frogp start`/`frogp refresh` 会在 `~/.frogprogsy/bin` 为每个附加 Claude 账户生成一个快捷命令，例如 `claude-work` 或 `claude-personal`。默认账户使用普通的 `claude` 命令，该名称始终保留给用户安装的 Claude Code。请将快捷命令目录追加到 `PATH` 末尾。Proxy 停止时，账户快捷命令会按所选目录直通原生 Claude Code。
 
 ### 4. 发送第一条 Claude Code 请求

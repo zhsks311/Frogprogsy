@@ -14,8 +14,8 @@ import type { ServerWebSocket } from "bun";
 import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, readActivePort, readPid, saveConfig, websocketsEnabled, writeLocalAccessToken } from "./config";
 import { parseRequest } from "./responses/parser";
 import { estimateMessagesInputTokens, parseMessagesRequest, buildResponsesBody } from "./messages/parser";
-import { materializeModelAliases, type ModelAliasEntry } from "./model-aliases";
-import { routeModel, type RouteKind } from "./router";
+import { listPersistedModelAliases, materializeModelAliases, reconcileRetiredModelAliases, type ModelAliasEntry } from "./model-aliases";
+import { routeModel, type RouteKind, type RouteResult } from "./router";
 import { cheapMixTarget, isModelMixingRequest, resolveMix, validMixAgents, type CoordinatorComplete, type MixTarget } from "./model-mixing";
 import { computeCallPlan } from "./model-mixing/orchestrate";
 import { applyModelMixingPatch, modelMixingSettingsSnapshot } from "./model-mixing/settings";
@@ -43,15 +43,28 @@ import { injectClaudeCodeConfig } from "./claude-inject";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "./oauth/key-providers";
 import { deriveProviderPresets } from "./providers/derive";
 import { buildEffectiveConfig, sanitizeCatalogProviderForPersistence } from "./model-catalog-config";
+import {
+  buildRetiredTargetIndex,
+  collectModelContinuityReferences,
+  ContinuityCircuit,
+  continuityCandidates,
+  isContinuityEligibleHttpFailure,
+  normalizeContinuityPolicy,
+  qualifiedModelTarget,
+  replaceModelContinuityReference,
+  validateContinuityPolicy,
+  type ContinuityReason,
+  type ModelContinuityReference,
+} from "./model-continuity";
 import { createRuntimeConfigState, type RuntimeConfigState } from "./runtime-config-state";
 import type { CatalogRuntimeStatus, SelectedModelCatalog } from "./model-catalog-runtime";
-import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, ClaudeProjectRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage } from "./types";
+import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, ClaudeProjectRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage, ModelContinuityAutomatic, ModelContinuityPolicy } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
 import { resolveModelCapabilities, supportsImageInput, supportsNativeWebSearch } from "./model-capabilities";
 import { isOpenAIResponsesFallbackProvider } from "./fallback-openai-responses";
-import { applyParsedModelId, buildAttemptContexts, cloneParsedForAttempt, isSameProviderRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
+import { applyParsedModelId, buildAttemptContexts, cloneParsedForAttempt, isSameTargetRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
 import { redactConfigForApi, redactProviderForApi } from "./provider-redaction";
 import { effectiveKeyCandidates } from "./provider-keys";
 import { testProviderConnection as runProviderConnectionTest } from "./provider-test";
@@ -741,11 +754,26 @@ async function readParsedMessagesRequest(
   }
 }
 
+function continuityAllowsRetired(policy: ModelContinuityPolicy | undefined): boolean {
+  return policy?.automatic === "retired" || policy?.automatic === "all";
+}
+
+interface HandleMessagesOptions {
+  abortSignal?: AbortSignal;
+  profileId?: string;
+  noKeyDnsLookup?: PublicDnsLookup;
+  retiredTargets?: ReadonlySet<string>;
+  continuityCircuit?: ContinuityCircuit;
+  now?: () => number;
+}
+
+const EMPTY_RETIRED_TARGETS: ReadonlySet<string> = new Set();
+
 async function handleMessages(
   req: Request,
   config: FrogConfig,
   logCtx: RequestLogContext,
-  options: { abortSignal?: AbortSignal; profileId?: string; noKeyDnsLookup?: PublicDnsLookup } = {},
+  options: HandleMessagesOptions = {},
 ): Promise<Response> {
   const parseStarted = Date.now();
   const read = await readParsedMessagesRequest(req, logCtx, parseStarted);
@@ -758,6 +786,7 @@ async function handleMessages(
     finalizeRequestLog(logCtx, "internal_error", 404, { kind: "routing", code: "model_disabled" });
     return formatAnthropicErrorResponse(404, "invalid_request_error", `Model "${responseModelId}" is disabled.`);
   }
+  const ordinaryContinuityEligible = !isModelMixingRequest(config, parsed.modelId);
   if (isModelMixingRequest(config, parsed.modelId) && (config.modelMixing?.combine === "fusion" || config.modelMixing?.combine === "pipeline")) {
     // Buffered panel/judge/pipeline pre-final timeout only. The final streamed synthesizer is not
     // bounded by stageTimeoutMs/panelTimeoutMs; it follows client abort + SSE idle timeout.
@@ -826,15 +855,103 @@ async function handleMessages(
   await applyModelMixing(config, parsed, req.headers, options.abortSignal);
 
   const routeStarted = Date.now();
+  const continuityCircuit = options.continuityCircuit ?? new ContinuityCircuit();
+  const now = options.now ?? Date.now;
+  const retiredTargets = options.retiredTargets ?? EMPTY_RETIRED_TARGETS;
+  let primaryTarget = "";
+  let continuityPolicyActive = false;
   let attempts: AttemptContext[] = [];
+  const preResolvedContinuityAuth = new Map<string, FrogProviderConfig>();
   try {
-    const built = buildAttemptContexts(config, parsed);
-    if (isRouteDisabled(config, built.primaryRoute.providerName, built.primaryRoute.modelId, responseModelId)) {
+    const primaryRoute = resolvePrimaryRoute(config, parsed);
+    primaryTarget = `${primaryRoute.providerName}/${primaryRoute.modelId}`;
+    const policy = ordinaryContinuityEligible && primaryRoute.routeKind !== "classifier"
+      ? config.modelContinuity?.[primaryTarget]
+      : undefined;
+    const primaryIsRetired = primaryRoute.retired === true || retiredTargets.has(primaryTarget);
+    if (primaryIsRetired && !continuityAllowsRetired(policy)) {
+      setRouteLog(logCtx, primaryRoute, primaryRoute.routeKind, primaryRoute.ambiguousCandidates);
+      recordLogPhase(logCtx, "route", "error", "model_retired", routeStarted);
+      finalizeRequestLog(logCtx, "internal_error", 410, { kind: "routing", code: "model_retired" });
+      return formatAnthropicErrorResponse(
+        410,
+        "invalid_request_error",
+        `Model "${responseModelId}" was retired. Run: frogp models continuity`,
+      );
+    }
+
+    const transientPolicy = policy?.automatic === "transient" || policy?.automatic === "all";
+    const circuitOpen = transientPolicy && continuityCircuit.isOpen(primaryTarget, now());
+    const policyHandlesRequest = policy !== undefined
+      && ((primaryIsRetired && continuityAllowsRetired(policy)) || transientPolicy);
+    continuityPolicyActive = policyHandlesRequest;
+    const candidateTargets = policyHandlesRequest
+      ? continuityCandidates(primaryTarget, policy, retiredTargets, continuityCircuit, now())
+      : [primaryTarget];
+
+    const continuityRoutes: RouteResult[] = [];
+    for (const target of candidateTargets) {
+      if (target === primaryTarget) continue;
+      try {
+        const route = routeModel(config, target);
+        if (
+          `${route.providerName}/${route.modelId}` === target
+          && !isRouteDisabled(config, route.providerName, route.modelId, responseModelId)
+        ) {
+          continuityRoutes.push(route);
+        }
+      } catch {
+        // A stale explicit candidate is unavailable for this request; later exact targets remain usable.
+      }
+    }
+    let hasUsableContinuityCandidate = continuityRoutes.some(route =>
+      route.provider.authMode !== "oauth"
+      && route.provider.authMode !== "claude-grant"
+      && continuityAttemptHasUsableAuth(route.provider, req.headers)
+    );
+    if ((circuitOpen || primaryIsRetired) && !hasUsableContinuityCandidate) {
+      for (const route of continuityRoutes) {
+        if (route.provider.authMode !== "oauth" && route.provider.authMode !== "claude-grant") continue;
+        try {
+          const resolved = await resolveProviderAuth(config, route.providerName, route.provider);
+          preResolvedContinuityAuth.set(`${route.providerName}/${route.modelId}`, resolved);
+          hasUsableContinuityCandidate = true;
+          break;
+        } catch {
+          // Primary may be skipped only when at least one exact candidate can authenticate now.
+        }
+      }
+    }
+    const skipPrimary = primaryIsRetired || (circuitOpen && hasUsableContinuityCandidate);
+    if (primaryIsRetired && skipPrimary) {
+      logCtx.entry.continuityReason = "retired";
+    } else if (circuitOpen && skipPrimary) {
+      logCtx.entry.continuityReason = "circuit_open";
+    }
+
+    const built = buildAttemptContexts(config, parsed, {
+      continuityRoutes,
+      suppressGenericFallback: policyHandlesRequest,
+    });
+    if (!skipPrimary && isRouteDisabled(config, built.primaryRoute.providerName, built.primaryRoute.modelId, responseModelId)) {
       recordLogPhase(logCtx, "route", "error", "model_disabled", routeStarted);
       finalizeRequestLog(logCtx, "internal_error", 404, { kind: "routing", code: "model_disabled" });
       return formatAnthropicErrorResponse(404, "invalid_request_error", `Model "${responseModelId}" is disabled.`);
     }
-    attempts = built.attempts.filter(attempt => !isRouteDisabled(config, attempt.providerName, attempt.modelId, responseModelId));
+    attempts = built.attempts.filter(attempt =>
+      (!skipPrimary || attempt.source !== "primary")
+      && !isRouteDisabled(config, attempt.providerName, attempt.modelId, responseModelId)
+    );
+    if (primaryIsRetired && (!hasUsableContinuityCandidate || attempts.length === 0)) {
+      setRouteLog(logCtx, built.primaryRoute, built.primaryRoute.routeKind, built.primaryRoute.ambiguousCandidates);
+      recordLogPhase(logCtx, "route", "error", "model_retired", routeStarted);
+      finalizeRequestLog(logCtx, "internal_error", 410, { kind: "routing", code: "model_retired" });
+      return formatAnthropicErrorResponse(
+        410,
+        "invalid_request_error",
+        `Model "${responseModelId}" was retired. Run: frogp models continuity`,
+      );
+    }
     setRouteLog(logCtx, built.primaryRoute, built.primaryRoute.routeKind, built.primaryRoute.ambiguousCandidates);
     recordLogPhase(logCtx, "route", "ok", undefined, routeStarted);
   } catch (err) {
@@ -844,6 +961,7 @@ async function handleMessages(
   }
 
   const connectMs = config.connectTimeoutMs ?? 30_000;
+  let lastUpstreamFailure: { status: number; details: UpstreamErrorDetails } | undefined;
   for (let attemptIndex = 0; attemptIndex < attempts.length;) {
     const attempt = attempts[attemptIndex]!;
     const attemptParsed = cloneParsedForAttempt(parsed, attempt);
@@ -857,17 +975,33 @@ async function handleMessages(
     const authErrorCode = grantAuth ? "claude_auth_missing" : "oauth_missing";
     if (attemptProvider.authMode === "oauth" || attemptProvider.authMode === "claude-grant") {
       try {
-        attemptProvider = await resolveProviderAuth(config, attempt.providerName, attemptProvider);
+        const preResolved = attempt.source === "continuity"
+          ? preResolvedContinuityAuth.get(`${attempt.providerName}/${attempt.modelId}`)
+          : undefined;
+        attemptProvider = preResolved
+          ? { ...preResolved }
+          : await resolveProviderAuth(config, attempt.providerName, attemptProvider);
         setRouteLog(logCtx, { providerName: attempt.providerName, provider: attemptProvider, modelId: attempt.modelId }, attempt.routeKind, attempt.ambiguousCandidates);
         recordLogPhase(logCtx, authPhase, "ok", undefined, oauthStarted);
       } catch (err) {
         recordLogPhase(logCtx, authPhase, "error", authErrorCode, oauthStarted);
+        if (attempt.source === "continuity") {
+          recordAttemptLog(logCtx, attempt, "skipped", authErrorCode);
+          attemptIndex = nextTargetAttemptIndex(attempts, attemptIndex);
+          continue;
+        }
         recordAttemptLog(logCtx, attempt, "error", authErrorCode);
         finalizeRequestLog(logCtx, "internal_error", 401, { kind: "authentication", code: authErrorCode });
         return formatAnthropicErrorResponse(401, "authentication_error", err instanceof Error ? err.message : String(err));
       }
     } else {
       recordLogPhase(logCtx, "oauth", "skipped", undefined, oauthStarted);
+    }
+
+    if (attempt.source === "continuity" && !continuityAttemptHasUsableAuth(attemptProvider, req.headers)) {
+      recordAttemptLog(logCtx, attempt, "skipped", "auth_missing");
+      attemptIndex = nextTargetAttemptIndex(attempts, attemptIndex);
+      continue;
     }
 
     const imageFallback = decideImageFallback(config, attempt.providerName, attemptProvider, attempt.modelId, attemptParsed, req.headers);
@@ -958,12 +1092,32 @@ async function handleMessages(
       };
       recordLogPhase(logCtx, "upstream_connect", upstreamResponse.ok ? "ok" : "error", upstreamResponse.ok ? undefined : "provider_non_2xx", upstreamStarted);
     } catch (err) {
+      if (options.abortSignal?.aborted) {
+        upstream.abort();
+        recordLogPhase(logCtx, "upstream_connect", "error", "client_cancel", upstreamStarted);
+        recordAttemptLog(logCtx, attempt, "error", "client_cancel");
+        finalizeRequestLog(logCtx, "client_cancel", 499, { kind: "internal", code: "client_cancel" });
+        return formatAnthropicErrorResponse(499, "api_error", "Client request cancelled");
+      }
       upstream.abort();
       const timeout = isUpstreamConnectTimeout(err);
       const code = timeout ? "connect_timeout" : "upstream_unreachable";
       recordLogPhase(logCtx, "upstream_connect", "error", code, upstreamStarted);
       recordAttemptLog(logCtx, attempt, "error", code);
       const nextIndex = nextAttemptIndexAfterConnectError(attempts, attemptIndex);
+      const continuityReason: ContinuityReason | null = continuityPolicyActive
+        && (attempt.source === "primary" || attempt.source === "continuity")
+        ? (timeout ? "connect_timeout" : "connect_failure")
+        : null;
+      recordContinuityFailure(
+        logCtx,
+        continuityCircuit,
+        primaryTarget,
+        attempt,
+        attempts[nextIndex],
+        continuityReason,
+        now(),
+      );
       if (nextIndex < attempts.length) {
         for (let skipped = attemptIndex + 1; skipped < nextIndex; skipped++) {
           recordAttemptLog(logCtx, attempts[skipped]!, "skipped", code);
@@ -978,7 +1132,29 @@ async function handleMessages(
     if (!upstreamResponse.ok) {
       const err = await providerErrorDetails(upstreamResponse);
       recordAttemptLog(logCtx, attempt, "error", err.code ?? "provider_non_2xx", upstreamResponse.status);
-      const nextIndex = nextAttemptIndexAfterHttp(attempts, attemptIndex, upstreamResponse.status, err);
+      lastUpstreamFailure = { status: upstreamResponse.status, details: err };
+      const useContinuityPolicy = continuityPolicyActive
+        && (attempt.source === "primary" || attempt.source === "continuity");
+      const continuityReason = useContinuityPolicy
+        ? isContinuityEligibleHttpFailure(upstreamResponse.status, err)
+        : null;
+      const nextIndex = nextAttemptIndexAfterHttp(
+        attempts,
+        attemptIndex,
+        upstreamResponse.status,
+        err,
+        useContinuityPolicy,
+        continuityReason,
+      );
+      recordContinuityFailure(
+        logCtx,
+        continuityCircuit,
+        primaryTarget,
+        attempt,
+        attempts[nextIndex],
+        continuityReason,
+        now(),
+      );
       if (nextIndex < attempts.length) {
         for (let skipped = attemptIndex + 1; skipped < nextIndex; skipped++) {
           recordAttemptLog(logCtx, attempts[skipped]!, "skipped", err.code ?? "provider_non_2xx");
@@ -990,6 +1166,7 @@ async function handleMessages(
       return formatAnthropicErrorResponse(upstreamResponse.status, err.type, err.message);
     }
 
+    if (attempt.source === "primary") continuityCircuit.succeed(primaryTarget);
     recordAttemptLog(logCtx, attempt, "ok", undefined, upstreamResponse.status);
     if (attemptParsed.stream) {
       const eventStream = observeUsageEvents(adapter.parseStream(upstreamResponse), logCtx);
@@ -1027,6 +1204,18 @@ async function handleMessages(
     }
   }
 
+  if (lastUpstreamFailure) {
+    finalizeRequestLog(logCtx, "provider_non_2xx", lastUpstreamFailure.status, {
+      kind: "upstream",
+      code: "provider_non_2xx",
+      upstreamStatus: lastUpstreamFailure.status,
+    });
+    return formatAnthropicErrorResponse(
+      lastUpstreamFailure.status,
+      lastUpstreamFailure.details.type,
+      lastUpstreamFailure.details.message,
+    );
+  }
   finalizeRequestLog(logCtx, "internal_error", 502, { kind: "upstream", code: "provider_attempts_exhausted" });
   return formatAnthropicErrorResponse(502, "upstream_error", "Provider attempts exhausted");
 }
@@ -1213,26 +1402,70 @@ function recordAttemptLog(ctx: RequestLogContext, attempt: AttemptContext, statu
   }
 }
 
-function nextFallbackAttemptIndex(attempts: AttemptContext[], currentIndex: number): number {
+function nextTargetAttemptIndex(attempts: AttemptContext[], currentIndex: number): number {
   const current = attempts[currentIndex]!;
-  const nextFallback = attempts.findIndex((attempt, index) => index > currentIndex && !isSameProviderRetryCandidate(current, attempt));
-  return nextFallback >= 0 ? nextFallback : attempts.length;
+  const nextTarget = attempts.findIndex(
+    (attempt, index) => index > currentIndex && !isSameTargetRetryCandidate(current, attempt),
+  );
+  return nextTarget >= 0 ? nextTarget : attempts.length;
 }
 
-function nextAttemptIndexAfterHttp(attempts: AttemptContext[], currentIndex: number, status: number, err: UpstreamErrorDetails): number {
+
+function nextAttemptIndexAfterHttp(
+  attempts: AttemptContext[],
+  currentIndex: number,
+  status: number,
+  err: UpstreamErrorDetails,
+  useContinuityPolicy: boolean,
+  continuityReason: ContinuityReason | null,
+): number {
+  if (useContinuityPolicy && !continuityReason) return attempts.length;
+  if (continuityReason) {
+    if (status === 429) return currentIndex + 1;
+    return nextTargetAttemptIndex(attempts, currentIndex);
+  }
   if (isTerminalProviderHttpError(status, err)) return attempts.length;
   if (status === 429) return currentIndex + 1;
-  if (status >= 500) return nextFallbackAttemptIndex(attempts, currentIndex);
+  if (status >= 500) return nextTargetAttemptIndex(attempts, currentIndex);
   return attempts.length;
 }
 
 function nextAttemptIndexAfterConnectError(attempts: AttemptContext[], currentIndex: number): number {
-  return nextFallbackAttemptIndex(attempts, currentIndex);
+  return nextTargetAttemptIndex(attempts, currentIndex);
 }
 
 function isTerminalProviderHttpError(status: number, err: UpstreamErrorDetails): boolean {
   if (status === 400 || status === 401 || status === 402 || status === 403) return true;
+  if (isContinuityEligibleHttpFailure(500, err) === null) return true;
   return classifyError(status, err.type, err.message).code === "context_length_exceeded";
+}
+
+function recordContinuityFailure(
+  ctx: RequestLogContext,
+  circuit: ContinuityCircuit,
+  primaryTarget: string,
+  current: AttemptContext,
+  next: AttemptContext | undefined,
+  reason: ContinuityReason | null,
+  now: number,
+): void {
+  if (!reason || (current.source !== "primary" && current.source !== "continuity")) return;
+  if (next?.source === "continuity") ctx.entry.continuityReason ??= reason;
+  if (current.source === "primary" && !isSameTargetRetryCandidate(current, next)) {
+    circuit.open(primaryTarget, reason, now);
+  }
+}
+
+function continuityAttemptHasUsableAuth(provider: FrogProviderConfig, headers: Headers): boolean {
+  if (provider.authMode === "forward") {
+    if (provider.adapter === "anthropic") return profileRequestHasForwardAuth(headers);
+    if (provider.adapter === "openai-responses") {
+      return isRealForwardAuthValue(headers.get("authorization"));
+    }
+    return false;
+  }
+  if (provider.authMode === "oauth" || provider.authMode === "claude-grant") return true;
+  return effectiveKeyCandidates(provider).length > 0;
 }
 
 type ProviderConnectionTestCode =
@@ -1360,6 +1593,7 @@ interface RequestLogEntry {
   method: string;
   status?: number;
   durationMs?: number;
+  continuityReason?: ContinuityReason;
   request: {
     requestBytes?: number;
     stream?: boolean;
@@ -1381,7 +1615,7 @@ interface RequestLogEntry {
   attempts?: Array<{
     provider: string;
     model: string;
-    source: "primary" | "fallback";
+    source: "primary" | "fallback" | "continuity";
     keyIndex?: number;
     status: "started" | "ok" | "skipped" | "error";
     code?: string;
@@ -1445,6 +1679,7 @@ function requestLogManagementSnapshot() {
     method: entry.method,
     ...(entry.status !== undefined ? { status: entry.status } : {}),
     ...(entry.durationMs !== undefined ? { durationMs: entry.durationMs } : {}),
+    ...(entry.continuityReason !== undefined ? { continuityReason: entry.continuityReason } : {}),
     request: {
       ...(entry.request.requestBytes !== undefined ? { requestBytes: entry.request.requestBytes } : {}),
       ...(entry.request.stream !== undefined ? { stream: entry.request.stream } : {}),
@@ -2054,30 +2289,36 @@ function managementTestState(
   effectiveConfig: FrogConfig = config,
   selectedCatalog?: SelectedModelCatalog,
 ): RuntimeConfigState {
+  const catalog: SelectedModelCatalog = selectedCatalog ?? {
+    document: {
+      schemaVersion: 1,
+      catalogRevision: 0,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "1970-01-01T00:00:00Z",
+      minFrogprogsyVersion: "0.0.0",
+      providers: [],
+    },
+    status: {
+      source: "bundled",
+      catalogRevision: 0,
+      catalogDigest: "0".repeat(64),
+      sourceCommit: "0".repeat(40),
+      generatedAt: "1970-01-01T00:00:00Z",
+      skippedRecords: 0,
+      warnings: [],
+    },
+  };
+  const retiredTargets = buildRetiredTargetIndex(config, catalog);
+  reconcileRetiredModelAliases(retiredTargets);
   const state: RuntimeConfigState = {
     persisted: config,
     effective: structuredClone(effectiveConfig),
-    catalog: selectedCatalog ?? {
-      document: {
-        schemaVersion: 1,
-        catalogRevision: 0,
-        catalogDigest: "0".repeat(64),
-        sourceCommit: "0".repeat(40),
-        generatedAt: "1970-01-01T00:00:00Z",
-        minFrogprogsyVersion: "0.0.0",
-        providers: [],
-      },
-      status: {
-        source: "bundled",
-        catalogRevision: 0,
-        catalogDigest: "0".repeat(64),
-        sourceCommit: "0".repeat(40),
-        generatedAt: "1970-01-01T00:00:00Z",
-        skippedRecords: 0,
-        warnings: [],
-      },
-    },
+    catalog,
+    retiredTargets,
     rebuild() {
+      state.retiredTargets = buildRetiredTargetIndex(state.persisted, state.catalog);
+      reconcileRetiredModelAliases(state.retiredTargets);
       state.effective = selectedCatalog
         ? buildEffectiveConfig(state.persisted, selectedCatalog)
         : structuredClone(state.persisted);
@@ -2106,9 +2347,10 @@ export const __requestLogTest = {
     req: Request,
     url: URL,
     config: FrogConfig,
-    deps: ManagementAPIDeps = {},
+    deps: ManagementAPIDeps & { captureState?: (state: RuntimeConfigState) => void } = {},
   ) {
     const state = managementTestState(config, deps.saveConfig ?? saveConfig, deps.effectiveConfig, deps.catalog);
+    deps.captureState?.(state);
     return handleManagementAPI(req, url, state, deps);
   },
   handleCountTokens,
@@ -2358,6 +2600,8 @@ function localAccessDenialResponse(decision: LocalAccessDenied, pathname: string
 
 interface ManagementAPIDeps {
   saveConfig?: (config: FrogConfig) => void;
+  /** OAuth config-recovery seam for management ordering tests. */
+  restoreOAuthProviderConfigs?: (config: FrogConfig) => boolean;
   /** Isolated home root for name-only profile creation tests; production defaults to the OS home. */
   homeDir?: string;
   /** Launcher sync seam so management API tests never touch the real config directory. */
@@ -2365,17 +2609,24 @@ interface ManagementAPIDeps {
   /** Branch-B claude-grant management fixtures (keep the API off real network/Keychain/native homes in tests). */
   claudeGrants?: ClaudeGrantManagementDeps;
   /** Catalog refresh seam so provider persistence tests never fetch or write generated catalogs. */
-  refreshClaudeCodeCatalog?: (config: FrogConfig, profile?: { claudeHome?: string; profileId?: string }) => Promise<void>;
+  refreshClaudeCodeCatalog?: (
+    config: FrogConfig,
+    profile?: { claudeHome?: string; profileId?: string; retiredTargets?: ReadonlySet<string> },
+  ) => Promise<void>;
   /** Peer address of the request socket. Omitted for in-process calls (tests, direct invocation). */
   clientAddress?: string;
   /** Effective config fixture for management boundary tests. Production always uses RuntimeConfigState. */
   effectiveConfig?: FrogConfig;
   /** Selected catalog fixture for management boundary tests. Production reads RuntimeConfigState. */
   catalog?: SelectedModelCatalog;
+  /** Shared request circuit used by the data plane and redacted continuity reporting. */
+  continuityCircuit?: ContinuityCircuit;
+  /** Clock seam for filtering and projecting circuit expiry without sleeping in tests. */
+  now?: () => number;
   /** Profile refresh seam for asserting the effective config passed to Claude catalog generation. */
   refreshProfileCatalog?: (
     config: FrogConfig,
-    profile: { claudeHome: string; profileId: string },
+    profile: { claudeHome: string; profileId: string; retiredTargets?: ReadonlySet<string> },
   ) => Promise<ClaudeCodeCatalogRefreshResult>;
 }
 
@@ -2881,6 +3132,108 @@ function noteClaudeProfileRequest(config: FrogConfig, profileId: string | undefi
   if (!profileId) return;
   updateClaudeProfileAuthState(config, profileId, status ?? (profileRequestHasForwardAuth(headers) ? "oauth_ok" : "seen_no_bearer"));
 }
+type ModelContinuityAction =
+  | {
+    action: "set";
+    primary: string;
+    fallbacks: string[];
+    automatic: ModelContinuityAutomatic;
+    referenceId?: string;
+  }
+  | {
+    action: "replace";
+    referenceId: string;
+    expectedPrimary: string;
+    replacement: string;
+  };
+
+type ModelContinuityActionParseResult =
+  | { ok: true; action: ModelContinuityAction }
+  | { ok: false; code: "invalid_action" | "invalid_request"; error: string };
+
+function isModelContinuityAutomatic(value: unknown): value is ModelContinuityAutomatic {
+  return value === "off" || value === "retired" || value === "transient" || value === "all";
+}
+
+function hasOnlyKeys(body: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(body).every(key => allowed.includes(key));
+}
+
+function parseModelContinuityAction(body: unknown): ModelContinuityActionParseResult {
+  if (!isPlainJsonObject(body)) {
+    return { ok: false, code: "invalid_request", error: "request body must be an object" };
+  }
+  if (body.action !== "set" && body.action !== "replace") {
+    return { ok: false, code: "invalid_action", error: "action must be set or replace" };
+  }
+  if (body.action === "set") {
+    const allowed = ["action", "primary", "fallbacks", "automatic", "referenceId"] as const;
+    if (
+      !hasOnlyKeys(body, allowed)
+      || typeof body.primary !== "string"
+      || !Array.isArray(body.fallbacks)
+      || !body.fallbacks.every(fallback => typeof fallback === "string")
+      || !isModelContinuityAutomatic(body.automatic)
+      || (body.referenceId !== undefined && typeof body.referenceId !== "string")
+    ) {
+      return {
+        ok: false,
+        code: "invalid_request",
+        error: "set requires only primary, string fallbacks, automatic, and optional referenceId",
+      };
+    }
+    return {
+      ok: true,
+      action: {
+        action: "set",
+        primary: body.primary,
+        fallbacks: body.fallbacks,
+        automatic: body.automatic,
+        ...(body.referenceId === undefined ? {} : { referenceId: body.referenceId }),
+      },
+    };
+  }
+
+  const allowed = ["action", "referenceId", "expectedPrimary", "replacement"] as const;
+  if (
+    !hasOnlyKeys(body, allowed)
+    || typeof body.referenceId !== "string"
+    || typeof body.expectedPrimary !== "string"
+    || typeof body.replacement !== "string"
+  ) {
+    return {
+      ok: false,
+      code: "invalid_request",
+      error: "replace requires only referenceId, expectedPrimary, and replacement",
+    };
+  }
+  return {
+    ok: true,
+    action: {
+      action: "replace",
+      referenceId: body.referenceId,
+      expectedPrimary: body.expectedPrimary,
+      replacement: body.replacement,
+    },
+  };
+}
+
+const MODEL_CONTINUITY_STATUS_ORDER: Record<ModelContinuityReference["status"], number> = {
+  retired: 0,
+  policy_invalid: 1,
+  authentication_required: 1,
+  ready: 2,
+};
+
+function compareModelContinuityReferences(
+  left: ModelContinuityReference,
+  right: ModelContinuityReference,
+): number {
+  const severity = MODEL_CONTINUITY_STATUS_ORDER[left.status] - MODEL_CONTINUITY_STATUS_ORDER[right.status];
+  if (severity !== 0) return severity;
+  const label = left.label.localeCompare(right.label);
+  return label !== 0 ? label : left.id.localeCompare(right.id);
+}
 
 
 async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigState, deps: ManagementAPIDeps = {}): Promise<Response | null> {
@@ -2890,14 +3243,15 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
   }
   // All management mutations target persisted state; state.persist() rebuilds the effective view.
   async function refreshClaudeCodeCatalogBestEffort(profile?: { claudeHome?: string; profileId?: string }): Promise<void> {
+    const refreshOptions = { ...profile, retiredTargets: state.retiredTargets };
     if (deps.refreshClaudeCodeCatalog) {
-      await deps.refreshClaudeCodeCatalog(state.effective, profile);
+      await deps.refreshClaudeCodeCatalog(state.effective, refreshOptions);
       return;
     }
     if (claudeWritesBlocked("catalog refresh")) return;
     try {
       const { refreshClaudeCodeModelCatalog } = await import("./claude-refresh");
-      await refreshClaudeCodeModelCatalog(state.effective, undefined, profile);
+      await refreshClaudeCodeModelCatalog(state.effective, undefined, refreshOptions);
     } catch {
       /* catalog absent */
     }
@@ -2909,7 +3263,60 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     await refreshClaudeCodeCatalogBestEffort();
   }
 
-  await persistProviderConfigIfChanged(restoreCredentialedOAuthProviderConfigs(config));
+  async function modelContinuityContext(): Promise<{
+    models: Array<{
+      namespaced: string;
+      disabled: boolean;
+      authReady?: boolean;
+      supportStatus?: "validated" | "discovered" | "unknown";
+    }>;
+    references: ModelContinuityReference[];
+  }> {
+    const profileId = url.searchParams.get("profileId") ?? undefined;
+    const view = await effectiveModelView(state.effective, {
+      profileId,
+      headers: req.headers,
+      includeConfiguredForwardModels: true,
+    });
+    const models = view.models.map(model => {
+      const namespaced = `${model.provider}/${model.id}`;
+      return {
+        namespaced,
+        disabled: view.disabled.has(namespaced),
+        ...(model.authReady === undefined ? {} : { authReady: model.authReady }),
+        ...(model.supportStatus === undefined ? {} : { supportStatus: model.supportStatus }),
+      };
+    });
+    const references = collectModelContinuityReferences({
+      config,
+      retiredTargets: state.retiredTargets,
+      models,
+      aliases: listPersistedModelAliases(),
+    });
+    references.sort(compareModelContinuityReferences);
+    return { models, references };
+  }
+
+  function persistModelContinuity(snapshot: FrogConfig): Response | null {
+    try {
+      state.persist();
+      return null;
+    } catch {
+      for (const key of Object.keys(config)) Reflect.deleteProperty(config, key);
+      Object.assign(config, snapshot);
+      state.persisted = config;
+      state.rebuild();
+      return jsonResponse({
+        error: "model continuity settings could not be saved",
+        code: "persist_failed",
+      }, 500);
+    }
+  }
+
+  if (url.pathname !== "/api/model-continuity") {
+    const restoreOAuthProviderConfigs = deps.restoreOAuthProviderConfigs ?? restoreCredentialedOAuthProviderConfigs;
+    await persistProviderConfigIfChanged(restoreOAuthProviderConfigs(config));
+  }
 
   const providerSummaries = () => Object.entries(state.effective.providers).map(([name, provider]) => {
     const persistedUserModels = config.providers[name]?.userModels;
@@ -3411,12 +3818,17 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       let catalogPath: string | null | undefined;
       let modelReload: ClaudeModelReloadMetadata | undefined;
       if (action === "refresh") {
+        const refreshOptions = {
+          claudeHome: profile.claudeHome,
+          profileId: profile.id,
+          retiredTargets: state.retiredTargets,
+        };
         const refreshed = deps.refreshProfileCatalog
-          ? await deps.refreshProfileCatalog(state.effective, { claudeHome: profile.claudeHome, profileId: profile.id })
+          ? await deps.refreshProfileCatalog(state.effective, refreshOptions)
           : await (await import("./claude-refresh")).refreshClaudeCodeModelCatalog(
             state.effective,
             undefined,
-            { claudeHome: profile.claudeHome, profileId: profile.id },
+            refreshOptions,
           );
         catalogPath = refreshed.catalogExists ? refreshed.path : undefined;
         modelReload = claudeModelReloadMetadata(profile.id, {
@@ -3663,6 +4075,131 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
 
   if (url.pathname === "/api/config" && req.method === "PUT") {
     return jsonResponse({ error: "Full config PUT is disabled. Use /api/providers POST for provider changes." }, 405);
+  }
+
+  if (url.pathname === "/api/model-continuity" && req.method === "GET") {
+    const { references } = await modelContinuityContext();
+    const policies = Object.fromEntries(
+      Object.entries(config.modelContinuity ?? {})
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([primary, policy]) => [primary, normalizeContinuityPolicy(policy)]),
+    );
+    const circuits = (deps.continuityCircuit?.snapshot((deps.now ?? Date.now)()) ?? [])
+      .map(entry => ({
+        primary: entry.target,
+        reason: entry.reason,
+        retryAt: entry.until,
+      }))
+      .sort((left, right) => left.primary.localeCompare(right.primary));
+    return jsonResponse({ policies, references, circuits });
+  }
+
+  if (url.pathname === "/api/model-continuity" && req.method === "POST") {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: "invalid JSON body", code: "invalid_json" }, 400);
+    }
+    const parsed = parseModelContinuityAction(body);
+    if (!parsed.ok) {
+      return jsonResponse({ error: parsed.error, code: parsed.code }, 400);
+    }
+
+    const { models, references } = await modelContinuityContext();
+    const ordinaryRouteConfig = { ...config };
+    delete ordinaryRouteConfig.autoModeClassifier;
+
+    if (parsed.action.action === "set") {
+      const action = parsed.action;
+      if (action.referenceId !== undefined) {
+        const reference = references.find(candidate => candidate.id === action.referenceId);
+        if (!reference) {
+          return jsonResponse({ error: "unknown model reference", code: "invalid_reference" }, 400);
+        }
+        if (reference.primary !== action.primary) {
+          return jsonResponse({
+            error: "model reference changed; reload and retry",
+            code: "stale_reference",
+          }, 409);
+        }
+        if (action.automatic !== "off" && !reference.automaticEligible) {
+          return jsonResponse({
+            error: "automatic continuity is available only for ordinary routed model requests",
+            code: "automatic_ineligible",
+          }, 400);
+        }
+      }
+
+      const validation = validateContinuityPolicy({
+        primaryTarget: action.primary,
+        config: ordinaryRouteConfig,
+        retiredTargets: state.retiredTargets,
+        models,
+        automatic: action.automatic,
+        fallbacks: action.fallbacks,
+      });
+      if (!validation.ok) {
+        return jsonResponse({ error: validation.error, code: "invalid_policy" }, 400);
+      }
+
+      const snapshot = structuredClone(config);
+      if (validation.policy.automatic === "off" && validation.policy.fallbacks.length === 0) {
+        if (config.modelContinuity) {
+          delete config.modelContinuity[action.primary];
+          if (Object.keys(config.modelContinuity).length === 0) delete config.modelContinuity;
+        }
+      } else {
+        config.modelContinuity ??= {};
+        config.modelContinuity[action.primary] = validation.policy;
+      }
+      const persistFailure = persistModelContinuity(snapshot);
+      if (persistFailure) return persistFailure;
+      return jsonResponse({ ok: true, policy: validation.policy, warnings: validation.warnings });
+    }
+
+    const action = parsed.action;
+    const reference = references.find(candidate => candidate.id === action.referenceId);
+    if (!reference) {
+      return jsonResponse({ error: "unknown model reference", code: "invalid_reference" }, 400);
+    }
+    if (reference.kind !== "gateway-alias" && reference.primary !== action.expectedPrimary) {
+      return jsonResponse({
+        error: "model reference changed; reload and retry",
+        code: "stale_reference",
+      }, 409);
+    }
+
+    const snapshot = structuredClone(config);
+    const replaced = replaceModelContinuityReference({
+      config,
+      referenceId: action.referenceId,
+      expectedPrimary: action.expectedPrimary,
+      replacement: action.replacement,
+      models,
+      validateTarget: target => {
+        const replacement = qualifiedModelTarget(target);
+        if (!replacement) return `Invalid replacement target: ${target}`;
+        if (!ordinaryRouteConfig.providers[replacement.provider]) {
+          return `Unconfigured replacement provider: ${replacement.provider}`;
+        }
+        if (state.retiredTargets.has(target)) return `Retired replacement target: ${target}`;
+        const row = models.find(model => model.namespaced === target);
+        if (!row) return `Unknown replacement model: ${target}`;
+        if (row.disabled === true || (ordinaryRouteConfig.disabledModels ?? []).includes(target)) {
+          return `Disabled replacement target: ${target}`;
+        }
+        return null;
+      },
+    });
+    if (!replaced.ok) {
+      const code = replaced.status === 409 ? "stale_reference" : "invalid_replacement";
+      return jsonResponse({ error: replaced.error, code }, replaced.status);
+    }
+    const persistFailure = persistModelContinuity(snapshot);
+    if (persistFailure) return persistFailure;
+    await refreshClaudeCodeCatalogBestEffort();
+    return jsonResponse({ ok: true });
   }
 
   if (url.pathname === "/api/settings" && req.method === "GET") {
@@ -4349,10 +4886,13 @@ export function buildAnthropicModelsListFromAliases(aliasEntries: ModelAliasEntr
 export function buildAnthropicModelsList(
   nativeModels: { provider: string; model: string }[],
   routedModels: Pick<CatalogModel, "provider" | "id">[],
+  retiredTargets: ReadonlySet<string> = new Set(),
 ): Record<string, unknown> {
   const aliasEntries = materializeModelAliases([
-    ...nativeModels,
-    ...routedModels.map(m => ({ provider: m.provider, model: m.id })),
+    ...nativeModels.filter(model => !retiredTargets.has(`${model.provider}/${model.model}`)),
+    ...routedModels
+      .filter(model => !retiredTargets.has(`${model.provider}/${model.id}`))
+      .map(model => ({ provider: model.provider, model: model.id })),
   ]);
   return buildAnthropicModelsListFromAliases(aliasEntries);
 }
@@ -4361,7 +4901,9 @@ export interface ServerStartDeps {
   createRuntimeConfigState?: () => Promise<RuntimeConfigState>;
   restoreCredentialedOAuthProviderConfigs?: (config: FrogConfig) => boolean;
   serve?: typeof Bun.serve;
-  onRuntimeConfigReady?: (effectiveConfig: FrogConfig) => void;
+  onRuntimeConfigReady?: (effectiveConfig: FrogConfig, retiredTargets: ReadonlySet<string>) => void;
+  /** Clock seam shared by continuity circuit routing and management reporting. */
+  now?: () => number;
 }
 
 export async function startServer(
@@ -4369,6 +4911,9 @@ export async function startServer(
   deps: ServerStartDeps = {},
 ): Promise<ReturnType<typeof Bun.serve>> {
   const state = await (deps.createRuntimeConfigState ?? createRuntimeConfigState)();
+  reconcileRetiredModelAliases(state.retiredTargets);
+  const continuityCircuit = new ContinuityCircuit();
+  const now = deps.now ?? Date.now;
   const persistedConfig = state.persisted;
   const restoredOAuthProviders = (deps.restoreCredentialedOAuthProviderConfigs ?? restoreCredentialedOAuthProviderConfigs)(persistedConfig);
   const removedFixtures = dropRuntimeFixtureProviders(persistedConfig);
@@ -4390,7 +4935,7 @@ export async function startServer(
   }
   if (persistedChanged) state.persist();
   const startupConfig = state.effective;
-  deps.onRuntimeConfigReady?.(structuredClone(startupConfig));
+  deps.onRuntimeConfigReady?.(structuredClone(startupConfig), state.retiredTargets);
   // Auto-mode classifier: validate the saved target independently, then enforce it only when the
   // global switch is on. Disabled configurations may retain their last valid target for later reuse.
   const classifierResolution = resolveAutoModeClassifierTarget(startupConfig);
@@ -4472,7 +5017,7 @@ export async function startServer(
       }
 
       if (url.pathname.startsWith("/api/")) {
-        const mgmtResponse = await handleManagementAPI(req, url, state, { clientAddress });
+        const mgmtResponse = await handleManagementAPI(req, url, state, { clientAddress, continuityCircuit, now });
         return mgmtResponse ?? jsonResponse({ error: `Unknown API endpoint: ${req.method} ${url.pathname}` }, 404);
       }
 
@@ -4487,11 +5032,16 @@ export async function startServer(
         const view = await effectiveModelView(config, { profileId, headers: req.headers });
         if (profileId) state.save();
         const { buildCatalogEntries, loadCatalogTemplate, nativeOpenAiSlugs, orderForSubagents } = await import("./claude-catalog");
-        const nativeSlugs = nativeOpenAiSlugs().filter(slug => !isNativeSlugHidden(config, slug));
+        const nativeSlugs = nativeOpenAiSlugs()
+          .filter(slug => !isNativeSlugHidden(config, slug))
+          .filter(slug => !state.retiredTargets.has(`openai/${slug}`));
         // Picker/export readiness filter: hide any provider whose configured credential is not ready
-        // (`authReady === false`) from BOTH Claude Code catalog shapes. Management/doctor keep the full
-        // authReady-tagged registry via /api/models so login and key/grant repair remain visible.
-        const goOrdered = orderForSubagents(view.enabledModels.filter(m => m.authReady !== false), view.featured);
+        // (`authReady === false`) and every catalog-retired target from BOTH Claude Code catalog shapes.
+        // Management/doctor keep the full registry so login, key/grant, and continuity repair remain visible.
+        const activeModels = view.enabledModels
+          .filter(model => model.authReady !== false)
+          .filter(model => !state.retiredTargets.has(`${model.provider}/${model.id}`));
+        const goOrdered = orderForSubagents(activeModels, view.featured);
         if (url.searchParams.has("client_version")) {
           // Claude Code client → Claude Code catalog shape: native gpt + namespaced routed models,
           // cloned from a native template so required fields (base_instructions, etc.) are present.
@@ -4503,7 +5053,7 @@ export async function startServer(
         const nativeModels = config.providers.openai
           ? nativeSlugs.map(model => ({ provider: "openai", model }))
           : [];
-        return jsonResponse(buildAnthropicModelsList(nativeModels, goOrdered));
+        return jsonResponse(buildAnthropicModelsList(nativeModels, goOrdered, state.retiredTargets));
       }
 
       if (url.pathname === "/v1/messages/count_tokens" && req.method === "POST") {
@@ -4534,7 +5084,13 @@ export async function startServer(
           return formatAnthropicErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
         }
         noteClaudeProfileRequest(persistedConfig, profileId, req.headers);
-        const response = await runLoggedDataPlane(req, url.pathname, logCtx => handleMessages(req, config, logCtx, { abortSignal: req.signal, profileId }));
+        const response = await runLoggedDataPlane(req, url.pathname, logCtx => handleMessages(req, config, logCtx, {
+          abortSignal: req.signal,
+          profileId,
+          retiredTargets: state.retiredTargets,
+          continuityCircuit,
+          now,
+        }));
         if (profileId && response.status === 401) noteClaudeProfileRequest(persistedConfig, profileId, req.headers, "oauth_rejected");
         if (profileId) state.save();
         return response;

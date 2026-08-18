@@ -35,6 +35,7 @@ The JSON fields map to the runtime `ProviderConfig` objects under `providers.*` 
 | `defaultProvider` | `string` | `"anthropic"` | Routing fallback lane when the requested model id has no provider prefix. |
 | `subagentModels` | `string[]` | default GPT native list | Up to five routed/native model ids shown first in Claude Code's subagent picker. Setting `[]` is respected. |
 | `disabledModels` | `string[]` | — | Routed models hidden from injected catalog and `/v1/models`. |
+| `modelContinuity` | object | — (`off`) | Exact, opt-in fallback policies for ordinary routed model requests. See [Model continuity](#model-continuity). |
 | `modelCacheTtlMs` | `number` | `300000` | Provider `/models` cache freshness window. |
 | `stallTimeoutSec` | `number` | `90` | Seconds of upstream data silence before an incomplete/error close; minimum `1`. |
 | `connectTimeoutMs` | `number` | `30000` | Upstream DNS/TCP/TLS/response-header timeout in milliseconds. |
@@ -44,6 +45,32 @@ The JSON fields map to the runtime `ProviderConfig` objects under `providers.*` 
 | `modelMixing` | object | — | Model mixing behind the `frogp/mix` alias (route/fusion/pipeline). Disabled unless `enabled: true`. See [Model mixing fields](#model-mixing-fields). |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field; the Claude Messages data plane uses HTTP/SSE. |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op; FrogProgsy does not touch Claude Code history. |
+
+## Model continuity
+
+`modelContinuity` maps an exact ordinary route to up to three exact fallback targets, in attempt order:
+
+```json
+{
+  "modelContinuity": {
+    "anthropic/claude-old": {
+      "fallbacks": ["anthropic/claude-new"],
+      "automatic": "off"
+    }
+  }
+}
+```
+
+`automatic` has four modes:
+
+- `off`: report the problem and keep the request on the selected model;
+- `retired`: use the saved fallbacks only when the managed catalog has retired the selected model;
+- `transient`: use them only after an eligible connection, header-timeout, HTTP 404/410/429, or HTTP 5xx failure; and
+- `all`: enable both retired-model and transient-failure handling.
+
+Missing configuration defaults to `off`. Every key and fallback is an exact `provider/model`; FrogProgsy never infers targets from names, families, prices, provider defaults, or `fallbackProviders`. Automatic continuity applies only to ordinary routed model requests. The auto-mode classifier, model-mixing internals, web-search and image helpers, and `subagentModels` are manual-replacement-only.
+
+A transient failure opens a 30-second, memory-only circuit for the exact primary target. FrogProgsy adds no health polling or persisted circuit state. Automatic attempts never rewrite the configured owner; only an explicit permanent replacement does that. See the [CLI reference](/Frogprogsy/reference/cli/#models) and [Models dashboard workflow](/Frogprogsy/guides/web-dashboard/#replacing-models-that-have-ended).
 
 ## Relay access keys
 

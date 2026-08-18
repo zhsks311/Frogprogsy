@@ -35,15 +35,42 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 | `defaultProvider` | `string` | `"anthropic"` | 모델 id에 provider prefix가 없을 때 쓰는 routing fallback lane |
 | `subagentModels` | `string[]` | default GPT native list | Claude Code subagent picker 앞쪽에 먼저 보여줄 최대 5개 routed/native model id |
 | `disabledModels` | `string[]` | — | Catalog와 `/v1/models`에서 숨길 routed models |
+| `modelContinuity` | object | — (`off`) | 일반 모델 요청에만 쓰는 정확한 대체 순서와 명시적 자동 대응 설정. [모델 연속성](#모델-연속성) 참고. |
 | `modelCacheTtlMs` | `number` | `300000` | Provider `/models` cache freshness window |
 | `stallTimeoutSec` | `number` | `90` | Upstream data silence 후 incomplete/error로 닫는 시간(초), 최소 1 |
 | `connectTimeoutMs` | `number` | `30000` | Upstream DNS/TCP/TLS/response-header timeout(ms) |
 | `webSearchFallback` | object | auto when compatible forward/key provider exists | Hosted web-search helper 설정 |
 | `imageFallback` | object | auto when compatible forward/key provider exists | Text-only lane용 image-description helper 설정 |
-| `autoModeClassifier` | object | — | Claude Code 2.1.220의 예약 자동 모드 심사 alias를 처리할 단일 `{ provider, model }` 대상 |
+| `autoModeClassifier` | object | — | Claude Code 2.1.220의 예약 auto mode alias를 처리할 단일 `{ provider, model }` 대상 |
 | `modelMixing` | object | — | `frogp/mix` 별칭 뒤의 모델 섞어 쓰기(route/fusion/pipeline). `enabled: true` 전에는 비활성. [Model mixing fields](#model-mixing-fields) 참고. |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field; Claude Messages data plane은 HTTP/SSE 사용 |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op; Claude Code history는 건드리지 않음 |
+
+## 모델 연속성
+
+`modelContinuity`는 일반 모델 요청의 정확한 경로마다 대체 모델을 최대 3개까지 실제 시도 순서대로 저장합니다.
+
+```json
+{
+  "modelContinuity": {
+    "anthropic/claude-old": {
+      "fallbacks": ["anthropic/claude-new"],
+      "automatic": "off"
+    }
+  }
+}
+```
+
+`automatic`에는 네 가지 모드가 있습니다.
+
+- `off`: 문제를 알리고 선택한 모델에서 요청을 끝냅니다.
+- `retired`: 관리 모델 자료에서 선택한 모델의 제공 종료를 확인했을 때만 저장한 대체 모델을 사용합니다.
+- `transient`: 연결 실패, 응답 헤더 제한 시간 초과, HTTP 404/410/429, HTTP 5xx가 발생했을 때만 사용합니다.
+- `all`: 제공 종료와 일시적 실패에 모두 대응합니다.
+
+설정이 없으면 `off`입니다. 모든 key와 fallback은 정확한 `provider/model` 값이어야 합니다. FrogProgsy는 모델 이름, 계열, 가격, 기본 서비스, `fallbackProviders`를 보고 대상을 추측하지 않습니다. 자동 대응은 일반 모델 요청에만 적용됩니다. auto mode, Model Mixing 내부 호출, 웹 검색·이미지 처리, `subagentModels`는 영구 교체만 지원합니다.
+
+일시적 실패가 생기면 정확한 주 대상의 회로를 메모리에서만 30초 동안 엽니다. 상태 확인 polling이나 회로 상태 저장은 하지 않습니다. 자동 대응은 저장된 주 모델을 바꾸지 않으며, 사용자가 영구 교체를 명시했을 때만 해당 설정이 바뀝니다. 자세한 명령은 [frogp 명령](/Frogprogsy/ko/reference/cli/#models), 화면 사용법은 [종료된 모델 교체하기](/Frogprogsy/ko/guides/web-dashboard/#종료된-모델-교체하기)에서 확인하세요.
 
 ## Relay access keys
 
@@ -111,7 +138,7 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 | `oauth` | `~/.frogprogsy/auth.json`의 저장 OAuth token을 resolve/refresh해서 Bearer로 보냅니다. |
 | `forward` | 들어온 Claude Code 요청의 allowlisted upstream-compatible auth header만 복사합니다. Anthropic과 OpenAI Responses 계열에서 사용합니다. |
 
-## 자동 모드 심사 라우팅
+## auto mode 라우팅
 
 Claude Code 2.1.220은 자동 모드 안전 심사를 위해 별도의 Sonnet 5 요청을 보냅니다. HTTP 본문에는
 신뢰할 수 있는 자동 모드 표식이 없으므로 FrogProgsy는 Sonnet/Haiku 모델명이나 프롬프트 내용을 보고
@@ -128,7 +155,7 @@ Claude Code 2.1.220은 자동 모드 안전 심사를 위해 별도의 Sonnet 5 
 }
 ```
 
-그 다음 이 경로를 사용할 각 Claude Code 홈에서 **자동 모드 심사 라우팅**을 켭니다. 해당 홈은 두
+그 다음 이 경로를 사용할 각 Claude Code 홈에서 **auto mode 라우팅**을 켭니다. 해당 홈은 두
 심사 단계를 정확한 `claude-frogp-auto-classifier` alias로 보내고, FrogProgsy는 이 alias만 지정
 대상으로 라우팅합니다. 일반 프로바이더 fallback, 긴 컨텍스트 라우팅, 모델 섞기는 적용하지 않습니다.
 

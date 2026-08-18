@@ -35,10 +35,11 @@ export function parseUpstreamErrorDetails(
     const parsed = JSON.parse(text) as unknown;
     if (isRecord(parsed)) {
       const error = isRecord(parsed.error) ? parsed.error : parsed;
-      const message = stringField(error.message) ?? stringField(parsed.message);
+      const message = stringField(error.message) ?? stringField(parsed.message)
+        ?? stringField(error.detail) ?? stringField(parsed.detail);
       const type = stringField(error.type) ?? stringField(parsed.type) ?? fallbackType;
       const code = stringField(error.code) ?? stringField(parsed.code) ?? null;
-      if (message) return { type, message: cleanMessage(message), code };
+      return { type, message: message ? cleanMessage(message) : fallbackMessage, code };
     }
   } catch {
     // Non-JSON provider errors are common; use the provider text below.

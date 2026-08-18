@@ -4,13 +4,14 @@
 
 | Path | Responsibility |
 | --- | --- |
-| `src/cli.ts` | `frogp` / `frogprogsy` CLI: init, start, stop, restore, refresh, status, models, `claude`, login/logout, gui, update, version, help, uninstall. Unknown commands and help topics get a closest-match suggestion. Owns human and JSON status/models rendering: `status --json` exposes a stable snapshot schema (fixed normalized `watchdog` fields only) and `models [--json]` is an online-only view over the existing `GET /api/models` (no offline synthesis, no new server API). JSON modes print exactly one JSON document to stdout with diagnostics on stderr. |
-| `src/server.ts` | Bun server for Claude-facing `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models`, static GUI, and `/api/*` management endpoints. The old OpenAI Responses inbound path returns `410`. |
+| `src/cli.ts` | `frogp` / `frogprogsy` CLI: init, start, stop, restore, refresh, status, models, `models continuity`, `claude`, login/logout, gui, update, version, help, uninstall. Unknown commands and help topics get a closest-match suggestion. Owns human and JSON status/models rendering: `status --json` exposes a stable snapshot schema (fixed normalized `watchdog` fields only), `models [--json]` is an online-only view over `GET /api/models`, and `models continuity [--json]` uses the running proxy's continuity report. Continuity `set` saves exact route policy; `replace` permanently changes one validated owner. JSON modes print exactly one JSON document to stdout with diagnostics on stderr. |
+| `src/server.ts` | Bun server for Claude-facing `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models`, static GUI, and `/api/*` management endpoints, including `GET`/`POST /api/model-continuity`. The old OpenAI Responses inbound path returns `410`. |
 | `src/cli-suggest.ts` | Side-effect-free typo suggestion helper (edit distance ≤ 2, order-stable ties) shared by command and `login` provider suggestions. |
 | `src/cli-color.ts` | Dependency-free minimal ANSI palette for human output only: `NO_COLOR` always wins, non-TTY disables by default, `FORCE_COLOR=1` forces on; JSON output never uses it. |
 | `src/init.ts` | Interactive setup wizard. Provider menu derives from `src/providers/registry.ts` via `src/providers/derive.ts`, but the default provider is the explicit `DEFAULT_INIT_PROVIDER_ID` constant (not registry order). Invalid input reprompts; the wizard is all-or-nothing — `saveConfig` runs only after every answer is validated, and EOF/aborts write nothing. |
 | `src/config.ts` | `~/.frogprogsy/config.json`, defaults, PID path, env-value resolution, `websocketsEnabled()`. |
 | `src/router.ts` | Provider/model selection before adapter dispatch. |
+| `src/model-continuity.ts` | Exact continuity policy validation, retired-reference inventory, owner-specific permanent replacement, and the 30-second memory-only request circuit. |
 | `src/types.ts` | Shared config, parsed request, adapter, and event types. |
 | `src/reasoning-effort.ts` | Claude Code reasoning-level definitions (`low`/`medium`/`high`/`xhigh`), per-model effort mapping, and catalog effort sanitization. |
 
@@ -30,6 +31,14 @@ cancelled. If the adapter generator ends without an explicit done/error event, t
 
 The server exposes `POST /api/stop` which writes shutdown intent, restores every configured Claude Code home,
 and exits the process. The GUI sidebar stop button calls this endpoint.
+
+## Model continuity
+
+`RuntimeConfigState` derives retirement only from the selected remote, cached, or bundled managed catalog's exact `retiredModels` entries. A managed default that retires stays configured so API, CLI, and the Models dashboard can diagnose it; startup never silently replaces it with a catalog default.
+
+Automatic continuity is off by default and runs only in the ordinary `/v1/messages` attempt loop. An opted-in policy names one primary target plus at most three exact fallback `provider/model` targets in order. The router never infers targets from model names, prices, families, provider defaults, or `fallbackProviders`. A shared 30-second circuit lives only in the server process; it adds no polling, worker, or persistence.
+
+The auto-mode classifier remains pinned to one configured target and is automatic-ineligible. Model-mixing internals, web-search and image helpers, and `subagentModels` are also diagnosis-and-permanent-replacement surfaces only; they do not use automatic continuity. Automatic attempts never mutate the persisted owner.
 
 ## Relay access control
 

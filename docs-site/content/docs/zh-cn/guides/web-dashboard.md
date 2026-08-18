@@ -35,6 +35,14 @@ cd gui && bun dev
 
 Claude Code 的 `/model` picker 显示旧列表时，使用 **Claude Code 目录**。刷新目标目录后，运行界面显示的 `frogp claude reload-models <profile-id>` 命令。Claude Code 不会 hot reload 已经打开的 `/model` 页面；请启动新的 Claude Code session，或 resume 该 profile，让 Claude Code 重新请求 `/v1/models`。
 
+## 替换已停止提供的模型
+
+Models 页面会在页面摘要下方、模型显示与优先顺序控件上方检查替换状态。已停止提供、需要登录或替代设置无效的项目会默认展开；正常项目集中在一个折叠区域中，方便先处理需要操作的问题。
+
+普通模型请求最多可以按顺序保存三个准确的替代模型。自动保护可以关闭，也可以仅在模型停止提供时、仅在临时故障时，或在这两种情况下启用。它只会在处理请求时临时尝试替代模型，不会更改已保存的默认模型。
+
+自动模式判断、Model Mixing、网页搜索与图像处理模型、子任务模型都有固定职责，不能静默切换到行为不同的模型，因此只提供**永久替换**。永久替换会在确认后更改未来请求使用的已保存模型，这与临时尝试替代模型的自动保护不同。
+
 ## Model Mixing 页面
 
 当你想让 Claude Code 只显示一个 `frogp/mix`，但背后由多个模型一起回答时，使用 **Model Mixing** 页面。它不要求你编辑 JSON：选择预设，确认警告，启用，然后在 Claude Code 中选择 `frogp/mix` 即可。

@@ -29,6 +29,8 @@ export interface RouteResult {
   ambiguousCandidates?: string[];
   /** True when this route was produced by the reserved auto-mode classifier alias resolver. */
   classifierRoute?: boolean;
+  /** True only for an exact persisted alias whose route is catalog-confirmed retired. */
+  retired?: true;
 }
 
 export interface LongContextRouteInput {
@@ -303,7 +305,8 @@ export function routeModel(config: FrogConfig, modelId: string): RouteResult {
   // s1. Configured model alias (deterministic frogprogsy alias or persisted alias).
   const alias = resolveConfiguredModelAlias(config, modelId);
   if (alias && config.providers[alias.provider]) {
-    return makeRoute(config, alias.provider, alias.model, "alias");
+    const route = makeRoute(config, alias.provider, alias.model, "alias");
+    return alias.status === "retired" ? { ...route, retired: true } : route;
   }
 
   // s1b. Fail closed on the gateway alias namespace. Any id carrying the current gateway alias

@@ -122,9 +122,11 @@ For providers with live discovery enabled, Frogprogsy combines live model IDs wi
 - a managed wire model ID applies only when the installed adapter supports that mapping; and
 - user overrides may narrow values with a defined restrictive ordering but must not make a managed or live restriction more permissive.
 
-`liveModels:false` remains a fixed user allowlist. Frogprogsy does not query `/models` or add managed model IDs to that list. A user's current default remains unchanged while it is valid. A managed default replaces it in the effective value only when the current value is explicitly retired. `userModels` remain available until the user removes them, even if a later catalog adopts or retires the same ID.
+`liveModels:false` remains a fixed user allowlist. Frogprogsy does not query `/models` or add managed model IDs to that list. A user's current default remains unchanged even when the selected managed catalog retires it; continuity inventory diagnoses the owner, explicit `replace` changes it, and an exact opt-in route policy may temporarily handle ordinary requests. `userModels` remain available until the user removes them, even if a later catalog adopts or retires the same ID.
 
-The current startup reconciliation and provider creation paths that write registry-managed model data into `config.json` must stop doing so. The same merge rules instead produce the effective in-memory configuration.
+The selected remote, cached, or bundled managed catalog is the only model-lifecycle authority. Only its exact `retiredModels` entries can retire a configured catalog-owned target. A missing live `/models` entry, model or provider name, URL, adapter, price, or family never supplies retirement evidence.
+
+Startup reconciliation and provider creation keep registry-managed model data out of `config.json`. The merge rules instead produce the effective in-memory configuration.
 
 ## Model support status
 

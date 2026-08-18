@@ -99,6 +99,8 @@ frogp claude reload-models <profile-id>
 
 FrogProgsy는 proxy를 시작할 때 검증된 최신 모델 자료를 확인합니다. 새 목록을 적용하려면 proxy를 다시 시작하세요. 확인에 실패하면 마지막으로 검증해 저장한 사본과 설치 버전의 기본 자료를 비교해 catalog revision이 더 높은 쪽을 사용합니다. API 키, 사용자가 고른 기본 모델, 직접 추가한 모델은 바뀌지 않습니다. `frogp models`를 실행하면 각 모델이 **검증됨**인지 **발견됨**인지, 현재 어떤 모델 자료를 쓰는지 확인할 수 있습니다.
 
+설정한 모델의 제공이 끝났거나 일시적으로 응답하지 않으면 대시보드 **Models** 화면과 `frogp models continuity`에서 영향을 받은 설정과 정확한 복구 방법을 확인할 수 있습니다. 자동 대체는 사용자가 켜기 전까지 꺼져 있고, 선택해 둔 모델을 자동으로 바꾸지 않습니다. 자세한 내용은 [frogp 명령](https://zhsks311.github.io/Frogprogsy/ko/reference/cli/#models), [설정 파일 항목](https://zhsks311.github.io/Frogprogsy/ko/reference/configuration/#모델-연속성), [대시보드 흐름](https://zhsks311.github.io/Frogprogsy/ko/guides/web-dashboard/#종료된-모델-교체하기)에서 확인하세요.
+
 `frogp start`/`frogp refresh`는 `~/.frogprogsy/bin`에 추가 Claude 계정별 바로가기를 하나씩 만듭니다. 예: `claude-work`, `claude-personal`. 기본 계정은 평범한 `claude` 명령을 쓰며, 그 이름은 항상 사용자가 설치한 Claude Code로 남습니다. 바로가기 디렉터리는 `PATH` 뒤에 추가합니다. Proxy가 꺼져 있으면 계정별 바로가기는 선택한 홈의 원래 Claude Code로 그대로 통과합니다.
 
 ### 4. 첫 Claude Code 요청 보내기
@@ -109,11 +111,11 @@ claude "이 프로젝트의 진입점을 설명해 줘"
 
 다른 모델로 보내거나 `provider/model` 값을 직접 쓰는 방법은 [모델 선택 규칙](https://zhsks311.github.io/Frogprogsy/ko/guides/model-routing/)에서 이어서 확인하세요.
 
-## 자동 모드 심사 모델 지정하기 (시험판)
+## auto mode 모델 지정하기 (시험판)
 
-메인 모델을 GPT로 골랐다고 해서 Claude Code가 내부적으로 두 번 호출하는 자동 모드 심사 모델까지 GPT가 되는 것은 아닙니다. 두 호출은 서로 별개입니다. `0.0.2-preview.1`에서는 대시보드에서 심사에 사용할 AI 서비스와 모델 한 쌍을 정한 뒤, 이 기능이 필요한 Claude Code 홈마다 **Route auto-mode reviews**를 켤 수 있습니다. 지정된 심사 요청만 선택한 모델로 보내며, 일반 요청의 대체 경로나 Model Mixing이 심사 모델을 바꾸지 않습니다.
+메인 모델을 GPT로 골랐다고 해서 Claude Code가 내부적으로 두 번 호출하는 auto mode 모델까지 GPT가 되는 것은 아닙니다. 두 호출은 서로 별개입니다. `0.0.2-preview.1`에서는 대시보드에서 심사에 사용할 AI 서비스와 모델 한 쌍을 정한 뒤, 이 기능이 필요한 Claude Code 홈마다 **Route auto-mode reviews**를 켤 수 있습니다. 지정된 심사 요청만 선택한 모델로 보내며, 일반 요청의 대체 경로나 Model Mixing이 심사 모델을 바꾸지 않습니다.
 
-이 동작은 Claude Code 2.1.220에서 검증했습니다. 홈 설정을 바꾼 뒤에는 Claude Code 세션을 다시 시작하거나 resume하세요. 기능을 켠 동안 메인 모델을 바꿀 때는 Claude Code 내장 `sonnet` 단축명 대신 FrogProgsy 모델 목록의 정확한 항목을 선택해야 합니다. 자세한 사용법은 [대시보드와 사용 기록](https://zhsks311.github.io/Frogprogsy/ko/guides/web-dashboard/#자동-모드-심사-경로)과 [설정 파일 항목](https://zhsks311.github.io/Frogprogsy/ko/reference/configuration/#자동-모드-심사-라우팅)을 참고하세요.
+이 동작은 Claude Code 2.1.220에서 검증했습니다. 홈 설정을 바꾼 뒤에는 Claude Code 세션을 다시 시작하거나 resume하세요. 기능을 켠 동안 메인 모델을 바꿀 때는 Claude Code 내장 `sonnet` 단축명 대신 FrogProgsy 모델 목록의 정확한 항목을 선택해야 합니다. 자세한 사용법은 [대시보드와 사용 기록](https://zhsks311.github.io/Frogprogsy/ko/guides/web-dashboard/#auto-mode-경로)과 [설정 파일 항목](https://zhsks311.github.io/Frogprogsy/ko/reference/configuration/#auto-mode-라우팅)을 참고하세요.
 
 ## Claude 구독 연결: 기본은 Forward, 선택은 Claude grant
 

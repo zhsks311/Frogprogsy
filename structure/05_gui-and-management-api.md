@@ -14,6 +14,7 @@ Management endpoints live in `src/server.ts` under `/api/*`:
 | Config | Read/write `~/.frogprogsy/config.json`; mask secrets on read. |
 | Providers | Create/update/delete provider configs and enrich registry metadata. The AI Accounts page is the owner for provider rows: API-key providers store proxy credentials, OAuth providers store/refresh proxy-owned OAuth credentials, and Anthropic Claude rows default to `authMode:"forward"` so frogprogsy stores no Claude subscription token. An Anthropic row may instead opt into `authMode:"claude-grant"` with a known isolated `claudeGrantId`; this is accepted only for the official Anthropic API endpoint. Deleting an OAuth provider also removes its stored OAuth credential so it cannot reappear as a dangling login. |
 | Models | Fetch home-aware routed model lists, disabled/allowed visibility, and catalog-facing ids. `fetchProviderModels` resolves key/OAuth/grant auth through `resolveProviderAuth`; a missing grant credential fails closed and leaves configured model metadata visible without attempting unauthenticated discovery. |
+| Model continuity | Return one normalized, problem-first model-reference report and accept exact route-policy or permanent-replacement actions. `structure/11_model-continuity.md` remains authoritative for full runtime behavior. |
 | OAuth | Login/status/logout for OAuth-backed providers (`codex`, `xai`, `kimi`); login completion and logout both refresh the readiness-filtered routed catalog/cache. A dashboard login click explicitly replaces an unfinished attempt, aborts its poller, and returns a fresh auth URL/device code; an abandoned in-memory flow also expires after the dashboard's five-minute polling window. Codex device-code creation retries transient network failures three times but does not retry rejected 4xx requests. Native Anthropic subscription login is intentionally absent from this OAuth store. A dedicated Claude grant is a separate opt-in credential family owned by the grant broker, not an OAuth-provider row. |
 | Key providers | Expose API-key provider presets for setup and dashboard flows, including Anthropic-compatible API-key services that are not Claude subscription accounts. |
 | Fallback settings | Expose/update web-search and image fallback helpers; provider lists are feature-specific and include eligible OpenAI Responses forward, OAuth, and key-backed providers. |
@@ -145,6 +146,29 @@ under the unchanged Branch-B custody contract.
   confirmation carrying the ToS/quota/account-risk disclosure; tier 1 never reads token bytes or uses network.
 - Anthropic API-key providers remain the explicit alternative for headless/API callers and for anyone who
   does not want subscription custody.
+
+### Model continuity endpoints
+
+The running proxy is the shared source of truth for the GUI and CLI:
+
+- `GET /api/model-continuity` returns `{policies,references,circuits}`. `policies` contains only
+  normalized `{fallbacks,automatic}` values. Reference fields are limited to `id`, `kind`, `primary`,
+  `status`, `automaticEligible`, `policy`, `supportStatus`, and `label`. References sort by problem
+  severity (`retired`, then `policy_invalid`/`authentication_required`, then `ready`), label, and id.
+  `circuits` contains only unexpired `{primary,reason,retryAt}` rows, sorted by `primary`; `retryAt` is
+  epoch milliseconds. The response never includes prompts, request or upstream bodies, credentials,
+  provider URLs, or local paths.
+- `POST /api/model-continuity` accepts exactly one discriminated action. `set` is
+  `{action:"set",primary,fallbacks,automatic,referenceId?}`; `replace` is
+  `{action:"replace",referenceId,expectedPrimary,replacement}`. Unknown fields, malformed values, and
+  unknown actions return a stable `{error,code}` without persisting. A stale permanent-replacement
+  owner returns `409`. Each successful action persists exactly once; successful replacement then uses
+  the existing best-effort Claude catalog refresh path.
+- Automatic continuity is an ordinary routed-request policy, not an owner-wide behavior. A
+  `referenceId` for the classifier, subagent, model-mixing internals, or helper models cannot enable
+  automatic fallback. The same exact provider/model may still have an ordinary route policy when
+  `set` omits `referenceId`. Ineligible references remain available for explicit permanent
+  replacement.
 
 ### Model Mixing endpoints
 

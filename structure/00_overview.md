@@ -18,6 +18,7 @@ belong in `docs-site/`; historical investigations belong in `docs/`.
 | [`08_model-mixing.md`](08_model-mixing.md) | Model mixing (fusion/pipeline/rules) alias, config, modules, streaming contract. |
 | [`09_claude-dual-auth.md`](09_claude-dual-auth.md) | Isolated Claude grants, central auth resolution, dual-auth failure boundaries, and probe decision record. |
 | [`10_remote-model-catalog.md`](10_remote-model-catalog.md) | Release fallback and startup refresh of validated model data. |
+| [`11_model-continuity.md`](11_model-continuity.md) | Retired-model diagnosis, explicit replacement, and opt-in ordinary-route continuity. |
 
 ## Product boundary
 

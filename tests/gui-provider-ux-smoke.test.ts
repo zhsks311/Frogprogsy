@@ -3,7 +3,13 @@ import React from "../gui/node_modules/react/index.js";
 import { renderToStaticMarkup } from "../gui/node_modules/react-dom/server.bun.js";
 import { parseExtraApiKeys, sanitizeVisibleText } from "../gui/src/components/AddProviderModal";
 import { parseConfig, ProviderMetadataList, AnthropicAuthEditor } from "../gui/src/pages/Providers";
-import { ModelCatalogStatusSummary, ModelSupportStatusBadge, parseCatalogStatus } from "../gui/src/pages/Models";
+import {
+  ModelCatalogStatusSummary,
+  ModelContinuityPanel,
+  ModelSupportStatusBadge,
+  parseCatalogStatus,
+  parseModelContinuityReport,
+} from "../gui/src/pages/Models";
 import {
   ClaudeGrantsCard,
   parseGrants,
@@ -29,6 +35,47 @@ function tKo(key: keyof typeof ko, vars?: Record<string, string | number>): stri
   for (const [name, replacement] of Object.entries(vars ?? {})) value = value.split(`{${name}}`).join(String(replacement));
   return value;
 }
+
+const STUB_CONTINUITY_REPORT = {
+  policies: {
+    "work/old": { fallbacks: ["work/new", "codex/gpt-5.5"], automatic: "off" },
+  },
+  references: [
+    {
+      id: "provider-default:work",
+      kind: "provider-default",
+      primary: "work/old",
+      status: "retired",
+      automaticEligible: true,
+      policy: { fallbacks: ["work/new", "codex/gpt-5.5"], automatic: "off" },
+      supportStatus: "validated",
+      label: "Provider default",
+    },
+    {
+      id: "classifier",
+      kind: "classifier",
+      primary: "work/classifier",
+      status: "ready",
+      automaticEligible: false,
+      policy: { fallbacks: [], automatic: "off" },
+      supportStatus: "validated",
+      label: "Auto-mode classifier",
+    },
+    {
+      id: "mix-agent:0",
+      kind: "mix-agent",
+      primary: "work/mixer",
+      status: "ready",
+      automaticEligible: false,
+      policy: { fallbacks: [], automatic: "off" },
+      supportStatus: "discovered",
+      label: "Mixing agent",
+    },
+  ],
+  circuits: [
+    { primary: "work/old", reason: "http_5xx", retryAt: 1_786_707_630_000 },
+  ],
+};
 
 describe("G004 GUI provider UX smoke", () => {
   test("mock rendered provider status shows normalized metadata without raw secrets", () => {
@@ -387,5 +434,148 @@ describe("model catalog status UX", () => {
       skippedRecords: 0,
       warnings,
     })).toThrow("invalid catalog warnings");
+  });
+});
+
+describe("model continuity UX", () => {
+  test("continuity parser rejects malformed enums and preserves server order", () => {
+    const malformedStatus = structuredClone(STUB_CONTINUITY_REPORT);
+    malformedStatus.references[0].status = "maybe";
+    expect(() => parseModelContinuityReport(malformedStatus)).toThrow();
+
+    const malformedAutomatic = structuredClone(STUB_CONTINUITY_REPORT);
+    malformedAutomatic.references[0].policy.automatic = "later";
+    expect(() => parseModelContinuityReport(malformedAutomatic)).toThrow();
+
+    const malformedReason = structuredClone(STUB_CONTINUITY_REPORT);
+    malformedReason.circuits[0].reason = "unknown_failure";
+    expect(() => parseModelContinuityReport(malformedReason)).toThrow();
+
+    expect(parseModelContinuityReport(STUB_CONTINUITY_REPORT).references.map(row => row.id)).toEqual([
+      "provider-default:work",
+      "classifier",
+      "mix-agent:0",
+    ]);
+  });
+
+  test("problem card leads with impact and action, not internal reference id", () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelContinuityPanel, {
+        report: parseModelContinuityReport(STUB_CONTINUITY_REPORT),
+        selectableModels: ["work/new", "codex/gpt-5.5", "work/backup"],
+        t: tKo,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
+      }),
+    );
+
+    expect(markup).toContain("기본 모델에서 선택한 모델의 제공이 끝났습니다");
+    expect(markup).toContain("이 모델을 사용하는 새 요청은 시작할 수 없습니다");
+    expect(markup).toContain("영구 교체");
+    expect(markup).not.toContain("provider-default:work");
+  });
+  test("retired actions precede active fallback status and collapsed normal rows", () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelContinuityPanel, {
+        report: parseModelContinuityReport(STUB_CONTINUITY_REPORT),
+        selectableModels: ["work/new", "codex/gpt-5.5", "work/backup"],
+        t: tKo,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
+      }),
+    );
+    const attention = markup.indexOf("기본 모델에서 선택한 모델의 제공이 끝났습니다");
+    const active = markup.indexOf("저장한 대체 모델을 사용 중입니다");
+    const normal = markup.indexOf('<details class="continuity-normal-list">');
+
+    expect(attention).toBeGreaterThan(-1);
+    expect(active).toBeGreaterThan(attention);
+    expect(normal).toBeGreaterThan(active);
+  });
+
+
+  test("classifier row has no automatic selector and normal rows start collapsed", () => {
+    const report = parseModelContinuityReport({
+      policies: {},
+      references: [STUB_CONTINUITY_REPORT.references[1]],
+      circuits: [],
+    });
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelContinuityPanel, {
+        report,
+        selectableModels: ["work/classifier", "work/new"],
+        t: tKo,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
+      }),
+    );
+
+    expect(markup).toContain("auto mode");
+    expect(markup).toContain("영구 교체만 사용할 수 있습니다");
+    expect(markup).not.toContain("자동 대응 범위");
+    expect(markup).toContain('<details class="continuity-normal-list">');
+    expect(markup).not.toContain('<details class="continuity-normal-list" open');
+  });
+  test("gateway alias keeps fallback policy controls without permanent replacement", () => {
+    const report = parseModelContinuityReport({
+      policies: {
+        "work/session": { fallbacks: ["work/first"], automatic: "retired" },
+      },
+      references: [{
+        id: "gateway-alias:session",
+        kind: "gateway-alias",
+        primary: "work/session",
+        status: "retired",
+        automaticEligible: true,
+        policy: { fallbacks: ["work/first"], automatic: "retired" },
+        supportStatus: "validated",
+        label: "Saved session model",
+      }],
+      circuits: [],
+    });
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelContinuityPanel, {
+        report,
+        selectableModels: ["work/first", "work/second"],
+        t: tKo,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
+      }),
+    );
+
+    expect(markup).toContain('aria-label="자동 대응 범위"');
+    expect(markup).toContain('aria-label="자동 대응 저장"');
+    expect(markup).toContain("저장된 세션 모델은 위의 대체 설정을 따릅니다");
+    expect(markup).not.toContain('aria-label="영구 교체 모델"');
+    expect(markup).not.toContain('aria-label="영구 교체"');
+  });
+
+
+  test("automatic controls expose labels in keyboard reading order", () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelContinuityPanel, {
+        report: parseModelContinuityReport(STUB_CONTINUITY_REPORT),
+        selectableModels: ["work/new", "codex/gpt-5.5", "work/backup"],
+        t: tKo,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
+      }),
+    );
+    const labels = [
+      'aria-label="자동 대응 범위"',
+      'aria-label="첫 번째 대체 모델"',
+      'aria-label="두 번째 대체 모델"',
+      'aria-label="세 번째 대체 모델"',
+      'aria-label="자동 대응 저장"',
+      'aria-label="영구 교체 모델"',
+      'aria-label="영구 교체"',
+    ];
+
+    let previous = -1;
+    for (const label of labels) {
+      const index = markup.indexOf(label);
+      expect(index).toBeGreaterThan(previous);
+      previous = index;
+    }
   });
 });

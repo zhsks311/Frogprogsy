@@ -22,7 +22,7 @@ FrogProgsy는 Claude Code가 이미 읽는 경로로 연결됩니다. Claude Cod
   }
 }
 ```
-자동 모드 심사 라우팅을 켠 프로필은
+auto mode 라우팅을 켠 프로필은
 `ANTHROPIC_DEFAULT_SONNET_MODEL=claude-frogp-auto-classifier`도 소유해 Claude Code 2.1.220의 두 심사
 단계를 명시된 대상으로 보냅니다. 이 변수는 내장 `sonnet` 단축명도 바꾸므로 메인 모델 전환에는
 정확한 게이트웨이 모델 항목을 사용하고, 프로필 변경 뒤에는 세션을 재시작하거나 resume해야 합니다.

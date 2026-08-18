@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { routeModel } from "../src/router";
-import { deterministicModelAlias } from "../src/model-aliases";
+import { deterministicModelAlias, materializeModelAliases, reconcileRetiredModelAliases } from "../src/model-aliases";
 import type { FrogConfig, FrogProviderConfig } from "../src/types";
 
 type ProviderSpec = Partial<FrogProviderConfig> & { adapter: string };
@@ -232,5 +235,31 @@ describe("routeModel deterministic matching", () => {
     const route = routeModel(config, "gpt-4o");
     expect(route.routeKind).toBe("family");
     expect(route.providerName).toBe("codex");
+  });
+
+  test("retired tombstone routes exactly while a fabricated gateway alias stays unknown", () => {
+    const previousFrogHome = process.env.FROGPROGSY_HOME;
+    const frogHome = mkdtempSync(join(tmpdir(), "frogp-router-retired-"));
+    process.env.FROGPROGSY_HOME = frogHome;
+    try {
+      const config = mkConfig(
+        { work: { adapter: "anthropic", models: ["old"] } },
+        "work",
+      );
+      const [old] = materializeModelAliases([{ provider: "work", model: "old" }], { prune: true });
+      reconcileRetiredModelAliases(new Set(["work/old"]));
+
+      expect(routeModel(config, old!.alias)).toMatchObject({
+        providerName: "work",
+        modelId: "old",
+        routeKind: "alias",
+        retired: true,
+      });
+      expect(() => routeModel(config, "claude-frogp-fabricated")).toThrow("Unknown gateway model alias");
+    } finally {
+      if (previousFrogHome === undefined) delete process.env.FROGPROGSY_HOME;
+      else process.env.FROGPROGSY_HOME = previousFrogHome;
+      rmSync(frogHome, { recursive: true, force: true });
+    }
   });
 });

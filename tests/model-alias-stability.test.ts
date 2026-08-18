@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { computeModelAliases, deterministicModelAlias, materializeModelAliases, resolveConfiguredModelAlias, resolvePersistedModelAlias, GATEWAY_MODEL_ALIAS_PREFIX, type ModelAliasEntry } from "../src/model-aliases";
+import { computeModelAliases, deterministicModelAlias, materializeModelAliases, reconcileRetiredModelAliases, resolveConfiguredModelAlias, resolvePersistedModelAlias, GATEWAY_MODEL_ALIAS_PREFIX, type ModelAliasEntry } from "../src/model-aliases";
 import { nativeOpenAiSlugs, syncCatalogModels, type CatalogModel } from "../src/claude-catalog";
 import { syncClaudeCodeGatewayModelsCache } from "../src/claude-refresh";
 import { routeModel } from "../src/router";
@@ -283,6 +283,37 @@ describe("Claude-visible model aliases", () => {
     }
   });
 
+  test("empty routed discovery preserves the existing Claude model catalog", async () => {
+    const { claudeHome, cleanup } = makeHomes();
+    const catalogPath = join(claudeHome, "frogprogsy-catalog.json");
+    const original = `${JSON.stringify({
+      models: [
+        {
+          slug: "gpt-5.5",
+          display_name: "gpt-5.5",
+          priority: 1,
+          base_instructions: "Native model fixture",
+        },
+        {
+          slug: "work/existing",
+          display_name: "work/existing",
+          priority: 2,
+          base_instructions: "Existing routed model fixture",
+        },
+      ],
+    }, null, 2)}\n`;
+    try {
+      writeFileSync(catalogPath, original);
+
+      const result = await syncCatalogModels(nativeOnlyConfig, { claudeHome });
+
+      expect(result).toEqual({ added: 0, path: catalogPath });
+      expect(readFileSync(catalogPath, "utf8")).toBe(original);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("subset gateway-cache materialization does not prune canonical native aliases", async () => {
     const { claudeHome, aliasesPath, cleanup } = makeHomes();
     try {
@@ -337,6 +368,191 @@ describe("Claude-visible model aliases", () => {
       expect(routeModel(tokenFreeConfig, routedAlias)).toMatchObject({ providerName: "kimi", modelId: "frog-kimi-only" });
     } finally {
       cleanup();
+    }
+  });
+
+  test("schema-version-1 entries without status remain active", () => {
+    const homes = makeHomes();
+    try {
+      const alias = deterministicModelAlias("provider-a", "Model X/Preview");
+      writeFileSync(homes.aliasesPath, JSON.stringify({
+        schemaVersion: 1,
+        aliases: {
+          [alias]: {
+            alias,
+            provider: "provider-a",
+            model: "Model X/Preview",
+            routeKey: "provider-a/Model X/Preview",
+            displayName: "provider-a/Model X/Preview",
+            createdAt: new Date(0).toISOString(),
+          },
+        },
+      }));
+
+      expect(routeModel(config, alias)).toMatchObject({
+        providerName: "provider-a",
+        modelId: "Model X/Preview",
+      });
+      expect(routeModel(config, alias).retired).toBeUndefined();
+    } finally {
+      homes.cleanup();
+    }
+  });
+
+  test("canonical pruning preserves only currently catalog-confirmed retired aliases", () => {
+    const homes = makeHomes();
+    try {
+      const [old] = materializeModelAliases([{ provider: "provider-a", model: "old" }], { prune: true });
+      reconcileRetiredModelAliases(new Set(["provider-a/old"]));
+      materializeModelAliases([{ provider: "provider-a", model: "new" }], { prune: true });
+
+      expect(resolvePersistedModelAlias(old!.alias)).toMatchObject({
+        routeKey: "provider-a/old",
+        status: "retired",
+      });
+
+      reconcileRetiredModelAliases(new Set());
+      materializeModelAliases([{ provider: "provider-a", model: "new" }], { prune: true });
+      expect(resolvePersistedModelAlias(old!.alias)).toBeUndefined();
+    } finally {
+      homes.cleanup();
+    }
+  });
+
+  test.each([false, true])("canonical=%s writer reserves aliases owned by a different tombstone", prune => {
+    const homes = makeHomes();
+    try {
+      const [old] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune: true });
+      reconcileRetiredModelAliases(new Set(["a/b-c"]));
+      const [current] = materializeModelAliases([{ provider: "a-b", model: "c" }], { prune });
+
+      expect(current!.alias).not.toBe(old!.alias);
+      expect(resolvePersistedModelAlias(old!.alias)).toMatchObject({
+        routeKey: "a/b-c",
+        status: "retired",
+      });
+      expect(resolvePersistedModelAlias(current!.alias)).toMatchObject({
+        routeKey: "a-b/c",
+        status: "active",
+      });
+    } finally {
+      homes.cleanup();
+    }
+  });
+
+  test.each([false, true])("canonical=%s writer hides a tombstone until reconciliation makes its route active", prune => {
+    const homes = makeHomes();
+    try {
+      const [old] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune: true });
+      reconcileRetiredModelAliases(new Set(["a/b-c"]));
+      const whileRetired = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune });
+
+      expect(whileRetired).toEqual([]);
+      expect(resolvePersistedModelAlias(old!.alias)).toMatchObject({
+        routeKey: "a/b-c",
+        status: "retired",
+      });
+
+      reconcileRetiredModelAliases(new Set());
+      const [activeAgain] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune });
+      expect(activeAgain).toMatchObject({
+        alias: old!.alias,
+        routeKey: "a/b-c",
+        status: "active",
+      });
+      expect(resolvePersistedModelAlias(old!.alias)).toMatchObject({
+        routeKey: "a/b-c",
+        status: "active",
+      });
+    } finally {
+      homes.cleanup();
+    }
+  });
+
+
+  test("canonical unretire preserves the old alias while suffixing only a newly colliding route", () => {
+    const homes = makeHomes();
+    try {
+      const [old] = materializeModelAliases([{ provider: "a", model: "b-c" }], { prune: true });
+      reconcileRetiredModelAliases(new Set(["a/b-c"]));
+      const [collision] = materializeModelAliases([{ provider: "a-b", model: "c" }], { prune: true });
+      reconcileRetiredModelAliases(new Set());
+
+      const active = materializeModelAliases([
+        { provider: "a", model: "b-c" },
+        { provider: "a-b", model: "c" },
+      ], { prune: true });
+
+      expect(active).toContainEqual(expect.objectContaining({
+        alias: old!.alias,
+        routeKey: "a/b-c",
+        status: "active",
+      }));
+      expect(active).toContainEqual(expect.objectContaining({
+        alias: collision!.alias,
+        routeKey: "a-b/c",
+        status: "active",
+      }));
+      expect(collision!.alias).toMatch(new RegExp(`^${old!.alias}-[a-f0-9]{6}$`));
+      expect(resolvePersistedModelAlias(old!.alias)?.routeKey).toBe("a/b-c");
+      expect(resolvePersistedModelAlias(collision!.alias)?.routeKey).toBe("a-b/c");
+    } finally {
+      homes.cleanup();
+    }
+  });
+  test("live discovery cannot republish a retired model through canonical catalog sync", async () => {
+    const homes = makeHomes();
+    const originalFetch = globalThis.fetch;
+    try {
+      const retiredTargets = new Set(["work-fix-round/old"]);
+      const [retired] = materializeModelAliases(
+        [{ provider: "work-fix-round", model: "old" }],
+        { prune: true },
+      );
+      reconcileRetiredModelAliases(retiredTargets);
+      writeFileSync(join(homes.claudeHome, "frogprogsy-catalog.json"), JSON.stringify({
+        models: [{
+          slug: "gpt-5.5",
+          display_name: "gpt-5.5",
+          priority: 1,
+          base_instructions: "Native model fixture",
+        }],
+      }));
+      globalThis.fetch = (async () => new Response(JSON.stringify({
+        data: [{ id: "old" }, { id: "new" }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+      const liveConfig: FrogConfig = {
+        port: 10100,
+        defaultProvider: "work-fix-round",
+        providers: {
+          "work-fix-round": {
+            adapter: "openai-chat",
+            baseUrl: "https://work-fix-round.invalid/v1",
+            apiKey: "test-key",
+            liveModels: true,
+          },
+        },
+      };
+
+      const result = await syncCatalogModels(liveConfig, {
+        claudeHome: homes.claudeHome,
+        retiredTargets,
+      });
+      const catalog = JSON.parse(readFileSync(result.path, "utf8")) as {
+        models: Array<{ slug: string }>;
+      };
+      expect(catalog.models.map(model => model.slug)).toContain("work-fix-round/new");
+      expect(catalog.models.map(model => model.slug)).not.toContain("work-fix-round/old");
+      expect(resolvePersistedModelAlias(retired!.alias)).toMatchObject({
+        routeKey: "work-fix-round/old",
+        status: "retired",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      homes.cleanup();
     }
   });
 });

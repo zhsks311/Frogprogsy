@@ -306,6 +306,13 @@ export interface ClaudeGrantsConfig {
 
 export type GatewayAuthCarrier = "token-free" | "sentinel";
 
+export type ModelContinuityAutomatic = "off" | "retired" | "transient" | "all";
+
+export interface ModelContinuityPolicy {
+  fallbacks: string[];
+  automatic: ModelContinuityAutomatic;
+}
+
 export interface FrogConfig {
   port: number;
   providers: Record<string, FrogProviderConfig>;
@@ -314,6 +321,8 @@ export interface FrogConfig {
   modelCatalogConfigVersion?: 1;
   /** Provider failover preference list; only the first valid provider is used. */
   fallbackProviders?: string[];
+  /** Exact ordinary-route fallback policies keyed by configured provider/model. */
+  modelContinuity?: Record<string, ModelContinuityPolicy>;
   longContext?: { thresholdTokens?: number; provider?: string; model?: string };
   providerBalance?: {
     enabled?: boolean;

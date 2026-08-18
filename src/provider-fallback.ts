@@ -2,7 +2,7 @@ import { applyLongContextRoute, routeModel, type RouteKind, type RouteResult } f
 import { effectiveKeyCandidates } from "./provider-keys";
 import type { FrogConfig, FrogParsedRequest, FrogProviderConfig } from "./types";
 
-export type AttemptSource = "primary" | "fallback";
+export type AttemptSource = "primary" | "fallback" | "continuity";
 
 export interface AttemptContext {
   source: AttemptSource;
@@ -20,6 +20,11 @@ export interface AttemptBuildResult {
   attempts: AttemptContext[];
 }
 
+export interface AttemptBuildOptions {
+  continuityRoutes?: readonly RouteResult[];
+  suppressGenericFallback?: boolean;
+}
+
 function providerKeyCandidates(provider: FrogProviderConfig): Array<{ keyIndex?: number; key?: string }> {
   if (provider.authMode === "forward" || provider.authMode === "oauth" || provider.authMode === "claude-grant") return [{}];
   const keys = effectiveKeyCandidates(provider);
@@ -27,7 +32,7 @@ function providerKeyCandidates(provider: FrogProviderConfig): Array<{ keyIndex?:
   return keys.map(candidate => ({ keyIndex: candidate.index, key: candidate.key }));
 }
 
-function buildAttemptsForRoute(
+export function buildKeyAttemptsForRoute(
   route: RouteResult,
   source: AttemptSource,
   firstAttemptIndex: number,
@@ -65,17 +70,24 @@ export function resolvePrimaryRoute(config: FrogConfig, parsed: FrogParsedReques
   return applyLongContextRoute(config, { ...parsed, resolvedRouteKind: routed.routeKind }) ?? routed;
 }
 
-export function buildAttemptContexts(config: FrogConfig, parsed: FrogParsedRequest): AttemptBuildResult {
+export function buildAttemptContexts(
+  config: FrogConfig,
+  parsed: FrogParsedRequest,
+  options: AttemptBuildOptions = {},
+): AttemptBuildResult {
   const primaryRoute = resolvePrimaryRoute(config, parsed);
-  const attempts = buildAttemptsForRoute(primaryRoute, "primary", 0);
+  const attempts = buildKeyAttemptsForRoute(primaryRoute, "primary", 0);
+  for (const continuityRoute of options.continuityRoutes ?? []) {
+    attempts.push(...buildKeyAttemptsForRoute(continuityRoute, "continuity", attempts.length));
+  }
   // Classifier routes are pinned to their single explicit `autoModeClassifier` target. Only
   // same-provider key retries (already built above via provider key candidates) are allowed —
   // never a generic `fallbackProviders` cross-provider fallback, which would let a different
   // provider/model silently become the auto-mode safety judge.
-  if (primaryRoute.routeKind !== "classifier") {
+  if (!options.suppressGenericFallback && primaryRoute.routeKind !== "classifier") {
     const fallbackRoute = firstValidFallbackRoute(config, primaryRoute.providerName, primaryRoute.modelId);
     if (fallbackRoute && fallbackRoute.providerName !== primaryRoute.providerName) {
-      attempts.push(...buildAttemptsForRoute(fallbackRoute, "fallback", attempts.length));
+      attempts.push(...buildKeyAttemptsForRoute(fallbackRoute, "fallback", attempts.length));
     }
   }
   return { primaryRoute, attempts };
@@ -101,6 +113,8 @@ export function cloneParsedForAttempt(base: FrogParsedRequest, attempt: AttemptC
   return parsed;
 }
 
-export function isSameProviderRetryCandidate(attempt: AttemptContext, next: AttemptContext | undefined): boolean {
-  return !!next && next.providerName === attempt.providerName;
+export function isSameTargetRetryCandidate(attempt: AttemptContext, next: AttemptContext | undefined): boolean {
+  return !!next
+    && next.providerName === attempt.providerName
+    && next.modelId === attempt.modelId;
 }

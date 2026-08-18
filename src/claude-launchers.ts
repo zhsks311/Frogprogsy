@@ -1508,11 +1508,16 @@ type RefreshManagedCatalog = typeof import("./claude-refresh").refreshClaudeCode
 async function refreshManagedProfileCatalog(
   config: FrogConfig,
   profile: ClaudeProfileRecord,
+  retiredTargets: ReadonlySet<string>,
   refreshCatalog?: RefreshManagedCatalog,
 ): Promise<void> {
   try {
     const refresh = refreshCatalog ?? (await import("./claude-refresh")).refreshClaudeCodeModelCatalog;
-    const result = await refresh(config, undefined, { claudeHome: profile.claudeHome, profileId: profile.id });
+    const result = await refresh(config, undefined, {
+      claudeHome: profile.claudeHome,
+      profileId: profile.id,
+      retiredTargets,
+    });
     if (result.gatewayCache.status === "failed" || result.warnings.length > 0) {
       console.warn(`frogprogsy: Claude model picker cache refresh reported a warning for profile ${profile.id}; continuing with the last known-good catalog when available.`);
     }
@@ -1543,6 +1548,7 @@ function launcherResultExitCode(result: Pick<ReturnType<typeof spawnSync>, "stat
 export interface RunClaudeProfileOptions {
   realClaude?: string;
   gateway?: boolean;
+  retiredTargets: ReadonlySet<string>;
   refreshCatalog?: RefreshManagedCatalog;
   spawn?: typeof spawnSync;
   exit?: (code: number) => never;
@@ -1656,7 +1662,7 @@ export async function runClaudeProfile(
   profile: ClaudeProfileRecord,
   config: FrogConfig,
   claudeArgs: string[],
-  options: RunClaudeProfileOptions = {},
+  options: RunClaudeProfileOptions,
 ): Promise<never> {
   const exit = options.exit ?? ((code: number) => process.exit(code));
 
@@ -1680,7 +1686,7 @@ export async function runClaudeProfile(
   let env: NodeJS.ProcessEnv;
   if (useGateway) {
     // Sync this profile's picker cache before the real Claude process starts, then launch.
-    await refreshManagedProfileCatalog(config, profile, options.refreshCatalog);
+    await refreshManagedProfileCatalog(config, profile, options.retiredTargets, options.refreshCatalog);
     const carrier = config.gatewayAuthCarrier ?? "token-free";
     const runtimeAccessToken = config.localAccess?.enabled === true ? readLocalAccessToken() ?? undefined : undefined;
     env = buildClaudeProfileRunEnv(

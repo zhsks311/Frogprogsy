@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { pageToHash, parsePageHash, shouldPushPageHash } from "../gui/src/hash-routing";
 import * as ClaudeProfiles from "../gui/src/pages/ClaudeProfiles";
+import * as Models from "../gui/src/pages/Models";
 import { en } from "../gui/src/i18n/en";
 import { ko } from "../gui/src/i18n/ko";
 import { zh } from "../gui/src/i18n/zh";
@@ -18,6 +19,14 @@ const {
   sonnetModelCandidates,
   sonnetModelCommand,
 } = ClaudeProfiles;
+
+const {
+  confirmModelContinuityReplacement,
+  loadModelContinuityReport,
+  postModelContinuityAction,
+  saveModelContinuityPolicy,
+  updateModelContinuityFallback,
+} = Models;
 
 type SavedErrorHelper = (body: unknown) => {
   profileId: string;
@@ -106,6 +115,364 @@ describe("GUI interaction stability", () => {
       expect(source).toContain("models.visibilityAutoSave");
       expect(source).toContain("models.priorityManualSave");
       expect(source).toContain("models.priorityNoChanges");
+    }
+  });
+
+  test("Models continuity fallback selectors preserve exact order", () => {
+    let fallbacks: string[] = [];
+    fallbacks = updateModelContinuityFallback(fallbacks, 0, "work/first");
+    fallbacks = updateModelContinuityFallback(fallbacks, 1, "codex/second");
+    fallbacks = updateModelContinuityFallback(fallbacks, 2, "work/third");
+
+    expect(fallbacks).toEqual(["work/first", "codex/second", "work/third"]);
+    expect(updateModelContinuityFallback(fallbacks, 1, "work/replacement")).toEqual([
+      "work/first",
+      "work/replacement",
+      "work/third",
+    ]);
+    expect(updateModelContinuityFallback(fallbacks, 3, "work/fourth")).toEqual(fallbacks);
+  });
+
+  test("Models continuity failed save sends one set action and restores the saved policy", async () => {
+    const reference = Models.parseModelContinuityReport({
+      policies: {},
+      references: [{
+        id: "provider-default:work",
+        kind: "provider-default",
+        primary: "work/old",
+        status: "retired",
+        automaticEligible: true,
+        policy: { fallbacks: ["work/saved"], automatic: "off" },
+        supportStatus: "validated",
+        label: "Provider default",
+      }],
+      circuits: [],
+    }).references[0];
+    const actions: Models.ModelContinuitySetAction[] = [];
+    const view = await saveModelContinuityPolicy(
+      reference,
+      { fallbacks: ["work/new", "codex/backup"], automatic: "all" },
+      async action => {
+        actions.push(action);
+        return "failed";
+      },
+    );
+
+    expect(actions).toEqual([{
+      action: "set",
+      primary: "work/old",
+      referenceId: "provider-default:work",
+      fallbacks: ["work/new", "codex/backup"],
+      automatic: "all",
+    }]);
+    expect(view).toEqual({ fallbacks: ["work/saved"], automatic: "off" });
+  });
+  test("Models superseded save leaves the local draft untouched", async () => {
+    const reference = Models.parseModelContinuityReport({
+      policies: {},
+      references: [{
+        id: "provider-default:work",
+        kind: "provider-default",
+        primary: "work/old",
+        status: "retired",
+        automaticEligible: true,
+        policy: { fallbacks: ["work/saved"], automatic: "off" },
+        supportStatus: "validated",
+      }],
+      circuits: [],
+    }).references[0];
+
+    expect(await saveModelContinuityPolicy(
+      reference,
+      { fallbacks: ["work/draft"], automatic: "all" },
+      async () => "superseded",
+    )).toBeNull();
+  });
+
+  test("Models gateway alias fallback policy remains saveable", async () => {
+    const reference = Models.parseModelContinuityReport({
+      policies: {},
+      references: [{
+        id: "gateway-alias:session",
+        kind: "gateway-alias",
+        primary: "work/session",
+        status: "retired",
+        automaticEligible: true,
+        policy: { fallbacks: ["work/first"], automatic: "off" },
+        supportStatus: "validated",
+      }],
+      circuits: [],
+    }).references[0];
+    const actions: Models.ModelContinuitySetAction[] = [];
+    const saved = await saveModelContinuityPolicy(
+      reference,
+      { fallbacks: ["work/first", "codex/second"], automatic: "retired" },
+      async action => {
+        actions.push(action);
+        return "applied";
+      },
+    );
+
+    expect(saved).toEqual({
+      fallbacks: ["work/first", "codex/second"],
+      automatic: "retired",
+    });
+    expect(actions).toEqual([{
+      action: "set",
+      primary: "work/session",
+      referenceId: "gateway-alias:session",
+      fallbacks: ["work/first", "codex/second"],
+      automatic: "retired",
+    }]);
+  });
+
+
+  test("Models permanent replacement requires confirmation and sends expectedPrimary", async () => {
+    const reference = Models.parseModelContinuityReport({
+      policies: {},
+      references: [{
+        id: "classifier",
+        kind: "classifier",
+        primary: "work/old",
+        status: "ready",
+        automaticEligible: false,
+        policy: { fallbacks: [], automatic: "off" },
+        supportStatus: "validated",
+        label: "Auto-mode classifier",
+      }],
+      circuits: [],
+    }).references[0];
+    const actions: Models.ModelContinuityReplaceAction[] = [];
+
+    expect(await confirmModelContinuityReplacement(
+      reference,
+      "work/new",
+      () => false,
+      async action => {
+        actions.push(action);
+        return "applied";
+      },
+    )).toBe("failed");
+    expect(actions).toHaveLength(0);
+
+    expect(await confirmModelContinuityReplacement(
+      reference,
+      "work/new",
+      () => true,
+      async action => {
+        actions.push(action);
+        return "applied";
+      },
+    )).toBe("applied");
+    expect(actions).toEqual([{
+      action: "replace",
+      referenceId: "classifier",
+      expectedPrimary: "work/old",
+      replacement: "work/new",
+    }]);
+  });
+
+  test("Models stale continuity action reloads the report and keeps an actionable error", async () => {
+    let reloads = 0;
+    const result = await postModelContinuityAction(
+      async () => Response.json({
+        error: "model reference changed; reload and retry",
+        code: "stale_reference",
+      }, { status: 409 }),
+      "/frogp",
+      {
+        action: "replace",
+        referenceId: "provider-default:work",
+        expectedPrimary: "work/old",
+        replacement: "work/new",
+      },
+      async () => { reloads += 1; return "applied"; },
+    );
+
+    expect(reloads).toBe(1);
+    expect(result).toEqual({
+      ok: false,
+      stale: true,
+      reloadFailed: false,
+      superseded: false,
+      message: "model reference changed; reload and retry",
+    });
+  });
+  test("Models stale continuity action does not claim a reload when refresh fails", async () => {
+    const result = await postModelContinuityAction(
+      async () => Response.json({
+        error: "model reference changed; reload and retry",
+        code: "stale_reference",
+      }, { status: 409 }),
+      "/frogp",
+      {
+        action: "replace",
+        referenceId: "provider-default:work",
+        expectedPrimary: "work/old",
+        replacement: "work/new",
+      },
+      async () => "failed",
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      stale: false,
+      reloadFailed: true,
+      superseded: false,
+      message: "model reference changed; reload and retry",
+    });
+  });
+
+  test("Models continuity latest request wins when deferred responses complete out of order", async () => {
+    let resolveFirst!: (response: Response) => void;
+    let resolveSecond!: (response: Response) => void;
+    const firstResponse = new Promise<Response>(resolve => { resolveFirst = resolve; });
+    const secondResponse = new Promise<Response>(resolve => { resolveSecond = resolve; });
+    let latestRequest = 0;
+    let shownPrimary = "";
+    let failures = 0;
+    let settled = 0;
+    const start = (response: Promise<Response>) => {
+      const requestId = ++latestRequest;
+      return loadModelContinuityReport(
+        async () => response,
+        "/frogp",
+        () => requestId === latestRequest,
+        {
+          success: report => { shownPrimary = report.references[0]?.primary ?? ""; },
+          failure: () => { failures += 1; },
+          settled: () => { settled += 1; },
+        },
+      );
+    };
+    const first = start(firstResponse);
+    const second = start(secondResponse);
+    const reportFor = (primary: string) => ({
+      policies: {},
+      references: [{
+        id: "provider-default:work",
+        kind: "provider-default",
+        primary,
+        status: "ready",
+        automaticEligible: true,
+        policy: { fallbacks: [], automatic: "off" },
+        supportStatus: "validated",
+      }],
+      circuits: [],
+    });
+
+    resolveSecond(Response.json(reportFor("work/newest")));
+    expect(await second).toBe("applied");
+    resolveFirst(Response.json(reportFor("work/stale")));
+    expect(await first).toBe("superseded");
+
+    expect(shownPrimary).toBe("work/newest");
+    expect(failures).toBe(0);
+    expect(settled).toBe(1);
+  });
+
+  test("Models superseded stale recovery preserves the newer explicit refresh report and status", async () => {
+    let resolveRecovery!: (response: Response) => void;
+    let markRecoveryStarted!: () => void;
+    const recoveryStarted = new Promise<void>(resolve => { markRecoveryStarted = resolve; });
+    const recoveryResponse = new Promise<Response>(resolve => { resolveRecovery = resolve; });
+    let latestRequest = 0;
+    let shownPrimary = "";
+    let visibleStatus = "initial";
+    const reportFor = (primary: string) => ({
+      policies: {},
+      references: [{
+        id: "provider-default:work",
+        kind: "provider-default",
+        primary,
+        status: "ready",
+        automaticEligible: true,
+        policy: { fallbacks: [], automatic: "off" },
+        supportStatus: "validated",
+      }],
+      circuits: [],
+    });
+    const load = (response: Promise<Response>) => {
+      const requestId = ++latestRequest;
+      return loadModelContinuityReport(
+        async () => response,
+        "/frogp",
+        () => requestId === latestRequest,
+        {
+          success: report => {
+            shownPrimary = report.references[0]?.primary ?? "";
+            visibleStatus = "";
+          },
+          failure: () => { visibleStatus = "load failed"; },
+          settled: () => {},
+        },
+      );
+    };
+    const staleAction = postModelContinuityAction(
+      async () => Response.json({ error: "stale reference" }, { status: 409 }),
+      "/frogp",
+      {
+        action: "replace",
+        referenceId: "provider-default:work",
+        expectedPrimary: "work/old",
+        replacement: "work/new",
+      },
+      () => {
+        markRecoveryStarted();
+        return load(recoveryResponse);
+      },
+    );
+    await recoveryStarted;
+    const explicitRefresh = load(Promise.resolve(Response.json(reportFor("work/newest"))));
+    expect(await explicitRefresh).toBe("applied");
+    visibleStatus = "newest report shown";
+    resolveRecovery(Response.json(reportFor("work/stale")));
+    const actionResult = await staleAction;
+
+    expect(actionResult).toEqual({
+      ok: false,
+      stale: false,
+      reloadFailed: false,
+      superseded: true,
+      message: "stale reference",
+    });
+    expect(shownPrimary).toBe("work/newest");
+    expect(visibleStatus).toBe("newest report shown");
+  });
+
+  test("Models model polling excludes continuity and model loading does not await it", () => {
+    const models = read("gui/src/pages/Models.tsx");
+    const modelLoadStart = models.indexOf("const loadModels = async");
+    const refreshStart = models.indexOf("const refreshAll", modelLoadStart);
+    const effectStart = models.indexOf("useEffect(() =>", refreshStart);
+    const timerStart = models.indexOf("const timer = setInterval", effectStart);
+    const modelLoad = models.slice(modelLoadStart, refreshStart);
+    const refresh = models.slice(refreshStart, effectStart);
+    const polling = models.slice(timerStart, models.indexOf("return () => clearInterval(timer)", timerStart));
+
+    expect(modelLoad).not.toContain("loadContinuity");
+    expect(modelLoad).toContain("setLoading(false)");
+    expect(refresh).toContain("loadContinuity()");
+    expect(polling).toContain("loadModels()");
+    expect(polling).not.toContain("loadContinuity");
+    expect(models).toContain("const continuityLoadSeqRef = useRef(0)");
+  });
+
+  test("Models continuity normal rows stay collapsed and localized copy avoids internal terms", () => {
+    const models = read("gui/src/pages/Models.tsx");
+    expect(models).toContain('<details className="continuity-normal-list">');
+    expect(models).not.toContain('<details className="continuity-normal-list" open');
+
+    for (const dict of [en, ko, zh]) {
+      const copy = Object.entries(dict)
+        .filter(([key]) => key.startsWith("models.continuity."))
+        .map(([, value]) => value)
+        .join(" ")
+        .toLowerCase();
+      expect(copy).not.toContain("circuit");
+      expect(copy).not.toContain("tombstone");
+      expect(copy).not.toContain("adapter");
+      expect(copy).not.toContain("reference id");
     }
   });
 

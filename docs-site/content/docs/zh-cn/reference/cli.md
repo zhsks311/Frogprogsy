@@ -11,7 +11,7 @@ description: "frogp 命令完整契约：setup、relay lifecycle、provider logi
 - 注入、刷新或恢复 FrogProgsy 拥有的 Claude Code settings/catalog/cache entry。
 - 管理 provider credential、模型可见性、dashboard 与 diagnostic output。
 
-Help、status、models、version 类命令是 read-only。`start`、`stop`、`restore`、`refresh`、`init`、`login`、`logout`、`uninstall` 会修改本地状态。
+Help、status、普通 models、模型连续性报告和 version 类命令是 read-only。`start`、`stop`、`restore`、`refresh`、`init`、`login`、`logout`、`uninstall` 以及模型连续性 `set`/`replace` 会修改本地状态。
 
 ## 基本语法与通用规则
 
@@ -29,9 +29,9 @@ frogp --version
 
 ### 机器输出与颜色
 
-- `frogp status --json` 和 `frogp models --json` 是机器输出模式。JSON 模式下 stdout 只包含恰好一个 JSON 文档（加换行），所有诊断信息走 stderr，JSON 中绝不包含 ANSI 颜色码。
+- `frogp status --json`、`frogp models --json` 和 `frogp models continuity --json` 是机器输出模式。JSON 模式下 stdout 只包含恰好一个 JSON 文档（加换行），所有诊断信息走 stderr，JSON 中绝不包含 ANSI 颜色码。
 - 人类可读输出可以使用最小 ANSI 调色板。颜色只在 TTY 输出时启用；`NO_COLOR` 设为非空值时始终禁用（最高优先级）；管道/重定向（non-TTY）默认禁用；`FORCE_COLOR=1` 可在 non-TTY 下强制启用（但非空 `NO_COLOR` 优先）。
-- `status`/`models` 的未知 flag 会以 exit code 1 失败并在 stderr 输出 usage 提示。
+- `status`、`models` 和 `models continuity` 的未知选项会以 exit code 1 失败并在 stderr 输出 usage 提示。
 
 ## Setup and relay lifecycle
 
@@ -88,6 +88,11 @@ Claude Code 持有 Claude 订阅登录。FrogProgsy 不保存、导入、刷新�
 | Command | Mutates | Effect |
 | --- | --- | --- |
 | `frogp models [--json]` | 无 | 在线查看正在运行的 proxy 模型列表。文本输出按 provider 分组：有经过验证的兼容资料时标记为**已验证**，仅由 AI 服务响应或用户手动添加发现时标记为**仅发现**；同时显示当前模型资料来自远程、保存的副本，还是安装版本自带资料。`--json` 原样输出 `GET /api/models` 数组，包括稳定的 `supportStatus` 与 `catalogSource` 值。relay 停止时提示 `frogp start`；有运行记录但无响应时提示 `frogp status`/`frogp refresh`。不会离线合成模型列表。 |
+| `frogp models continuity [--json]` | 无 | 从正在运行的 proxy 读取已排序的模型连续性报告。文本输出先列出受影响的 reference，并给出可直接执行的下一步命令。`--json` 原样输出 `GET /api/model-continuity` 文档。 |
+| `frogp models continuity set <provider/model> --fallback <provider/model>... --auto off\|retired\|transient\|all` | config | 通过正在运行的 proxy 保存 fallback 顺序与自动模式。重复 `--fallback` 的顺序就是实际尝试顺序。 |
+| `frogp models continuity replace <reference-id> <provider/model>` | config 与受影响的 Claude Code 模型缓存 | 永久替换当前报告中一个 reference 持有的模型。Reference id 可防止报告读取后目标发生变化时误改其他位置。 |
+
+自动连续性**默认关闭**。`retired` 只切换主模型已退役的 reference，`transient` 处理符合条件的临时失败，`all` 同时启用两者。自动连续性只适用于普通模型路由请求。Classifier reference 仅支持手动替换：可以使用准确的 `replace` 命令修改，但 classifier 请求永远不会使用自动连续性。
 
 ## Catalog and Claude Code cache
 

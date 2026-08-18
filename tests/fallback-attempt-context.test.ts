@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { __requestLogTest } from "../src/server";
+import { ContinuityCircuit } from "../src/model-continuity";
 import type { FrogConfig } from "../src/types";
 
 let testHome = "";
@@ -48,12 +49,17 @@ function providerFailure(status = 503): Response {
   });
 }
 
-async function handle(config: FrogConfig, body: Record<string, unknown>): Promise<Response> {
+async function handle(
+  config: FrogConfig,
+  body: Record<string, unknown>,
+  options: { continuityCircuit?: ContinuityCircuit } = {},
+): Promise<Response> {
   const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
   return __requestLogTest.handleMessages(
     new Request("http://127.0.0.1/v1/messages", { method: "POST", body: JSON.stringify(body) }),
     config,
     ctx,
+    options,
   );
 }
 
@@ -281,6 +287,81 @@ describe("AttemptContext isolation", () => {
       expect(fallbackBody).toContain("image_url");
       expect(fallbackBody).toContain("data:image/png;base64,aW1hZ2U=");
       expect(fallbackBody).not.toContain("described image text");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("exact continuity fallback rebuilds auth, adapter, and model across protocols", async () => {
+    const cfg: FrogConfig = {
+      port: 10100,
+      defaultProvider: "primary",
+      fallbackProviders: ["unused-generic"],
+      providers: {
+        primary: {
+          adapter: "anthropic",
+          baseUrl: "https://primary.test",
+          apiKey: "sk-primary",
+          defaultModel: "primary-default",
+          models: ["primary-model"],
+        },
+        "fallback-chat": {
+          adapter: "openai-chat",
+          baseUrl: "https://fallback-chat.test/v1",
+          apiKey: "sk-fallback-chat",
+          defaultModel: "wrong-default",
+          models: ["fallback-other", "wrong-default"],
+        },
+        "unused-generic": {
+          adapter: "anthropic",
+          baseUrl: "https://unused.test",
+          apiKey: "sk-unused",
+          defaultModel: "unused-default",
+          models: ["unused-default"],
+        },
+      },
+      modelContinuity: {
+        "primary/primary-model": {
+          fallbacks: ["fallback-chat/fallback-other"],
+          automatic: "transient",
+        },
+      },
+    };
+    const calls: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url, init) => {
+      calls.push({
+        url: String(url),
+        headers: new Headers(init?.headers),
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      return String(url).startsWith("https://primary.test")
+        ? providerFailure(503)
+        : openAiChatOk("cross-adapter fallback");
+    }) as typeof fetch;
+
+    try {
+      const response = await handle(cfg, {
+        model: "primary/primary-model",
+        max_tokens: 10,
+        system: "primary system",
+        messages: [{ role: "user", content: "hello" }],
+      }, {
+        continuityCircuit: new ContinuityCircuit(),
+      });
+      expect(response.status).toBe(200);
+      expect(calls.map(call => call.url)).toEqual([
+        "https://primary.test/v1/messages",
+        "https://fallback-chat.test/v1/chat/completions",
+      ]);
+      expect(calls[1].headers.get("authorization")).toBe("Bearer sk-fallback-chat");
+      expect(calls[1].headers.has("x-api-key")).toBeFalse();
+      expect(calls[1].body.model).toBe("fallback-other");
+      expect(calls[1].body.system).toBeUndefined();
+      expect(calls[1].body.messages).toEqual([
+        { role: "system", content: "primary system" },
+        { role: "user", content: "hello" },
+      ]);
     } finally {
       globalThis.fetch = originalFetch;
     }

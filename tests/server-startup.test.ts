@@ -145,6 +145,27 @@ describe("server startup runtime config", () => {
     expect(handedOff?.providers.gateway.catalogProviderId).toBe("managed");
   });
 
+  test("post-start handoff reuses the selected catalog retired target index", async () => {
+    const document = catalog(["active-model"]);
+    document.providers[0]!.retiredModels = ["retired-model"];
+    let handedOffRetiredTargets: ReadonlySet<string> | undefined;
+
+    await startServer(0, {
+      createRuntimeConfigState: () => createRuntimeConfigState({
+        loadConfig: persistedConfig,
+        configExists: () => false,
+        refreshCatalog: async () => selected(document, "remote"),
+      }),
+      serve: fakeServe(() => {}),
+      onRuntimeConfigReady: (_config, retiredTargets) => {
+        handedOffRetiredTargets = retiredTargets;
+      },
+    });
+
+    expect(handedOffRetiredTargets).toBeDefined();
+    expect(handedOffRetiredTargets!.has("gateway/retired-model")).toBeTrue();
+  });
+
   test("restores configured OAuth providers from stored credentials before handing off startup config", async () => {
     const saved: FrogConfig[] = [];
     let handedOff: FrogConfig | undefined;

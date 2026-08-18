@@ -99,6 +99,8 @@ Already-open `/model` screens do not hot reload; start a new `claude` session or
 
 FrogProgsy checks for validated model updates when the proxy starts. Restart the proxy to activate a newer list; if the check fails, FrogProgsy compares the last validated saved copy with the model data bundled in the installed release and uses the one with the higher catalog revision. Your API keys, selected default, and models you added yourself stay unchanged. Run `frogp models` to see whether each model is validated or only discovered and which model-data source is active.
 
+If a configured model has ended or temporarily fails, the dashboard **Models** page and `frogp models continuity` show the affected setting and an exact repair action. Automatic alternatives stay off until you opt in and never rewrite your selected model. See the full [CLI commands](https://zhsks311.github.io/Frogprogsy/reference/cli/#models), [configuration](https://zhsks311.github.io/Frogprogsy/reference/configuration/#model-continuity), and [dashboard workflow](https://zhsks311.github.io/Frogprogsy/guides/web-dashboard/#replacing-models-that-have-ended).
+
 `frogp start`/`frogp refresh` generate one shortcut per additional Claude account in `~/.frogprogsy/bin`, such as `claude-work` or `claude-personal`. The default account uses plain `claude`, which always remains your installed Claude Code. Append the shortcut directory to `PATH`. If the proxy is stopped, account shortcuts pass through to native Claude Code for the selected home.
 
 ### 4. Send your first Claude Code request

@@ -37,6 +37,14 @@ cd gui && bun dev
 
 Claude Code의 `/model` 선택기가 오래된 목록을 보여줄 때는 **Claude Code 홈**을 사용하세요. 대상 홈을 새로고침한 뒤 표시되는 `frogp claude reload-models <profile-id>` 명령을 그 profile에 실행합니다. 이미 열려 있는 `/model` 화면은 hot reload되지 않으므로, Claude Code 세션을 새로 시작하거나 해당 profile로 resume해서 Claude Code가 `/v1/models`를 다시 가져오게 해야 합니다.
 
+## 종료된 모델 교체하기
+
+Models 화면은 페이지 요약 바로 아래, 모델 표시와 우선순위 조정 영역 위에서 교체 상태를 확인합니다. 종료됐거나 로그인이 필요하거나 대체 설정에 문제가 있는 항목은 처음부터 열립니다. 정상 항목은 하나의 접힌 영역에 모여 있어 먼저 할 일을 바로 볼 수 있습니다.
+
+일반 모델 요청에는 정확한 대체 모델을 최대 3개까지 순서대로 저장할 수 있습니다. 자동 대응은 끄거나, 모델이 종료됐을 때만, 일시적인 실패가 생겼을 때만, 또는 두 경우 모두에 적용할 수 있습니다. 이 동작은 요청을 처리할 때만 잠시 다른 모델을 시도하며, 저장된 기본 모델 자체는 바꾸지 않습니다.
+
+auto mode, Model Mixing, 웹 검색·이미지 처리, 하위 작업 모델은 맡은 역할이 정해져 있어 성격이 다른 모델로 조용히 바뀌면 안 됩니다. 그래서 자동 대응 대신 **영구 교체**만 제공합니다. 영구 교체는 확인을 받은 뒤 이후 요청이 사용할 저장 모델을 바꾸며, 일시적으로 대체 모델을 시도하는 자동 대응과 다릅니다.
+
 ## Model Mixing 페이지
 
 **Model Mixing**은 Claude Code에 `frogp/mix` 모델 하나를 보여주고, 그 뒤에서 여러 모델이 함께 답하게 만들 때 쓰는 화면입니다. JSON을 직접 고치지 않아도 됩니다. 프리셋을 고르고, 경고를 확인한 뒤 켜고, Claude Code에서 `frogp/mix`를 선택하면 됩니다.
@@ -68,7 +76,7 @@ Claude Code의 `/model` 선택기가 오래된 목록을 보여줄 때는 **Clau
 - `stream_bridge` — Claude Code로 돌려주는 변환
 - `finalize` — 기록 저장과 정리
 
-## 자동 모드 심사 경로
+## auto mode 경로
 
 대시보드에서 심사 프로바이더/모델 한 쌍을 지정한 뒤, 사용할 Claude Code 홈마다 이 기능을 켭니다.
 Claude Code 2.1.220은 해당 홈의 두 심사 단계를 예약 alias로 보내며, FrogProgsy는 Sonnet/Haiku

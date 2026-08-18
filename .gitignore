@@ -15,6 +15,7 @@ fixtures/claude-code-gateway/tmp-*/
 /.superpowers/
 /docs/
 /artifacts/
+/.superpowers/sdd/plan/
 /claude.md
 /agents.md
 /.claude/design.md

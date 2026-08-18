@@ -28,6 +28,7 @@ export interface ModelAliasEntry {
   routeKey: string;
   displayName: string;
   createdAt: string;
+  status?: "active" | "retired";
 }
 
 export interface ModelAliasState {
@@ -108,6 +109,7 @@ function makeEntry(provider: string, model: string, alias: string, existing?: Mo
     routeKey,
     displayName: routeKey,
     createdAt: existing?.createdAt ?? new Date(0).toISOString(),
+    status: "active",
   };
 }
 
@@ -126,33 +128,73 @@ export function materializeModelAliases(models: AliasSourceModel[], options: { p
   const aliases = computeModelAliases(models);
   const keep = new Set<string>();
   const entries: ModelAliasEntry[] = [];
-  // Reverse index of persisted aliases by routeKey so a subset writer reuses the existing canonical
-  // alias for a routeKey instead of minting a divergent (e.g. hashless) one.
+  // Reverse index of persisted aliases by routeKey so every writer keeps an issued route identity
+  // stable. Canonical writes may prune absent routes, but never rename a route that remains active.
   const existingByRouteKey = new Map<string, ModelAliasEntry>();
   for (const entry of Object.values(state.aliases)) existingByRouteKey.set(entry.routeKey, entry);
   for (const [routeKey, computedAlias] of aliases) {
     const slash = routeKey.indexOf("/");
     const provider = routeKey.slice(0, slash);
     const model = routeKey.slice(slash + 1);
-    const preserved = options.prune ? undefined : existingByRouteKey.get(routeKey);
-    const alias = preserved ? preserved.alias : computedAlias;
-    const entry = makeEntry(provider, model, alias, state.aliases[alias]);
+    const existingRoute = existingByRouteKey.get(routeKey);
+    // A writer only knows that a route was rediscovered; it does not own retirement authority.
+    // Reconciliation must explicitly clear the tombstone before any publisher may reactivate it.
+    if (existingRoute?.status === "retired") {
+      keep.add(existingRoute.alias);
+      continue;
+    }
+    const preserved = existingRoute;
+    let alias = preserved?.alias ?? computedAlias;
+    const collisionAlias = `${computedAlias}-${collisionSuffix(provider, model)}`;
+    let collisionIndex = 1;
+    while (true) {
+      const owner = state.aliases[alias];
+      const reserved = owner
+        && owner.routeKey !== routeKey
+        && (owner.status === "retired" || !options.prune);
+      if (!reserved) break;
+      alias = collisionIndex === 1 ? collisionAlias : `${collisionAlias}-${collisionIndex}`;
+      collisionIndex += 1;
+    }
+    const entry = makeEntry(provider, model, alias, preserved ?? state.aliases[alias]);
     state.aliases[alias] = entry;
     keep.add(alias);
     entries.push(entry);
   }
   // Pruning is the canonical writer's job only; subset publishers leave other writers' aliases intact.
+  // Catalog-confirmed tombstones keep their exact alias because resumed Claude Code sessions still
+  // submit it. Reconciliation removes that authority before the next canonical prune.
   if (options.prune) {
-    for (const alias of Object.keys(state.aliases)) {
-      if (!keep.has(alias)) delete state.aliases[alias];
+    for (const [alias, entry] of Object.entries(state.aliases)) {
+      if (!keep.has(alias) && entry.status !== "retired") delete state.aliases[alias];
     }
   }
   writeState(state);
   return entries;
 }
 
+export function reconcileRetiredModelAliases(retiredTargets: ReadonlySet<string>): ModelAliasEntry[] {
+  const state = readState();
+  const activeEntries: ModelAliasEntry[] = [];
+  let changed = false;
+  for (const [alias, entry] of Object.entries(state.aliases)) {
+    const status = retiredTargets.has(entry.routeKey) ? "retired" : "active";
+    if (entry.status !== status && !(entry.status === undefined && status === "active")) {
+      state.aliases[alias] = { ...entry, status };
+      changed = true;
+    }
+    if (status === "active") activeEntries.push({ ...entry, status });
+  }
+  if (changed) writeState(state);
+  return activeEntries;
+}
+
 export function resolvePersistedModelAlias(alias: string): ModelAliasEntry | undefined {
   return readState().aliases[alias];
+}
+
+export function listPersistedModelAliases(): ModelAliasEntry[] {
+  return Object.values(readState().aliases).map(entry => ({ ...entry }));
 }
 
 export function resolveConfiguredModelAlias(config: FrogConfig, alias: string): ModelAliasEntry | undefined {
