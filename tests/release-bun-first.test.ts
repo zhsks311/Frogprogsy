@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { registryVersionListed } from "../scripts/release-registry";
-import { latestWorkflowRun, type GhRun } from "../scripts/release";
+import {
+  assertPublishPackageVersion,
+  assertReleaseBranch,
+  latestWorkflowRun,
+  parseReleaseCommand,
+  writePackageVersion,
+  type GhRun,
+} from "../scripts/release";
 
 const root = new URL("../", import.meta.url);
 
@@ -26,6 +36,84 @@ describe("Bun-first release and installation contract", () => {
     expect(() => registryVersionListed(JSON.stringify([42]), "0.0.1")).toThrow(
       "registry versions response must contain only strings",
     );
+  });
+
+  test("release helper parses prepare separately while preserving publish flags and watch mode", () => {
+    expect(parseReleaseCommand(["prepare", "1.2.3"])).toEqual({
+      kind: "prepare",
+      version: "1.2.3",
+    });
+    expect(parseReleaseCommand(["1.2.3-preview.1", "--tag", "preview", "--publish"])).toEqual({
+      kind: "publish",
+      version: "1.2.3-preview.1",
+      tag: "preview",
+      dryRun: false,
+      bootstrap: false,
+    });
+    expect(parseReleaseCommand(["watch"])).toEqual({ kind: "watch" });
+  });
+
+  test("release preparation is develop-only and publishing is main-only", () => {
+    expect(() => assertReleaseBranch("prepare", "develop")).not.toThrow();
+    expect(() => assertReleaseBranch("prepare", "main")).toThrow(
+      "must be on develop",
+    );
+    expect(() => assertReleaseBranch("publish", "main")).not.toThrow();
+    expect(() => assertReleaseBranch("publish", "develop")).toThrow(
+      "must be on main",
+    );
+  });
+
+  test("release preparation changes only the package version", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "frogprogsy-release-"));
+    const packagePath = join(directory, "package.json");
+    const originalPackage = {
+      name: "frogprogsy-test",
+      version: "1.2.2",
+      private: true,
+      scripts: { test: "bun test" },
+    };
+
+    try {
+      await Bun.write(packagePath, `${JSON.stringify(originalPackage, null, 2)}\n`);
+
+      expect(await writePackageVersion("1.2.3", packagePath)).toBe(true);
+      expect(JSON.parse(await Bun.file(packagePath).text())).toEqual({
+        ...originalPackage,
+        version: "1.2.3",
+      });
+      expect(await readdir(directory)).toEqual(["package.json"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("release publishing rejects a package version mismatch", () => {
+    expect(() => assertPublishPackageVersion("1.2.3", "1.2.2")).toThrow(
+      "package.json version 1.2.2 does not match requested release version 1.2.3",
+    );
+    expect(() => assertPublishPackageVersion("1.2.3", "1.2.3")).not.toThrow();
+  });
+
+  test("release helper never commits or pushes and verifies origin/main around the exact-SHA gates", async () => {
+    const source = await read("scripts/release.ts");
+    const packageJson = JSON.parse(await read("package.json")) as { scripts?: Record<string, string> };
+
+    expect(packageJson.scripts?.release).toBe("bun scripts/release.ts");
+    expect(packageJson.scripts?.["release:prepare"]).toBe("bun scripts/release.ts prepare");
+    expect(source).not.toContain("git add");
+    expect(source).not.toContain("git commit");
+    expect(source).not.toContain("git push origin main");
+
+    const gateIndex = source.indexOf("await waitForReleaseGates(releaseSha)");
+    const dispatchIndex = source.indexOf("gh workflow run release.yml");
+    const originChecks = [...source.matchAll(/await assertOriginMainMatches\(releaseSha\)/g)]
+      .map(match => match.index);
+
+    expect(originChecks).toHaveLength(2);
+    expect(originChecks[0]).toBeLessThan(gateIndex);
+    expect(originChecks[1]).toBeGreaterThan(gateIndex);
+    expect(originChecks[1]).toBeLessThan(dispatchIndex);
   });
 
   test("release helper waits fail-closed on the latest exact-SHA CI, package, and Pages runs before dispatching", async () => {
@@ -155,7 +243,7 @@ describe("Bun-first release and installation contract", () => {
     // A package.json-only main push must still trigger the workflow (release gate
     // needs a green run for the exact version-bump commit).
     expect(lifecycle).toContain("push:");
-    expect(lifecycle).toContain("branches: [main, dev]");
+    expect(lifecycle).toContain("branches: [main, develop]");
     expect(lifecycle).toContain('- "package.json"');
     expect(lifecycle).toContain('- ".github/workflows/package-lifecycle.yml"');
 

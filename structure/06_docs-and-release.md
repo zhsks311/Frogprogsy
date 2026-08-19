@@ -57,49 +57,41 @@ bun run build
 
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | `pull_request`, `push` to `main` or `dev`, or manual dispatch when runtime/package paths change | Linux, Windows, and macOS quality gate. Every test process uses a temporary `FROGPROGSY_HOME`; tests run with Bun isolation. The GitHub-hosted macOS lane also runs the opt-in scoped Keychain grant lifecycle smoke. |
-| `.github/workflows/package-lifecycle.yml` | `pull_request`, `push` to `main` or `dev`, or manual dispatch when package/lifecycle paths change | Build one Bun tarball, then install and exercise those exact bytes on Linux, Windows, and macOS through start, explicit restore, stop, restart, final restore, and package-only removal. |
+| `.github/workflows/ci.yml` | Every `pull_request` targeting `main` or `develop`; `push` to `main` or `develop` when runtime/package paths change; or manual dispatch | Linux, Windows, and macOS quality gate. Every test process uses a temporary `FROGPROGSY_HOME`; tests run with Bun isolation. The GitHub-hosted macOS lane also runs the opt-in scoped Keychain grant lifecycle smoke. |
+| `.github/workflows/package-lifecycle.yml` | Every `pull_request` targeting `main` or `develop`; `push` to `main` or `develop` when package/lifecycle paths change; or manual dispatch | Build one Bun tarball, then install and exercise those exact bytes on Linux, Windows, and macOS through start, explicit restore, stop, restart, final restore, and package-only removal. |
 | `.github/workflows/release.yml` | Manual dispatch only | Bun validation/dry-run plus final Trusted Publishing workflow. Both lanes require the latest exact-`GITHUB_SHA` Cross-platform CI, Package lifecycle, and Pages runs to be completed successfully, then require the extracted npm tarball catalog to match the deployed Pages catalog's source SHA, revision, and digest. |
 | `.github/workflows/deploy-docs.yml` | Every `push` to `main`, or guarded manual dispatch from current `main` | Build and publish the Next.js/Fumadocs site plus `catalog/v1/model-catalog.json` to one GitHub Pages artifact. |
 
 
-Docs-only changes still skip runtime workflow path filters, but every resulting `main` commit publishes
-Pages. Release preparation changes `package.json`, so the exact release commit also triggers CI and
-Package lifecycle; a missing exact-SHA run fails the release closed rather than being treated as skipped.
+Docs-only pushes can still skip runtime workflow path filters, but every resulting `main` commit publishes
+Pages. Release preparation changes `package.json`, so the promoted release merge commit also triggers CI
+and Package lifecycle; a missing exact-SHA run fails the release closed rather than being treated as skipped.
 
-## Branch strategy decision
+## Branch strategy
 
-**Decision recorded 2026-08-12; rollout is not yet implemented.** frogprogsy will adopt
-Didimlog's two-branch promotion model. This section is the durable decision record. The workflow
-map above and the rollout checklist below distinguish current enforcement from the target policy.
+frogprogsy uses a two-branch promotion model:
 
 | Branch | Role | Accepted changes |
 | --- | --- | --- |
-| `main` | Released or release-ready history | A reviewed `develop` → `main` promotion only. The resulting `main` commit is the only release source. |
+| `main` | Default branch and released or release-ready history | A reviewed `develop` → `main` promotion only. The promotion PR's merge commit is the only release source. |
 | `develop` | Integration branch for the next release | Reviewed short-lived task branches. |
 | Short-lived task branches such as `feat/*` and `fix/*` | One bounded task in one worktree | Branch from `develop`, then return to `develop` through review. |
 
-The target flow is:
+The active flow is:
 
 1. Start each ordinary change from current `develop` in a dedicated branch and worktree.
 2. Merge reviewed task branches into `develop`; do not merge ordinary work directly into `main`.
 3. When `develop` is release-ready, promote it through one reviewed `develop` → `main` pull request.
-4. Use the exact promoted `main` commit as the release SHA. Never release an unpromoted task or
-   integration commit.
-5. Keep `main` as the default branch. Do not retain `dev` as an alias or a third long-lived branch.
+4. Use the resulting merge commit on `main` as the exact release SHA. Never release an unpromoted task
+   or integration commit.
+5. Keep `main` as the default and deployment branch. There is no `dev` alias or third long-lived branch.
 
-The policy becomes active only after one rollout change lands all of these items together:
-
-- create the remote `develop` branch from the chosen `main` baseline;
-- replace the current `dev` CI and package-lifecycle triggers with `develop`;
-- change release preparation so the version change reaches `main` through the
-  `develop` → `main` promotion instead of a direct release commit;
-- update repository branch protection and pull-request targets; and
-- switch `AGENTS.md` and `CLAUDE.md` from the current direct-to-`main` landing rule.
-
-Until that rollout is implemented and verified, the existing direct-to-`main` landing rule,
-`dev` workflow triggers, and release helper remain the implemented behavior. Do not describe this
-recorded target as active or enforced.
+Branch protection requires Cross-platform CI and Package lifecycle checks on pull requests targeting
+either long-lived branch. Both workflows start for every such pull request, regardless of changed paths,
+so required checks cannot remain pending after a path-filter skip. A `main` promotion pull request must
+also pass the stable `promotion-guard` job, whose required-check context is `Develop promotion guard`.
+It accepts only `develop` as the head branch for `main`; pull requests to `develop` may use ordinary
+task branches.
 
 
 ## Root README
@@ -187,9 +179,11 @@ The maintainer preview acceptance cycle is:
 
 1. Prove the candidate locally with `bun run dev:package reinstall --yes` and
    `bun run dev:package status`.
-2. Land the candidate on `main`, then require the latest exact-SHA CI, Package lifecycle, and Pages
-   runs to complete successfully. Publish an unused prerelease such as `0.2.0-preview.1` with
-   `bun run release 0.2.0-preview.1 --tag preview --publish`.
+2. On clean `develop`, prepare an unused prerelease such as `0.2.0-preview.1` with
+   `bun run release:prepare 0.2.0-preview.1`, commit the version change, and include it in a reviewed
+   `develop` → `main` promotion. After the promotion merge, require the latest exact-SHA CI, Package
+   lifecycle, and Pages runs for that merge commit to complete successfully. From clean `main`, publish
+   it with `bun run release 0.2.0-preview.1 --tag preview --publish`.
 3. Stop the currently running proxy and replace only the global Bun package. Do not use the destructive
    product-level uninstall command:
    `frogp stop`, `bun remove -g frogprogsy`, `bun add -g frogprogsy@preview`, then `frogp refresh`.
@@ -199,11 +193,14 @@ The maintainer preview acceptance cycle is:
    release-critical provider. Confirm package-only removal preserves `~/.frogprogsy`, Claude homes, Keychain
    items, grants, and credentials.
 5. Reinstall `frogprogsy@latest` and confirm rollback to the supported channel works.
-6. If validation fails, fix forward on `main` and publish `0.2.0-preview.2` (or the next unused prerelease). Never
-   replace or retag the failed preview tarball.
-7. If validation passes, publish the stable SemVer as a separate release. Apart from the version metadata, the
-   stable candidate must match the previewed contents; any product change requires another preview cycle. The
-   stable release still reruns every exact-SHA gate and registry smoke check.
+6. If validation fails, fix forward through a task branch and `develop`, prepare the next unused prerelease,
+   and promote it to `main`; then publish `0.2.0-preview.2` (or the next unused prerelease). Never replace
+   or retag the failed preview tarball.
+7. If validation passes, prepare the stable SemVer on `develop`, include the version change in a new
+   `develop` → `main` promotion, and publish that promoted merge commit as a separate release. Apart from
+   the version metadata, the stable candidate must match the previewed contents; any product change
+   requires another preview cycle. The stable release still reruns every exact-SHA gate and registry smoke
+   check.
 
 Retain the preview workflow URL, package integrity, tested operating systems, and acceptance results in the
 release record. A passing local development package is not evidence that the public preview tarball was
@@ -211,24 +208,33 @@ installed, and a passing preview is not permission to bypass the stable release 
 
 ### Release sequence
 
-1. Land the release contents on `main` through the normal branch/worktree path.
-2. Choose an unused version and update `package.json` in a dedicated release commit.
-3. Wait for the latest Cross-platform CI, Package lifecycle, and Pages runs for that exact commit SHA
-   to complete successfully. Missing, queued, superseded, cancelled, or failed latest runs block release.
-4. Run the release workflow as a dry-run for that SHA. It extracts
-   `package/src/generated/model-catalog-v1.json` from the exact Bun-built tarball and requires it to match
-   the deployed `catalog/v1/model-catalog.json` source SHA, revision, and digest.
-5. Dispatch a real publish for the same SHA with `preview` for a prerelease version or `latest` for a
-   stable version. The real publish repeats the same catalog gate. If `main` moved after the dry-run,
-   repeat every exact-SHA gate and dry-run on the new release SHA.
+1. Merge the release contents into `develop` through the normal task-branch and worktree path.
+2. On clean `develop`, choose an unused version and run `bun run release:prepare <version>`. The helper
+   checks that the version is unused and changes only `package.json`; it does not commit, push, create a
+   pull request, or dispatch a workflow.
+3. Commit the version change on `develop` and include it in a reviewed `develop` → `main` promotion.
+   The promotion PR's merge commit is the only release source.
+4. On clean `main`, run `bun run release <version> [--tag latest|preview]` as a dry-run. The requested
+   version must exactly match `package.json`. The helper confirms that the version is unused, runs
+   typecheck, requires `HEAD` to equal `origin/main`, then waits for the latest Cross-platform CI, Package
+   lifecycle, and Pages runs for that exact SHA. Missing, queued, superseded, cancelled, or failed latest
+   runs block release. The dry-run extracts `package/src/generated/model-catalog-v1.json` from the exact
+   Bun-built tarball and requires it to match the deployed `catalog/v1/model-catalog.json` source SHA,
+   revision, and digest.
+5. From the same `main` SHA, run `bun run release <version> [--tag latest|preview] --publish`. The helper
+   checks `origin/main == HEAD` again immediately before workflow dispatch. The real publish repeats the
+   catalog gate. If `main` moved after the dry-run, repeat every exact-SHA gate and dry-run on the new
+   release SHA.
 6. Require the registry smoke, immutable `v<version>` tag, and matching GitHub Release to succeed.
 7. Verify the published version and dist-tags with `bun pm view`; retain the workflow URL as the
    release receipt.
 
-`scripts/release.ts` automates the version commit, push, exact-SHA gate wait, workflow dispatch, and
-watch steps. Direct local registry publishing is not a supported shortcut.
-Manual dispatch must set `expected-sha` to the full 40-character release commit. The workflow compares
-it with `GITHUB_SHA` before any registry work; `scripts/release.ts` supplies it automatically.
+`scripts/release.ts` waits for exact-SHA gates, dispatches the release workflow, and watches it. Its
+`release` path never changes `package.json` or runs `git add`, `git commit`, or `git push`. Direct local
+registry publishing is not a supported shortcut. Manual dispatch must set `expected-sha` to the full
+40-character release commit.
+The workflow compares it with `GITHUB_SHA` before any registry work; `scripts/release.ts` supplies it
+automatically.
 
 ### First-package bootstrap
 
@@ -260,11 +266,11 @@ the next prerelease number. Metadata disagreement between the registry, Git tag,
 blocks automation until maintainers either repair the missing metadata at the same immutable commit
 or choose a new version. The normal release workflow does not perform ad-hoc dist-tag rollback.
 
-The Pages catalog is also recovered by fixing forward. Revert or correct the bad catalog inputs on
-`main`, increase `catalogRevision` when provider/model data changes, and wait for the new commit's Pages
-deployment. Then rebuild and release only that new exact SHA. Do not manually replace the Pages artifact,
-deploy an older SHA, lower/reuse a revision for changed data, or publish a tarball whose catalog does not
-match Pages.
+The Pages catalog is also recovered by fixing forward. Correct the bad catalog inputs through a task
+branch and `develop`, increase `catalogRevision` when provider/model data changes, and promote the fix to
+`main`. Wait for the new promotion merge commit's Pages deployment, then build and release only that exact
+SHA. Do not manually replace the Pages artifact, deploy an older SHA, lower or reuse a revision for changed
+data, or publish a tarball whose catalog does not match Pages.
 
 ## Release workflow
 
@@ -273,9 +279,11 @@ and the `frogp` bin — and only that bin. The package must never declare a `cla
 shadow the user's own Claude Code on `PATH` (`structure/02_config-and-claude-home.md`). Install verification
 enforces this in one direction only: a successful new install requires that any Bun-global `claude` is *not*
 frogprogsy-owned. Rollback verification does not apply that rule, because a restored older version legitimately
-owns one. `prepublishOnly` generates the tracked-`HEAD` catalog before typecheck and GUI build, and
-`scripts/release.ts` uses Bun for registry preflight, version updates, and release orchestration. The
-workflow then creates one allowlisted, hash-recorded tarball through `scripts/dev-package.ts`. Each
+owns one. `prepublishOnly` generates the tracked-`HEAD` catalog before typecheck and GUI build.
+`scripts/release.ts prepare` uses Bun for registry preflight and the `develop`-only version update; the
+`release` path uses Bun for registry preflight, typecheck, and release orchestration without changing
+tracked files. The workflow then creates one allowlisted, hash-recorded tarball through
+`scripts/dev-package.ts`. Each
 workflow run verifies the exact tarball it produced and compares its extracted strict catalog with the
 exact-SHA Pages catalog before either dry-run or real publish. Dry-run validates the tarball with Bun,
 while a real run passes that same verified path to the final `npm publish`. npm is otherwise confined to
