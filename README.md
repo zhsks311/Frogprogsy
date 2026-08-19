@@ -17,7 +17,7 @@ bun add -g frogprogsy
 frogp --version
 ```
 
-The untagged package follows the stable `latest` channel, currently `0.0.1`. To try the current prerelease, `0.0.2-preview.1`, install the `preview` channel explicitly:
+The untagged package follows the stable `latest` channel. To try a prerelease, install the `preview` channel explicitly:
 
 ```bash
 bun add -g frogprogsy@preview
@@ -97,7 +97,7 @@ frogp claude reload-models <profile-id>
 
 Already-open `/model` screens do not hot reload; start a new `claude` session or resume one so Claude Code refetches `/v1/models`.
 
-FrogProgsy checks for validated model updates when the proxy starts. Restart the proxy to activate a newer list; if the check fails, FrogProgsy compares the last validated saved copy with the model data bundled in the installed release and uses the one with the higher catalog revision. Your API keys, selected default, and models you added yourself stay unchanged. Run `frogp models` to see whether each model is validated or only discovered and which model-data source is active.
+FrogProgsy checks for validated model updates when the proxy starts. The bundled catalog records provider-verified current IDs, route-specific context limits, and Claude Code input capabilities; a matching model name on another login or gateway does not inherit those values. Restart the proxy to activate a newer list; if the check fails, FrogProgsy compares the last validated saved copy with the model data bundled in the installed release and uses the one with the higher catalog revision. Your API keys, selected default, and models you added yourself stay unchanged. Run `frogp models` to see whether each model is validated or only discovered and which model-data source is active.
 
 If a configured model has ended or temporarily fails, the dashboard **Models** page and `frogp models continuity` show the affected setting and an exact repair action. Automatic alternatives stay off until you opt in and never rewrite your selected model. See the full [CLI commands](https://zhsks311.github.io/Frogprogsy/reference/cli/#models), [configuration](https://zhsks311.github.io/Frogprogsy/reference/configuration/#model-continuity), and [dashboard workflow](https://zhsks311.github.io/Frogprogsy/guides/web-dashboard/#replacing-models-that-have-ended).
 
@@ -113,7 +113,7 @@ To route to another model or use a `provider/model` alias, continue with [model 
 
 ## Auto-mode review routing (preview)
 
-Choosing GPT as the main model does not automatically choose GPT for Claude Code's two internal auto-mode review calls; they are separate requests. In `0.0.2-preview.1`, choose one explicit reviewer provider/model in the dashboard, then enable **Route auto-mode reviews** for each Claude Code home that should use it. Only that reserved review route uses the selected target; ordinary provider fallback and Model Mixing do not replace it.
+Choosing GPT as the main model does not automatically choose GPT for Claude Code's two internal auto-mode review calls; they are separate requests. To configure this preview feature, choose one explicit reviewer provider/model in the dashboard, then enable **Route auto-mode reviews** for each Claude Code home that should use it. Only that reserved review route uses the selected target; ordinary provider fallback and Model Mixing do not replace it.
 
 This behavior was verified with Claude Code 2.1.220. After changing the home setting, restart or resume the Claude Code session. While the route is enabled, switch the main model with its exact FrogProgsy gateway catalog entry instead of Claude Code's built-in `sonnet` shortcut. See [Dashboard and Activity](https://zhsks311.github.io/Frogprogsy/guides/web-dashboard/#auto-mode-review-route) and the [configuration reference](https://zhsks311.github.io/Frogprogsy/reference/configuration/#auto-mode-review-routing).
 

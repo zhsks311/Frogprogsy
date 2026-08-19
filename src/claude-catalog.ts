@@ -12,6 +12,7 @@ import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJa
 import { materializeModelAliases } from "./model-aliases";
 import { mixAliasId } from "./model-mixing/select";
 import { shouldCaseFoldMetadataModelId } from "./providers/derive";
+import { getProviderRegistryEntry, PROVIDER_REGISTRY } from "./providers/registry";
 
 function catalogBackupPath(profileId?: string): string {
   return profileId ? join(getConfigDir(), "claude-profiles", profileId, "catalog-backup.json") : join(getConfigDir(), "catalog-backup.json");
@@ -232,6 +233,14 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry): RawEntry {
   return ensureStrictCatalogFields(entry);
 }
 
+function isVerifiedJawcodeMetadata(provider: string, jawcodeProvider: string, modelId: string): boolean {
+  if (jawcodeProvider === "openrouter") return true;
+  const entries = PROVIDER_REGISTRY.filter(entry =>
+    entry.jawcodeBundle === jawcodeProvider
+    && (entry.id === provider || entry.extraMetadataAliases?.includes(provider) === true));
+  return entries.some(entry => entry.verifiedJawcodeModels?.includes(modelId) === true);
+}
+
 function applyJawcodeCatalogMetadata(entry: RawEntry, slug: string): void {
   const slash = slug.indexOf("/");
   if (slash < 0) return;
@@ -239,6 +248,7 @@ function applyJawcodeCatalogMetadata(entry: RawEntry, slug: string): void {
   const modelId = slug.slice(slash + 1);
   const jawcodeProvider = resolveJawcodeProvider(provider);
   if (!jawcodeProvider) return;
+  if (!isVerifiedJawcodeMetadata(provider, jawcodeProvider, modelId)) return;
   const meta = getJawcodeModelMetadata(jawcodeProvider, modelId)
     ?? (shouldCaseFoldMetadataModelId(provider) ? getJawcodeModelMetadataCaseInsensitive(jawcodeProvider, modelId) : undefined);
   if (!meta) return;
@@ -415,6 +425,7 @@ type ProviderModelsApiItem = {
   visibility?: string;
   priority?: number;
   context_window?: number;
+  max_context_window?: number;
   id: string;
   owned_by?: string;
   max_model_len?: number;
@@ -509,10 +520,11 @@ function catalogHintsFromModelsApiItem(providerName: string, item: ProviderModel
   const capabilities = item.metadata?.capabilities;
   const limits = item.metadata?.limits;
   const contextWindow =
-    typeof item.context_window === "number" ? item.context_window
-      : typeof limits?.max_context_length === "number" ? limits.max_context_length
-        : typeof item.max_model_len === "number" ? item.max_model_len
-          : undefined;
+    typeof item.max_context_window === "number" ? item.max_context_window
+      : typeof item.context_window === "number" ? item.context_window
+        : typeof limits?.max_context_length === "number" ? limits.max_context_length
+          : typeof item.max_model_len === "number" ? item.max_model_len
+            : undefined;
   const reasoningEfforts = capabilities && typeof capabilities.reasoning_effort === "boolean"
     ? (capabilities.reasoning_effort
       ? ((providerName === "neuralwatt" || providerName === "zai") && isGlm52ModelId(item.id)
@@ -681,7 +693,10 @@ export function augmentRoutedModelsWithJawcodeMetadata(models: CatalogModel[], p
     if (providers?.[provider]?.liveModels === false) continue;
     const jawcodeProvider = resolveJawcodeProvider(provider);
     if (!jawcodeProvider) continue;
+    const registryEntry = getProviderRegistryEntry(provider);
+    const verifiedModelIds = new Set(registryEntry?.verifiedJawcodeModels ?? []);
     for (const meta of listJawcodeModelMetadata(jawcodeProvider)) {
+      if (jawcodeProvider !== "openrouter" && !verifiedModelIds.has(meta.id)) continue;
       const key = `${provider}/${meta.id}`;
       if (seen.has(key)) continue;
       seen.add(key);

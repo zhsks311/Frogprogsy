@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "catalogRevision": 2,
-  "catalogDigest": "f256684912b14fa7748d3a7b9379450ea885246932b7d0e3d8cfced8020066d2",
-  "sourceCommit": "68fe2b7e2b75fbc30c9970736e4462142b4eefa6",
-  "generatedAt": "2026-08-13T12:27:54+09:00",
+  "catalogRevision": 3,
+  "catalogDigest": "cc98df40af3faeefd140d1091782b08fc78f66d93943d1f288c2a91047915ed1",
+  "sourceCommit": "2411cf7bd16ca29211ced6530a40a399ad81b4da",
+  "generatedAt": "2026-08-19T18:16:21+09:00",
   "minFrogprogsyVersion": "0.0.2-preview.2",
   "providers": [
     {
@@ -12,42 +12,35 @@
     },
     {
       "id": "anthropic",
+      "minFrogprogsyVersion": "0.0.5",
       "defaultModel": "claude-sonnet-5",
+      "retiredModels": [
+        "claude-3-5-sonnet-20240620",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-haiku-20240307",
+        "claude-opus-4-1-20250805",
+        "claude-opus-4-20250514",
+        "claude-sonnet-4-20250514"
+      ],
+      "unmanagedModels": [
+        "claude-opus-4-0",
+        "claude-opus-4-1",
+        "claude-opus-4-6[1m]",
+        "claude-opus-4-7[1m]",
+        "claude-opus-4-8[1m]",
+        "claude-sonnet-4-0",
+        "claude-sonnet-4-6[1m]"
+      ],
       "models": [
-        {
-          "id": "claude-3-5-sonnet-20240620",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "claude-3-5-sonnet-20241022",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "claude-3-haiku-20240307",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
         {
           "id": "claude-fable-5",
           "contextWindow": 1000000,
           "inputModalities": [
             "text",
             "image"
-          ]
+          ],
+          "noTemperature": true,
+          "noTopP": true
         },
         {
           "id": "claude-haiku-4-5",
@@ -59,38 +52,6 @@
         },
         {
           "id": "claude-haiku-4-5-20251001",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "claude-opus-4-0",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "claude-opus-4-1",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "claude-opus-4-1-20250805",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "claude-opus-4-20250514",
           "contextWindow": 200000,
           "inputModalities": [
             "text",
@@ -122,30 +83,14 @@
           ]
         },
         {
-          "id": "claude-opus-4-6[1m]",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "wireModelId": "claude-opus-4-6"
-        },
-        {
           "id": "claude-opus-4-7",
           "contextWindow": 1000000,
           "inputModalities": [
             "text",
             "image"
-          ]
-        },
-        {
-          "id": "claude-opus-4-7[1m]",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text",
-            "image"
           ],
-          "wireModelId": "claude-opus-4-7"
+          "noTemperature": true,
+          "noTopP": true
         },
         {
           "id": "claude-opus-4-8",
@@ -153,39 +98,19 @@
           "inputModalities": [
             "text",
             "image"
-          ]
+          ],
+          "noTemperature": true,
+          "noTopP": true
         },
         {
-          "id": "claude-opus-4-8[1m]",
+          "id": "claude-opus-5",
           "contextWindow": 1000000,
           "inputModalities": [
             "text",
             "image"
           ],
-          "wireModelId": "claude-opus-4-8"
-        },
-        {
-          "id": "claude-opus-5",
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "claude-sonnet-4-0",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "claude-sonnet-4-20250514",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          "noTemperature": true,
+          "noTopP": true
         },
         {
           "id": "claude-sonnet-4-5",
@@ -205,27 +130,21 @@
         },
         {
           "id": "claude-sonnet-4-6",
-          "contextWindow": 200000,
+          "contextWindow": 1000000,
           "inputModalities": [
             "text",
             "image"
           ]
         },
         {
-          "id": "claude-sonnet-4-6[1m]",
-          "contextWindow": 200000,
+          "id": "claude-sonnet-5",
+          "contextWindow": 1000000,
           "inputModalities": [
             "text",
             "image"
           ],
-          "wireModelId": "claude-sonnet-4-6"
-        },
-        {
-          "id": "claude-sonnet-5",
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          "noTemperature": true,
+          "noTopP": true
         }
       ]
     },
@@ -235,10 +154,16 @@
     },
     {
       "id": "cerebras",
-      "defaultModel": "llama-3.3-70b",
+      "defaultModel": "gpt-oss-120b",
+      "retiredModels": [
+        "llama-3.3-70b"
+      ],
       "models": [
         {
-          "id": "llama-3.3-70b"
+          "id": "gemma-4-31b"
+        },
+        {
+          "id": "gpt-oss-120b"
         }
       ]
     },
@@ -248,84 +173,104 @@
     },
     {
       "id": "codex",
-      "defaultModel": "gpt-5.5",
+      "defaultModel": "gpt-5.6-sol",
       "models": [
         {
           "id": "gpt-5.3-codex-spark",
           "contextWindow": 128000,
+          "inputModalities": [
+            "text"
+          ],
           "reasoningEfforts": [
             "low",
             "medium",
-            "high"
-          ],
-          "noTemperature": true,
-          "noTopP": true
+            "high",
+            "xhigh"
+          ]
         },
         {
           "id": "gpt-5.4",
-          "contextWindow": 272000,
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [
             "low",
             "medium",
-            "high"
-          ],
-          "noTemperature": true,
-          "noTopP": true
+            "high",
+            "xhigh"
+          ]
         },
         {
           "id": "gpt-5.4-mini",
           "contextWindow": 272000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [
             "low",
             "medium",
-            "high"
-          ],
-          "noTemperature": true,
-          "noTopP": true
+            "high",
+            "xhigh"
+          ]
         },
         {
           "id": "gpt-5.5",
           "contextWindow": 272000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [
             "low",
             "medium",
-            "high"
-          ],
-          "noTemperature": true,
-          "noTopP": true
+            "high",
+            "xhigh"
+          ]
         },
         {
           "id": "gpt-5.6-luna",
-          "contextWindow": 272000,
+          "contextWindow": 872000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [
             "low",
             "medium",
-            "high"
-          ],
-          "noTemperature": true,
-          "noTopP": true
+            "high",
+            "xhigh"
+          ]
         },
         {
           "id": "gpt-5.6-sol",
-          "contextWindow": 272000,
+          "contextWindow": 872000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [
             "low",
             "medium",
-            "high"
-          ],
-          "noTemperature": true,
-          "noTopP": true
+            "high",
+            "xhigh"
+          ]
         },
         {
           "id": "gpt-5.6-terra",
-          "contextWindow": 272000,
+          "contextWindow": 872000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [
             "low",
             "medium",
-            "high"
-          ],
-          "noTemperature": true,
-          "noTopP": true
+            "high",
+            "xhigh"
+          ]
         }
       ]
     },
@@ -339,11 +284,39 @@
       "models": [
         {
           "id": "deepseek-v4-flash",
-          "contextWindow": 1000000
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "reasoningEffortMap": {
+            "max": "max",
+            "xhigh": "max"
+          },
+          "noPenalty": true,
+          "preserveReasoningContent": true
         },
         {
           "id": "deepseek-v4-pro",
-          "contextWindow": 1000000
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "reasoningEffortMap": {
+            "max": "max",
+            "xhigh": "max"
+          },
+          "noPenalty": true,
+          "preserveReasoningContent": true
         }
       ]
     },
@@ -365,59 +338,48 @@
     },
     {
       "id": "google",
-      "defaultModel": "gemini-3-pro",
+      "minFrogprogsyVersion": "0.0.5",
+      "defaultModel": "gemini-3.7-flash",
+      "retiredModels": [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+        "gemini-1.5-pro",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-2.5-flash-lite-preview-06-17",
+        "gemini-2.5-flash-lite-preview-09-2025",
+        "gemini-2.5-flash-preview-04-17",
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.5-flash-preview-09-2025",
+        "gemini-2.5-pro-preview-05-06",
+        "gemini-2.5-pro-preview-06-05",
+        "gemini-3-pro-preview",
+        "gemini-3.1-flash-lite-preview"
+      ],
+      "unmanagedModels": [
+        "gemini-3-pro",
+        "gemini-flash-lite-latest",
+        "gemini-live-2.5-flash",
+        "gemini-live-2.5-flash-preview-native-audio",
+        "gemma-3-27b-it",
+        "gemma-4-26b",
+        "gemma-4-26b-it",
+        "gemma-4-31b",
+        "gemma-4-E2B-it",
+        "gemma-4-E4B-it"
+      ],
       "models": [
-        {
-          "id": "gemini-1.5-flash",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "gemini-1.5-flash-8b",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "gemini-1.5-pro",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "gemini-2.0-flash",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "gemini-2.0-flash-lite",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
         {
           "id": "gemini-2.5-flash",
           "contextWindow": 1048576,
           "inputModalities": [
             "text",
             "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
           ]
         },
         {
@@ -426,46 +388,11 @@
           "inputModalities": [
             "text",
             "image"
-          ]
-        },
-        {
-          "id": "gemini-2.5-flash-lite-preview-06-17",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "gemini-2.5-flash-lite-preview-09-2025",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "gemini-2.5-flash-preview-04-17",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "gemini-2.5-flash-preview-05-20",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "gemini-2.5-flash-preview-09-2025",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
           ]
         },
         {
@@ -474,22 +401,11 @@
           "inputModalities": [
             "text",
             "image"
-          ]
-        },
-        {
-          "id": "gemini-2.5-pro-preview-05-06",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "gemini-2.5-pro-preview-06-05",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
           ]
         },
         {
@@ -498,17 +414,11 @@
           "inputModalities": [
             "text",
             "image"
-          ]
-        },
-        {
-          "id": "gemini-3-pro"
-        },
-        {
-          "id": "gemini-3-pro-preview",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
           ]
         },
         {
@@ -517,14 +427,9 @@
           "inputModalities": [
             "text",
             "image"
-          ]
-        },
-        {
-          "id": "gemini-3.1-flash-lite-preview",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
+          ],
+          "reasoningEfforts": [
+            "high"
           ]
         },
         {
@@ -533,6 +438,11 @@
           "inputModalities": [
             "text",
             "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
           ]
         },
         {
@@ -541,6 +451,11 @@
           "inputModalities": [
             "text",
             "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
           ]
         },
         {
@@ -549,6 +464,50 @@
           "inputModalities": [
             "text",
             "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        {
+          "id": "gemini-3.5-flash-lite",
+          "contextWindow": 1048576,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        {
+          "id": "gemini-3.6-flash",
+          "contextWindow": 1048576,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        {
+          "id": "gemini-3.7-flash",
+          "contextWindow": 1048576,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
           ]
         },
         {
@@ -557,46 +516,11 @@
           "inputModalities": [
             "text",
             "image"
-          ]
-        },
-        {
-          "id": "gemini-flash-lite-latest",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "gemini-live-2.5-flash",
-          "contextWindow": 128000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "gemini-live-2.5-flash-preview-native-audio",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "gemma-3-27b-it",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text",
-            "image"
           ],
-          "noReasoning": true
-        },
-        {
-          "id": "gemma-4-26b",
-          "contextWindow": 256000,
-          "inputModalities": [
-            "text",
-            "image"
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
           ]
         },
         {
@@ -605,22 +529,9 @@
           "inputModalities": [
             "text",
             "image"
-          ]
-        },
-        {
-          "id": "gemma-4-26b-it",
-          "contextWindow": 256000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "gemma-4-31b",
-          "contextWindow": 256000,
-          "inputModalities": [
-            "text",
-            "image"
+          ],
+          "reasoningEfforts": [
+            "high"
           ]
         },
         {
@@ -629,22 +540,9 @@
           "inputModalities": [
             "text",
             "image"
-          ]
-        },
-        {
-          "id": "gemma-4-E2B-it",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "gemma-4-E4B-it",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text",
-            "image"
+          ],
+          "reasoningEfforts": [
+            "high"
           ]
         }
       ]
@@ -663,16 +561,46 @@
     },
     {
       "id": "kimi",
-      "defaultModel": "kimi-k2.7-code",
+      "defaultModel": "k3",
       "models": [
         {
-          "id": "kimi-k2-0905-preview",
-          "reasoningEfforts": [],
-          "noReasoning": true,
+          "id": "k3",
+          "contextWindow": 262144,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "reasoningEffortMap": {
+            "max": "max",
+            "xhigh": "max"
+          },
           "preserveReasoningContent": true
         },
         {
-          "id": "kimi-k2.5",
+          "id": "k3-256k",
+          "contextWindow": 262144,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "reasoningEffortMap": {
+            "max": "max",
+            "xhigh": "max"
+          },
+          "preserveReasoningContent": true
+        },
+        {
+          "id": "kimi-for-coding",
           "contextWindow": 262144,
           "inputModalities": [
             "text",
@@ -680,88 +608,81 @@
           ],
           "reasoningEfforts": [],
           "noReasoning": true,
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
           "preserveReasoningContent": true
         },
         {
-          "id": "kimi-k2.6",
+          "id": "kimi-for-coding-highspeed",
+          "contextWindow": 262144,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [],
           "noReasoning": true,
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
-          "preserveReasoningContent": true
-        },
-        {
-          "id": "kimi-k2.7-code",
-          "reasoningEfforts": [],
-          "noReasoning": true,
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
-          "autoToolChoiceOnly": true,
-          "preserveReasoningContent": true
-        },
-        {
-          "id": "kimi-k2.7-code-highspeed",
-          "reasoningEfforts": [],
-          "noReasoning": true,
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
-          "autoToolChoiceOnly": true,
           "preserveReasoningContent": true
         }
       ]
     },
     {
       "id": "kimi-code",
-      "defaultModel": "kimi-k2.7-code",
+      "defaultModel": "k3",
       "models": [
         {
-          "id": "kimi-k2-0905-preview",
+          "id": "k3",
+          "contextWindow": 262144,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "reasoningEffortMap": {
+            "max": "max",
+            "xhigh": "max"
+          },
+          "preserveReasoningContent": true
+        },
+        {
+          "id": "k3-256k",
+          "contextWindow": 262144,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "reasoningEffortMap": {
+            "max": "max",
+            "xhigh": "max"
+          },
+          "preserveReasoningContent": true
+        },
+        {
+          "id": "kimi-for-coding",
+          "contextWindow": 262144,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [],
           "noReasoning": true,
           "preserveReasoningContent": true
         },
         {
-          "id": "kimi-k2.5",
+          "id": "kimi-for-coding-highspeed",
+          "contextWindow": 262144,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [],
           "noReasoning": true,
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
-          "preserveReasoningContent": true
-        },
-        {
-          "id": "kimi-k2.6",
-          "reasoningEfforts": [],
-          "noReasoning": true,
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
-          "preserveReasoningContent": true
-        },
-        {
-          "id": "kimi-k2.7-code",
-          "reasoningEfforts": [],
-          "noReasoning": true,
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
-          "autoToolChoiceOnly": true,
-          "preserveReasoningContent": true
-        },
-        {
-          "id": "kimi-k2.7-code-highspeed",
-          "reasoningEfforts": [],
-          "noReasoning": true,
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
-          "autoToolChoiceOnly": true,
           "preserveReasoningContent": true
         }
       ]
@@ -776,143 +697,99 @@
     },
     {
       "id": "minimax",
-      "defaultModel": "MiniMax-M2.5",
+      "minFrogprogsyVersion": "0.0.5",
+      "defaultModel": "MiniMax-M3",
+      "retiredModels": [
+        "MiniMax-M2",
+        "MiniMax-M2.1",
+        "MiniMax-M2.1-highspeed",
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed"
+      ],
+      "unmanagedModels": [
+        "MiniMax-M2.5-lightning",
+        "minimax-m3"
+      ],
       "models": [
-        {
-          "id": "MiniMax-M2",
-          "contextWindow": 196608,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "MiniMax-M2.1",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "MiniMax-M2.5",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "MiniMax-M2.5-highspeed",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "MiniMax-M2.5-lightning",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
-        },
         {
           "id": "MiniMax-M2.7",
           "contextWindow": 204800,
           "inputModalities": [
             "text"
-          ]
+          ],
+          "reasoningEfforts": [],
+          "noReasoning": true,
+          "noPenalty": true
         },
         {
           "id": "MiniMax-M2.7-highspeed",
           "contextWindow": 204800,
           "inputModalities": [
             "text"
-          ]
+          ],
+          "reasoningEfforts": [],
+          "noReasoning": true,
+          "noPenalty": true
         },
         {
           "id": "MiniMax-M3",
-          "contextWindow": 512000,
+          "contextWindow": 1000000,
           "inputModalities": [
             "text",
             "image"
-          ]
-        },
-        {
-          "id": "minimax-m3",
-          "contextWindow": 512000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          ],
+          "reasoningEfforts": [],
+          "noReasoning": true,
+          "noPenalty": true
         }
       ]
     },
     {
       "id": "minimax-cn",
-      "defaultModel": "MiniMax-M2.5",
+      "minFrogprogsyVersion": "0.0.5",
+      "defaultModel": "MiniMax-M3",
+      "retiredModels": [
+        "MiniMax-M2",
+        "MiniMax-M2.1",
+        "MiniMax-M2.1-highspeed",
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed"
+      ],
+      "unmanagedModels": [
+        "MiniMax-M2.5-lightning",
+        "minimax-m3"
+      ],
       "models": [
-        {
-          "id": "MiniMax-M2",
-          "contextWindow": 196608,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "MiniMax-M2.1",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "MiniMax-M2.5",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "MiniMax-M2.5-highspeed",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "MiniMax-M2.5-lightning",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
-        },
         {
           "id": "MiniMax-M2.7",
           "contextWindow": 204800,
           "inputModalities": [
             "text"
-          ]
+          ],
+          "reasoningEfforts": [],
+          "noReasoning": true,
+          "noPenalty": true
         },
         {
           "id": "MiniMax-M2.7-highspeed",
           "contextWindow": 204800,
           "inputModalities": [
             "text"
-          ]
+          ],
+          "reasoningEfforts": [],
+          "noReasoning": true,
+          "noPenalty": true
         },
         {
           "id": "MiniMax-M3",
-          "contextWindow": 512000,
+          "contextWindow": 1000000,
           "inputModalities": [
             "text",
             "image"
-          ]
-        },
-        {
-          "id": "minimax-m3",
-          "contextWindow": 512000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          ],
+          "reasoningEfforts": [],
+          "noReasoning": true,
+          "noPenalty": true
         }
       ]
     },
@@ -921,20 +798,22 @@
       "defaultModel": "codestral-latest",
       "models": [
         {
-          "id": "codestral-latest"
+          "id": "codestral-2508",
+          "contextWindow": 128000
+        },
+        {
+          "id": "codestral-latest",
+          "contextWindow": 128000
         }
       ]
     },
     {
       "id": "moonshot",
       "defaultModel": "kimi-k2.7-code",
+      "retiredModels": [
+        "kimi-k2-0905-preview"
+      ],
       "models": [
-        {
-          "id": "kimi-k2-0905-preview",
-          "reasoningEfforts": [],
-          "noReasoning": true,
-          "preserveReasoningContent": true
-        },
         {
           "id": "kimi-k2.5",
           "contextWindow": 262144,
@@ -951,6 +830,11 @@
         },
         {
           "id": "kimi-k2.6",
+          "contextWindow": 262144,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [],
           "noReasoning": true,
           "noTemperature": true,
@@ -960,6 +844,11 @@
         },
         {
           "id": "kimi-k2.7-code",
+          "contextWindow": 262144,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [],
           "noReasoning": true,
           "noTemperature": true,
@@ -970,6 +859,11 @@
         },
         {
           "id": "kimi-k2.7-code-highspeed",
+          "contextWindow": 262144,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [],
           "noReasoning": true,
           "noTemperature": true,
@@ -980,7 +874,11 @@
         },
         {
           "id": "kimi-k3",
-          "contextWindow": 1000000,
+          "contextWindow": 1048576,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
           "reasoningEfforts": [
             "low",
             "high",
@@ -1003,8 +901,9 @@
     },
     {
       "id": "neuralwatt",
+      "minFrogprogsyVersion": "0.0.5",
       "defaultModel": "glm-5.2",
-      "retiredModels": [
+      "unmanagedModels": [
         "kimi-k2.5-fast",
         "kimi-k2.6",
         "kimi-k2.6-fast",
@@ -1020,6 +919,7 @@
             "text"
           ],
           "reasoningEfforts": [
+            "low",
             "high",
             "xhigh"
           ],
@@ -1145,10 +1045,6 @@
             "image"
           ],
           "reasoningEfforts": [],
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
-          "autoToolChoiceOnly": true,
           "preserveReasoningContent": true
         },
         {
@@ -1223,100 +1119,79 @@
     },
     {
       "id": "ollama-cloud",
+      "minFrogprogsyVersion": "0.0.5",
       "defaultModel": "glm-5.2",
+      "unmanagedModels": [
+        "deepseek-v4-pro",
+        "gemma4",
+        "qwen3-coder",
+        "qwen3.5"
+      ],
       "models": [
         {
-          "id": "deepseek-v4-flash",
-          "inputModalities": [
-            "text"
-          ]
+          "id": "deepseek-v4-flash:0731"
         },
         {
-          "id": "deepseek-v4-pro",
-          "inputModalities": [
-            "text"
-          ]
+          "id": "deepseek-v4-flash:preview"
         },
         {
-          "id": "gemma4"
+          "id": "deepseek-v4-pro:0813"
         },
         {
-          "id": "glm-4.7",
-          "inputModalities": [
-            "text"
-          ]
+          "id": "deepseek-v4-pro:preview"
         },
         {
-          "id": "glm-5",
-          "inputModalities": [
-            "text"
-          ]
+          "id": "gemma4:31b"
         },
         {
-          "id": "glm-5.1",
-          "inputModalities": [
-            "text"
-          ]
+          "id": "glm-5.1"
         },
         {
-          "id": "glm-5.2",
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "gpt-oss",
-          "inputModalities": [
-            "text"
-          ]
+          "id": "glm-5.2"
         },
         {
           "id": "gpt-oss:120b"
         },
         {
-          "id": "kimi-k2.6"
+          "id": "gpt-oss:20b"
         },
         {
-          "id": "minimax-m2.1",
+          "id": "kimi-k2.6",
           "inputModalities": [
-            "text"
+            "text",
+            "image"
           ]
         },
         {
-          "id": "minimax-m2.5",
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "minimax-m2.7"
+        },
+        {
+          "id": "minimax-m3",
           "inputModalities": [
-            "text"
+            "text",
+            "image"
           ]
         },
         {
-          "id": "minimax-m2.7",
-          "inputModalities": [
-            "text"
-          ]
+          "id": "mistral-large-3:675b"
         },
         {
-          "id": "minimax-m3"
+          "id": "nemotron-3-nano:30b"
         },
         {
-          "id": "nemotron-3-super",
-          "inputModalities": [
-            "text"
-          ]
+          "id": "nemotron-3-super"
         },
         {
-          "id": "nemotron-3-ultra",
-          "inputModalities": [
-            "text"
-          ]
+          "id": "nemotron-3-ultra"
         },
         {
-          "id": "qwen3-coder",
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "qwen3.5"
+          "id": "qwen3.5:397b"
         }
       ]
     },
@@ -1325,7 +1200,18 @@
       "defaultModel": "gpt-5.5",
       "models": [
         {
-          "id": "gpt-5.5"
+          "id": "gpt-5.5",
+          "contextWindow": 1050000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
         }
       ]
     },
@@ -1334,186 +1220,85 @@
       "defaultModel": "kimi-k2.7-code",
       "models": [
         {
-          "id": "deepseek-v4-flash",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text"
-          ]
+          "id": "deepseek-v4-flash"
         },
         {
-          "id": "deepseek-v4-pro",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text"
-          ]
+          "id": "deepseek-v4-pro"
         },
         {
-          "id": "glm-5",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
+          "id": "glm-5"
         },
         {
-          "id": "glm-5.1",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text"
-          ]
+          "id": "glm-5.1"
         },
         {
-          "id": "glm-5.2",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text"
-          ],
-          "reasoningEfforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh"
-          ],
-          "reasoningEffortMap": {
-            "high": "high",
-            "low": "high",
-            "max": "max",
-            "medium": "high",
-            "minimal": "none",
-            "none": "none",
-            "xhigh": "max"
-          },
-          "preserveReasoningContent": true
+          "id": "glm-5.2"
         },
         {
-          "id": "hy3-preview",
-          "contextWindow": 256000,
-          "inputModalities": [
-            "text"
-          ]
+          "id": "glm-5.3"
         },
         {
-          "id": "kimi-k2.5",
-          "contextWindow": 262144,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          "id": "gpt-5.6-luna"
         },
         {
-          "id": "kimi-k2.6",
-          "contextWindow": 262144,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          "id": "grok-4.5"
         },
         {
-          "id": "kimi-k2.7-code",
-          "contextWindow": 262144,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "reasoningEfforts": [],
-          "noReasoning": true,
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
-          "autoToolChoiceOnly": true,
-          "preserveReasoningContent": true
+          "id": "hy3"
         },
         {
-          "id": "kimi-k2.7-code-highspeed",
-          "reasoningEfforts": [],
-          "noReasoning": true,
-          "noTemperature": true,
-          "noTopP": true,
-          "noPenalty": true,
-          "autoToolChoiceOnly": true,
-          "preserveReasoningContent": true
+          "id": "hy3-preview"
         },
         {
-          "id": "mimo-v2-omni",
-          "contextWindow": 262144,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          "id": "kimi-k2.5"
         },
         {
-          "id": "mimo-v2-pro",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text"
-          ]
+          "id": "kimi-k2.6"
         },
         {
-          "id": "mimo-v2.5",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          "id": "kimi-k2.7-code"
         },
         {
-          "id": "mimo-v2.5-pro",
-          "contextWindow": 1048576,
-          "inputModalities": [
-            "text"
-          ]
+          "id": "kimi-k3"
         },
         {
-          "id": "minimax-m2.5",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
+          "id": "mimo-v2-omni"
         },
         {
-          "id": "minimax-m2.7",
-          "contextWindow": 204800,
-          "inputModalities": [
-            "text"
-          ]
+          "id": "mimo-v2-pro"
         },
         {
-          "id": "minimax-m3",
-          "contextWindow": 512000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          "id": "mimo-v2.5"
         },
         {
-          "id": "qwen3.5-plus",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          "id": "mimo-v2.5-pro"
         },
         {
-          "id": "qwen3.6-plus",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          "id": "minimax-m2.5"
         },
         {
-          "id": "qwen3.7-max",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text"
-          ]
+          "id": "minimax-m2.7"
         },
         {
-          "id": "qwen3.7-plus",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
+          "id": "minimax-m3"
+        },
+        {
+          "id": "muse-spark-1.2-contributor"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.8-max"
         }
       ]
     },
@@ -4272,11 +4057,14 @@
     },
     {
       "id": "umans",
+      "minFrogprogsyVersion": "0.0.5",
       "defaultModel": "umans-coder",
       "retiredModels": [
+        "umans-kimi-k2.7"
+      ],
+      "unmanagedModels": [
         "umans-glm-5.1",
-        "umans-kimi-k2.6",
-        "umans-qwen3.6-35b-a3b"
+        "umans-kimi-k2.6"
       ],
       "escapeBuiltinToolNames": true,
       "models": [
@@ -4296,7 +4084,7 @@
         },
         {
           "id": "umans-deepseek-v4-flash-0731",
-          "contextWindow": 1000000,
+          "contextWindow": 1048576,
           "inputModalities": [
             "text"
           ],
@@ -4304,7 +4092,26 @@
             "low",
             "high",
             "xhigh"
-          ]
+          ],
+          "reasoningEffortMap": {
+            "max": "max",
+            "xhigh": "max"
+          }
+        },
+        {
+          "id": "umans-deepseek-v4-pro-0813",
+          "contextWindow": 1048576,
+          "inputModalities": [
+            "text"
+          ],
+          "reasoningEfforts": [
+            "high",
+            "xhigh"
+          ],
+          "reasoningEffortMap": {
+            "max": "max",
+            "xhigh": "max"
+          }
         },
         {
           "id": "umans-flash",
@@ -4323,7 +4130,8 @@
           "id": "umans-glm-5.2",
           "contextWindow": 405504,
           "inputModalities": [
-            "text"
+            "text",
+            "image"
           ],
           "reasoningEfforts": [
             "high",
@@ -4340,7 +4148,26 @@
           }
         },
         {
-          "id": "umans-kimi-k2.7",
+          "id": "umans-kimi-k3",
+          "contextWindow": 1048576,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "reasoningEffortMap": {
+            "max": "max",
+            "xhigh": "max"
+          },
+          "noTemperature": true,
+          "noTopP": true
+        },
+        {
+          "id": "umans-qwen3.6-35b-a3b",
           "contextWindow": 262144,
           "inputModalities": [
             "text",
@@ -4349,21 +4176,7 @@
           "reasoningEfforts": [
             "low",
             "medium",
-            "high",
-            "xhigh"
-          ]
-        },
-        {
-          "id": "umans-kimi-k3",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "reasoningEfforts": [
-            "low",
-            "high",
-            "xhigh"
+            "high"
           ]
         }
       ]
@@ -4382,160 +4195,36 @@
     },
     {
       "id": "xai",
+      "minFrogprogsyVersion": "0.0.5",
       "defaultModel": "grok-4.5",
+      "retiredModels": [
+        "grok-3",
+        "grok-4-1-fast-non-reasoning",
+        "grok-4-fast-non-reasoning",
+        "grok-code-fast-1"
+      ],
+      "unmanagedModels": [
+        "grok-2",
+        "grok-2-1212",
+        "grok-2-latest",
+        "grok-2-vision",
+        "grok-2-vision-1212",
+        "grok-2-vision-latest",
+        "grok-3-fast",
+        "grok-3-fast-latest",
+        "grok-3-latest",
+        "grok-3-mini",
+        "grok-3-mini-fast",
+        "grok-3-mini-fast-latest",
+        "grok-3-mini-latest",
+        "grok-4",
+        "grok-4-1-fast",
+        "grok-4-fast",
+        "grok-beta",
+        "grok-composer-2.5-fast",
+        "grok-vision-beta"
+      ],
       "models": [
-        {
-          "id": "grok-2",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-2-1212",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-2-latest",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-2-vision",
-          "contextWindow": 8192,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-2-vision-1212",
-          "contextWindow": 8192,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-2-vision-latest",
-          "contextWindow": 8192,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-3",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-3-fast",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-3-fast-latest",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-3-latest",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-3-mini",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "grok-3-mini-fast",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "grok-3-mini-fast-latest",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "grok-3-mini-latest",
-          "contextWindow": 131072,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "grok-4",
-          "contextWindow": 256000,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "grok-4-1-fast",
-          "contextWindow": 2000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "grok-4-1-fast-non-reasoning",
-          "contextWindow": 2000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-4-fast",
-          "contextWindow": 2000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ]
-        },
-        {
-          "id": "grok-4-fast-non-reasoning",
-          "contextWindow": 2000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
-        },
         {
           "id": "grok-4.20-0309-non-reasoning",
           "contextWindow": 1000000,
@@ -4551,11 +4240,13 @@
           "inputModalities": [
             "text",
             "image"
-          ]
+          ],
+          "reasoningEfforts": [],
+          "noPenalty": true
         },
         {
           "id": "grok-4.20-beta-latest-non-reasoning",
-          "contextWindow": 2000000,
+          "contextWindow": 1000000,
           "inputModalities": [
             "text",
             "image"
@@ -4564,19 +4255,28 @@
         },
         {
           "id": "grok-4.20-beta-latest-reasoning",
-          "contextWindow": 2000000,
+          "contextWindow": 1000000,
           "inputModalities": [
             "text",
             "image"
-          ]
+          ],
+          "reasoningEfforts": [],
+          "noPenalty": true
         },
         {
           "id": "grok-4.20-multi-agent-beta-latest",
-          "contextWindow": 2000000,
+          "contextWindow": 1000000,
           "inputModalities": [
             "text",
             "image"
-          ]
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "noPenalty": true
         },
         {
           "id": "grok-4.3",
@@ -4584,19 +4284,27 @@
           "inputModalities": [
             "text",
             "image"
-          ]
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "noPenalty": true
         },
         {
           "id": "grok-4.5",
-          "contextWindow": 500000
-        },
-        {
-          "id": "grok-beta",
-          "contextWindow": 131072,
+          "contextWindow": 500000,
           "inputModalities": [
-            "text"
+            "text",
+            "image"
           ],
-          "noReasoning": true
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "noPenalty": true
         },
         {
           "id": "grok-build-0.1",
@@ -4605,31 +4313,8 @@
             "text",
             "image"
           ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-code-fast-1",
-          "contextWindow": 256000,
-          "inputModalities": [
-            "text"
-          ]
-        },
-        {
-          "id": "grok-composer-2.5-fast",
-          "contextWindow": 200000,
-          "inputModalities": [
-            "text"
-          ],
-          "noReasoning": true
-        },
-        {
-          "id": "grok-vision-beta",
-          "contextWindow": 8192,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "noReasoning": true
+          "reasoningEfforts": [],
+          "noPenalty": true
         }
       ]
     },
@@ -4638,25 +4323,53 @@
       "defaultModel": "mimo-v2.5-pro",
       "models": [
         {
-          "id": "mimo-v2.5-pro"
+          "id": "mimo-v2.5-pro",
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text"
+          ]
         }
       ]
     },
     {
       "id": "zai",
-      "defaultModel": "glm-5.2",
+      "minFrogprogsyVersion": "0.0.5",
+      "defaultModel": "glm-5.3",
+      "unmanagedModels": [
+        "glm-5.2[1m]"
+      ],
       "models": [
         {
-          "id": "glm-4.6"
+          "id": "glm-4.6",
+          "contextWindow": 200000,
+          "inputModalities": [
+            "text"
+          ],
+          "preserveReasoningContent": true
         },
         {
-          "id": "glm-4.7"
+          "id": "glm-4.7",
+          "contextWindow": 204800,
+          "inputModalities": [
+            "text"
+          ],
+          "preserveReasoningContent": true
         },
         {
-          "id": "glm-5"
+          "id": "glm-5",
+          "contextWindow": 204800,
+          "inputModalities": [
+            "text"
+          ],
+          "preserveReasoningContent": true
         },
         {
-          "id": "glm-5.1"
+          "id": "glm-5.1",
+          "contextWindow": 204800,
+          "inputModalities": [
+            "text"
+          ],
+          "preserveReasoningContent": true
         },
         {
           "id": "glm-5.2",
@@ -4681,24 +4394,34 @@
           "preserveReasoningContent": true
         },
         {
-          "id": "glm-5.2[1m]",
+          "id": "glm-5.3",
+          "inputModalities": [
+            "text"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "reasoningEffortMap": {
+            "max": "max",
+            "xhigh": "max"
+          },
+          "preserveReasoningContent": true
+        },
+        {
+          "id": "glm-5.3[1m]",
           "contextWindow": 1000000,
           "inputModalities": [
             "text"
           ],
           "reasoningEfforts": [
             "low",
-            "medium",
             "high",
             "xhigh"
           ],
           "reasoningEffortMap": {
-            "high": "high",
-            "low": "high",
             "max": "max",
-            "medium": "high",
-            "minimal": "none",
-            "none": "none",
             "xhigh": "max"
           },
           "preserveReasoningContent": true

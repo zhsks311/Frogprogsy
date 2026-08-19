@@ -53,8 +53,9 @@ describe("Umans provider", () => {
     enrichProviderFromCatalog("umans", provider);
 
     expect(provider.defaultModel).toBe("umans-coder");
-    expect(provider.models).toContain("umans-kimi-k2.7");
-    expect(provider.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text"]);
+    expect(provider.models).not.toContain("umans-kimi-k2.7");
+    expect(provider.models).toContain("umans-deepseek-v4-pro-0813");
+    expect(provider.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text", "image"]);
     expect(provider.modelContextWindows?.["umans-coder"]).toBe(262_144);
     expect(provider.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
     expect(provider.modelCapabilities?.["umans-coder"]?.input).toEqual(["text", "image"]);

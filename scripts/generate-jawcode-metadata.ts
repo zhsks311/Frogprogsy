@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { deriveJawcodeAliases } from "../src/providers/derive";
+import { PROVIDER_REGISTRY } from "../src/providers/registry";
 
 const PROVIDER_ALIASES = deriveJawcodeAliases();
 
@@ -17,10 +18,6 @@ const sourcePath = process.env.JAWCODE_MODELS_JSON
   ? resolve(process.env.JAWCODE_MODELS_JSON)
   : resolve(process.cwd(), "../jawcode/packages/ai/src/models.json");
 const outPath = resolve(process.cwd(), "src/generated/jawcode-model-metadata.ts");
-const CONTEXT_WINDOW_OVERRIDES: Record<string, number> = {
-  "anthropic/claude-sonnet-4-6": 200_000,
-  "anthropic/claude-sonnet-4-6[1m]": 200_000,
-};
 
 if (!existsSync(sourcePath)) {
   throw new Error(`jawcode models.json not found: ${sourcePath}`);
@@ -28,6 +25,15 @@ if (!existsSync(sourcePath)) {
 
 const registry = JSON.parse(readFileSync(sourcePath, "utf-8")) as Record<string, Record<string, RawModel>>;
 const allowedProviders = Array.from(new Set(Object.values(PROVIDER_ALIASES))).sort();
+const verifiedModelsByBundle = new Map<string, Set<string>>();
+for (const provider of PROVIDER_REGISTRY) {
+  if (provider.jawcodeBundle === undefined || provider.jawcodeBundle === "openrouter") continue;
+  const verified = verifiedModelsByBundle.get(provider.jawcodeBundle) ?? new Set<string>();
+  for (const modelId of provider.verifiedJawcodeModels ?? []) {
+    verified.add(modelId);
+  }
+  verifiedModelsByBundle.set(provider.jawcodeBundle, verified);
+}
 const lines: string[] = [];
 
 function compactRow(values: unknown[]): unknown[] {
@@ -56,10 +62,11 @@ lines.push("const DATA: Record<string, readonly Row[]> = {");
 for (const provider of allowedProviders) {
   const models = registry[provider] ?? {};
   const rows = Object.entries(models)
+    .filter(([id]) => provider === "openrouter" || verifiedModelsByBundle.get(provider)?.has(id) === true)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([id, model]) => compactRow([
       id,
-      CONTEXT_WINDOW_OVERRIDES[`${provider}/${id}`] ?? model.contextWindow,
+      model.contextWindow,
       model.maxTokens,
       Array.isArray(model.input) ? model.input.join(",") : undefined,
       model.reasoning === undefined ? undefined : (model.reasoning ? 1 : 0),

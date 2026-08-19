@@ -287,6 +287,11 @@ function overlayProvider(
       if (typeof retiredModel === "string") modelsById.delete(retiredModel);
     }
   }
+  if (Array.isArray(rawProvider.unmanagedModels)) {
+    for (const unmanagedModel of rawProvider.unmanagedModels) {
+      if (typeof unmanagedModel === "string") modelsById.delete(unmanagedModel);
+    }
+  }
 
   const candidate = {
     ...structuredClone(bundledProvider),

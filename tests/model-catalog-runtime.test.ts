@@ -181,6 +181,33 @@ describe("model catalog candidate validation", () => {
     expect(selectedProvider.retiredModels).toContain(retiredId);
   });
 
+  test("compatible unmanaged list removes bundled validation without retiring the model", () => {
+    const baselineProvider = bundled.providers.find(provider => provider.models.length >= 2)!;
+    const unmanagedId = baselineProvider.models[0]!.id;
+    const remoteProvider: ModelCatalogProviderV1 = {
+      ...structuredClone(baselineProvider),
+      minFrogprogsyVersion: "0.0.5",
+      defaultModel: baselineProvider.models[1]!.id,
+      unmanagedModels: [unmanagedId],
+      models: structuredClone(baselineProvider.models.slice(1)),
+    };
+    const raw = makeDocument({ providers: [remoteProvider] });
+
+    const supported = validateCatalogCandidate(raw, bundled, "0.0.5", NOW);
+    expect(supported.ok).toBeTrue();
+    if (!supported.ok) return;
+    const selectedProvider = supported.document.providers.find(provider => provider.id === baselineProvider.id)!;
+    expect(selectedProvider.models.some(model => model.id === unmanagedId)).toBeFalse();
+    expect(selectedProvider.unmanagedModels).toContain(unmanagedId);
+    expect(selectedProvider.retiredModels ?? []).not.toContain(unmanagedId);
+
+    const oldReader = validateCatalogCandidate(raw, bundled, "0.0.4", NOW);
+    expect(oldReader.ok).toBeTrue();
+    if (!oldReader.ok) return;
+    expect(oldReader.document.providers.find(provider => provider.id === baselineProvider.id))
+      .toEqual(baselineProvider);
+  });
+
   test("rejects a digest mismatch, a too-new envelope, and a future generation time", () => {
     const digestMismatch = { ...makeDocument(), catalogDigest: "f".repeat(64) };
     const tooNew = makeDocument({ minFrogprogsyVersion: "2.0.0" });
