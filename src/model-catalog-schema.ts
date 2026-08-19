@@ -23,6 +23,7 @@ export interface ModelCatalogProviderV1 {
   minFrogprogsyVersion?: string;
   defaultModel?: string;
   retiredModels?: string[];
+  unmanagedModels?: string[];
   escapeBuiltinToolNames?: boolean;
   models: ModelCatalogModelV1[];
 }
@@ -78,6 +79,7 @@ export const modelCatalogProviderV1Schema = z.strictObject({
   minFrogprogsyVersion: nonEmptyStringSchema.optional(),
   defaultModel: nonEmptyStringSchema.optional(),
   retiredModels: z.array(nonEmptyStringSchema).optional(),
+  unmanagedModels: z.array(nonEmptyStringSchema).optional(),
   escapeBuiltinToolNames: z.boolean().optional(),
   models: z.array(modelCatalogModelV1Schema),
 }).superRefine((provider, context) => {
@@ -113,6 +115,33 @@ export const modelCatalogProviderV1Schema = z.strictObject({
           code: "custom",
           message: "A retired model cannot also be active",
           path: ["retiredModels"],
+        });
+      }
+    }
+  }
+
+  if (provider.unmanagedModels !== undefined) {
+    if (provider.unmanagedModels.length > 0 && provider.minFrogprogsyVersion === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "A provider with unmanaged models must declare a minimum Frogprogsy version",
+        path: ["minFrogprogsyVersion"],
+      });
+    }
+    if (!uniqueValues(provider.unmanagedModels)) {
+      context.addIssue({
+        code: "custom",
+        message: "Unmanaged model IDs must be unique",
+        path: ["unmanagedModels"],
+      });
+    }
+    const retiredModelIds = new Set(provider.retiredModels ?? []);
+    for (const unmanagedModel of provider.unmanagedModels) {
+      if (activeModelIds.has(unmanagedModel) || retiredModelIds.has(unmanagedModel)) {
+        context.addIssue({
+          code: "custom",
+          message: "An unmanaged model cannot also be active or retired",
+          path: ["unmanagedModels"],
         });
       }
     }

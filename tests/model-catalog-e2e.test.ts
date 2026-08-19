@@ -54,6 +54,7 @@ function catalogWithModel(revision: number, modelId: string, generatedAt = new D
   const providers = structuredClone(bundled.providers);
   const anthropic = providers.find(provider => provider.id === "anthropic");
   if (!anthropic) throw new Error("bundled anthropic provider is missing");
+  delete anthropic.minFrogprogsyVersion;
   anthropic.models.push({ id: modelId, contextWindow: 123_456, inputModalities: ["text"] });
   return {
     schemaVersion: 1,

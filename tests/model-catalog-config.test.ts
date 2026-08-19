@@ -243,6 +243,16 @@ describe("persisted model catalog config migration", () => {
     expect(migrated.config.providers.neuralwatt.userModels).toEqual(["neural-private"]);
   });
 
+  test("unmanaged 전환된 모델을 사용자 추가 모델로 다시 분류하지 않는다", () => {
+    const catalog = bundledCatalog();
+    catalog.providers.find(provider => provider.id === "umans")!.unmanagedModels = ["umans-glm-5.1"];
+    const legacy = legacyConfig();
+
+    const migrated = migratePersistedCatalogConfig(legacy, catalog, { writeBackup: () => {} });
+
+    expect(migrated.config.providers.umans.userModels).toEqual(["user-added"]);
+  });
+
   test("leaves the input and version marker untouched when backup fails", () => {
     const legacy = legacyConfig();
     const before = JSON.stringify(legacy);

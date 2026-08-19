@@ -388,50 +388,36 @@ describe("Claude Code catalog routed normalization", () => {
     expect(entry?.input_modalities).toEqual([]);
   });
 
-  test("routed entries receive exact jawcode context metadata", () => {
+  test("unverified route metadata does not decorate discovered models", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
       { provider: "opencode-go", id: "deepseek-v4-pro" },
     ]);
     const routed = entries.find(e => e.slug === "opencode-go/deepseek-v4-pro");
 
-    expect(routed?.context_window).toBe(1_000_000);
-    expect(routed?.max_context_window).toBe(1_000_000);
-    expect(routed?.auto_compact_token_limit).toBe(900_000);
+    expect(routed?.context_window).toBe(128_000);
+    expect(routed?.max_context_window).toBe(128_000);
     expect(routed?.input_modalities).toEqual(["text"]);
   });
 
-  test("opencode-go high-risk models use official jawcode metadata in the Claude Code catalog", () => {
-    const cases = [
-      { id: "glm-5.2", context: 1_000_000, auto: 900_000, input: ["text"] },
-      { id: "qwen3.5-plus", context: 1_000_000, auto: 900_000, input: ["text", "image"] },
-      { id: "kimi-k2.7-code", context: 262_144, auto: 235_929, input: ["text", "image"] },
-      { id: "minimax-m3", context: 512_000, auto: 460_800, input: ["text", "image"] },
-      { id: "hy3-preview", context: 256_000, auto: 230_400, input: ["text"] },
-    ] as const;
-    const entries = buildCatalogEntries(nativeTemplate(), [], cases.map(({ id }) => ({ provider: "opencode-go", id })));
+  test("opencode-go models stay route-unknown until live or managed metadata supplies fields", () => {
+    const ids = ["glm-5.2", "qwen3.5-plus", "kimi-k2.7-code", "minimax-m3", "hy3-preview"];
+    const entries = buildCatalogEntries(nativeTemplate(), [], ids.map(id => ({ provider: "opencode-go", id })));
 
-    for (const item of cases) {
-      const routed = entries.find(e => e.slug === `opencode-go/${item.id}`);
-
-      expect(routed?.context_window).toBe(item.context);
-      expect(routed?.max_context_window).toBe(item.context);
-      expect(routed?.auto_compact_token_limit).toBe(item.auto);
-      expect(routed?.input_modalities).toEqual(item.input);
-      expect(getJawcodeModelMetadata("opencode-go", item.id)?.contextWindow).toBe(item.context);
+    for (const id of ids) {
+      const routed = entries.find(e => e.slug === `opencode-go/${id}`);
+      expect(routed?.context_window).toBe(128_000);
+      expect(routed?.max_context_window).toBe(128_000);
+      expect(routed?.input_modalities).toEqual(["text"]);
     }
   });
 
-  test("opencode-go catalog sync appends official rows missing from /v1/models", () => {
+  test("opencode-go catalog sync does not append unverified Jawcode rows", () => {
     const models = augmentRoutedModelsWithJawcodeMetadata(
       [{ provider: "opencode-go", id: "glm-5.2" }],
       ["opencode-go"],
     );
-    const slugs = new Set(models.map(m => `${m.provider}/${m.id}`));
 
-    expect(slugs.has("opencode-go/glm-5.2")).toBe(true);
-    expect(slugs.has("opencode-go/qwen3.5-plus")).toBe(true);
-    expect(slugs.has("opencode-go/hy3-preview")).toBe(true);
-    expect(models.filter(m => `${m.provider}/${m.id}` === "opencode-go/glm-5.2")).toHaveLength(1);
+    expect(models).toEqual([{ provider: "opencode-go", id: "glm-5.2" }]);
   });
 
   test("liveModels false disables jawcode metadata augmentation for exact allowlists", async () => {
@@ -466,7 +452,7 @@ describe("Claude Code catalog routed normalization", () => {
     expect(models).toEqual([]);
   });
 
-  test("jawcode metadata augmentation inherits key readiness for every added non-forward row", async () => {
+  test("live route models retain key readiness without Jawcode-only additions", async () => {
     const savedFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ id: "glm-5.2" }] }), {
       status: 200,
@@ -484,45 +470,42 @@ describe("Claude Code catalog routed normalization", () => {
           "opencode-go": { ...base, authMode: "key" },
         },
       });
-      expect(keyless.length).toBeGreaterThan(1);
-      expect(keyless.every(model => model.provider !== "opencode-go" || model.authReady === false)).toBe(true);
-      expect(keyless.filter(model => model.authReady !== false).some(model => model.provider === "opencode-go")).toBe(false);
+      expect(keyless).toHaveLength(1);
+      expect(keyless[0]?.authReady).toBeFalse();
 
       const keyed = await gatherRoutedModels({
         providers: {
           "opencode-go": { ...base, authMode: "key", apiKey: "sk-ready" },
         },
       });
-      expect(keyed.length).toBeGreaterThan(1);
-      expect(keyed.every(model => model.provider !== "opencode-go" || model.authReady === true)).toBe(true);
+      expect(keyed).toHaveLength(1);
+      expect(keyed[0]?.authReady).toBeTrue();
     } finally {
       globalThis.fetch = savedFetch;
       clearModelCache("opencode-go");
     }
   });
 
-  test("anthropic sonnet 4.6 uses the 200k frogprogsy catalog cap", () => {
+  test("managed Sonnet 4.6 metadata overrides the stale Jawcode snapshot", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
-      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      { provider: "anthropic", id: "claude-sonnet-4-6", contextWindow: 1_000_000 },
     ]);
     const routed = entries.find(e => e.slug === "anthropic/claude-sonnet-4-6");
 
-    expect(routed?.context_window).toBe(200_000);
-    expect(routed?.max_context_window).toBe(200_000);
-    expect(routed?.auto_compact_token_limit).toBe(180_000);
-    expect(getJawcodeModelMetadata("anthropic", "claude-sonnet-4-6")?.contextWindow).toBe(200_000);
+    expect(routed?.context_window).toBe(1_000_000);
+    expect(routed?.max_context_window).toBe(1_000_000);
+    expect(routed?.auto_compact_token_limit).toBe(900_000);
   });
 
-  test("routed entries resolve jawcode provider aliases", () => {
+  test("Kimi Code does not inherit Moonshot Open Platform metadata", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
       { provider: "kimi", id: "kimi-k2.5" },
     ]);
     const routed = entries.find(e => e.slug === "kimi/kimi-k2.5");
 
-    expect(routed?.context_window).toBe(262_144);
-    expect(routed?.max_context_window).toBe(262_144);
-    expect(routed?.auto_compact_token_limit).toBe(235_929);
-    expect(routed?.input_modalities).toEqual(["text", "image"]);
+    expect(routed?.context_window).toBe(128_000);
+    expect(routed?.max_context_window).toBe(128_000);
+    expect(routed?.input_modalities).toEqual(["text"]);
   });
 
   test("unknown routed entries receive conservative strict catalog defaults", () => {
@@ -691,6 +674,31 @@ describe("Claude Code catalog routed normalization", () => {
       contextWindow: 64_000,
       inputModalities: ["text"],
     });
+  });
+
+  test("uses the provider-reported maximum context window when both live limits are present", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      models: [{
+        slug: "gpt-5.6-sol",
+        id: "gpt-5.6-sol",
+        context_window: 272_000,
+        max_context_window: 872_000,
+      }],
+    }))) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "codex-live",
+      providers: {
+        "codex-live": {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          apiKey: "sk-test",
+        },
+      },
+    });
+
+    expect(models.find(model => model.id === "gpt-5.6-sol")?.contextWindow).toBe(872_000);
   });
 
   test("provider config model metadata reaches Claude Code catalog for static models", async () => {

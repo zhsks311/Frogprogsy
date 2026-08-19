@@ -81,8 +81,8 @@ describe("Phase 100 Claude Code-native parity smoke", () => {
     ], undefined, false);
     const routed = catalog.find(entry => entry.slug === "opencode-go/deepseek-v4-pro");
     expect(routed).toMatchObject({
-      context_window: 1_000_000,
-      auto_compact_token_limit: 900_000,
+      context_window: 128_000,
+      auto_compact_token_limit: 115_200,
     });
     expect(routed).not.toHaveProperty("web_search_tool_type");
     expect(routed).not.toHaveProperty("supports_search_tool");

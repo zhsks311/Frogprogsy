@@ -45,7 +45,7 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS).toEqual(deriveKeyLoginMap());
     expect(Object.keys(KEY_LOGIN_PROVIDERS)).toEqual(EXPECTED_KEY_PROVIDER_IDS);
     expect(Object.keys(deriveKeyLoginMap())).toEqual(EXPECTED_KEY_PROVIDER_IDS);
-    expect(KEY_LOGIN_PROVIDERS.minimax.defaultModel).toBe("MiniMax-M2.5");
+    expect(KEY_LOGIN_PROVIDERS.minimax.defaultModel).toBe("MiniMax-M3");
     expect(KEY_LOGIN_PROVIDERS.umans).toMatchObject({
       label: "Umans AI Coding Plan",
       adapter: "anthropic",
@@ -53,11 +53,11 @@ describe("provider registry parity", () => {
       defaultModel: "umans-coder",
       escapeBuiltinToolNames: true,
     });
-    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text", "image"]);
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-coder"]).toBe(262_144);
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
     expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-coder"]?.input).toEqual(["text", "image"]);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text", "image"]);
   });
 
   test("curated provider fallbacks match current provider catalogs", () => {
@@ -68,21 +68,10 @@ describe("provider registry parity", () => {
     });
     expect(xai?.models).toContain("grok-4.5");
 
-    expect(KEY_LOGIN_PROVIDERS.anthropic).toMatchObject({
-      defaultModel: "claude-sonnet-5",
-      models: [
-        "claude-fable-5",
-        "claude-opus-5",
-        "claude-sonnet-5",
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-sonnet-4-6",
-        "claude-sonnet-4-5",
-        "claude-opus-4-5",
-        "claude-haiku-4-5",
-      ],
-    });
+    expect(KEY_LOGIN_PROVIDERS.anthropic.defaultModel).toBe("claude-sonnet-5");
+    expect(KEY_LOGIN_PROVIDERS.anthropic.models).toContain("claude-sonnet-5");
+    expect(KEY_LOGIN_PROVIDERS.anthropic.models).toContain("claude-sonnet-4-5-20250929");
+    expect(KEY_LOGIN_PROVIDERS.anthropic.models).not.toContain("claude-3-5-sonnet-20241022");
     expect(KEY_LOGIN_PROVIDERS.anthropic.modelCapabilities?.["claude-opus-5"]?.input).toEqual(["text", "image"]);
 
     const moonshot = KEY_LOGIN_PROVIDERS.moonshot;
@@ -92,9 +81,8 @@ describe("provider registry parity", () => {
       "kimi-k2.7-code-highspeed",
       "kimi-k2.6",
       "kimi-k2.5",
-      "kimi-k2-0905-preview",
     ]);
-    expect(moonshot.modelContextWindows?.["kimi-k3"]).toBe(1_000_000);
+    expect(moonshot.modelContextWindows?.["kimi-k3"]).toBe(1_048_576);
     expect(moonshot.modelReasoningEfforts?.["kimi-k3"]).toEqual(["low", "high", "xhigh"]);
     expect(configuredReasoningEfforts(moonshot, "kimi-k3")).toEqual(["low", "high", "xhigh"]);
     expect(mapReasoningEffort(moonshot, "kimi-k3", "xhigh")).toBe("max");
@@ -105,13 +93,14 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.umans.models).toEqual([
       "umans-kimi-k3",
       "umans-coder",
-      "umans-kimi-k2.7",
       "umans-glm-5.2",
       "umans-deepseek-v4-flash-0731",
+      "umans-deepseek-v4-pro-0813",
       "umans-flash",
+      "umans-qwen3.6-35b-a3b",
     ]);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-kimi-k3"]).toBe(1_000_000);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-deepseek-v4-flash-0731"]).toBe(1_000_000);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-kimi-k3"]).toBe(1_048_576);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-deepseek-v4-flash-0731"]).toBe(1_048_576);
     expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-kimi-k3"]?.input).toEqual(["text", "image"]);
     expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-deepseek-v4-flash-0731"]?.input).toEqual(["text"]);
     expect(KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-kimi-k3"]).toEqual(["low", "high", "xhigh"]);
@@ -144,7 +133,7 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelCapabilities?.["gemma-4-31b"]?.input).toEqual(["text", "image"]);
     expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelCapabilities?.["deepseek-v4-flash"]?.input).toEqual(["text"]);
     expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["gemma-4-31b"]).toEqual(["xhigh"]);
-    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["deepseek-v4-flash"]).toEqual(["high", "xhigh"]);
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["deepseek-v4-flash"]).toEqual(["low", "high", "xhigh"]);
     expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["kimi-k3"]).toEqual(["low", "high", "xhigh"]);
     expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["kimi-k3-fast"]).toEqual([]);
     expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "gemma-4-31b", "xhigh")).toBe("max");
@@ -152,7 +141,11 @@ describe("provider registry parity", () => {
     expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "kimi-k3", "xhigh")).toBe("max");
 
     expect(KEY_LOGIN_PROVIDERS.zai.models).toContain("glm-4.7");
-    expect(KEY_LOGIN_PROVIDERS.zai.modelContextWindows?.["glm-5.2[1m]"]).toBe(1_000_000);
+    expect(KEY_LOGIN_PROVIDERS.zai.modelContextWindows?.["glm-5.3[1m]"]).toBe(1_000_000);
+
+    expect(KEY_LOGIN_PROVIDERS.google.modelContextWindows?.["gemini-flash-latest"]).toBe(1_048_576);
+    expect(KEY_LOGIN_PROVIDERS.google.modelCapabilities?.["gemini-flash-latest"]?.input).toEqual(["text", "image"]);
+    expect(KEY_LOGIN_PROVIDERS.google.modelReasoningEfforts?.["gemini-flash-latest"]).toEqual(["low", "medium", "high"]);
   });
 
   test("CLI init providers are derived from the registry", () => {
@@ -168,7 +161,7 @@ describe("provider registry parity", () => {
       baseUrl: "https://chatgpt.com/backend-api/codex",
       authMode: "oauth",
       catalogProviderId: "codex",
-      defaultModel: "gpt-5.5",
+      defaultModel: "gpt-5.6-sol",
     });
     expect(OAUTH_PROVIDERS.kimi.providerConfig.catalogProviderId).toBe("kimi");
     expect(OAUTH_PROVIDERS.anthropic).toBeUndefined();
@@ -323,7 +316,7 @@ describe("provider registry parity", () => {
     expect(coder?.context_window).toBe(262_144);
     expect(coder?.input_modalities).toEqual(["text", "image"]);
     expect(glm?.context_window).toBe(405_504);
-    expect(glm?.input_modalities).toEqual(["text"]);
+    expect(glm?.input_modalities).toEqual(["text", "image"]);
     expect(glm?.default_reasoning_level).toBe("high");
   });
 
@@ -331,7 +324,6 @@ describe("provider registry parity", () => {
     expect(deriveJawcodeAliases()).toEqual({
       xai: "xai",
       anthropic: "anthropic",
-      kimi: "moonshot",
       "opencode-go": "opencode-go",
       openrouter: "openrouter",
       google: "google",
@@ -354,7 +346,7 @@ describe("provider registry parity", () => {
     expect("nativeRelay" in adapter && adapter.nativeRelay).toBe(true);
   });
 
-  test("MiniMax metadata lookup tolerates routed lowercase ids", () => {
+  test("unmanaged historical MiniMax ids do not decorate routed lowercase ids", () => {
     expect(getJawcodeModelMetadata("minimax", "MiniMax-M2.5")?.contextWindow).toBe(204_800);
     expect(getJawcodeModelMetadata("minimax", "minimax-m2.5")).toBeUndefined();
 
@@ -362,7 +354,7 @@ describe("provider registry parity", () => {
       { provider: "minimax", id: "minimax-m2.5" },
     ]);
     const routed = entries.find(e => e.slug === "minimax/minimax-m2.5");
-    expect(routed?.context_window).toBe(204_800);
-    expect(routed?.max_context_window).toBe(204_800);
+    expect(routed?.context_window).toBe(128_000);
+    expect(routed?.max_context_window).toBe(128_000);
   });
 });

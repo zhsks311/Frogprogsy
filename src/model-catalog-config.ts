@@ -243,8 +243,10 @@ export function migratePersistedCatalogConfig(
     const managedModels = new Set([
       ...catalogProvider.models.map(model => model.id),
       ...(catalogProvider.retiredModels ?? []),
+      ...(catalogProvider.unmanagedModels ?? []),
       ...(registryEntry.models ?? []),
       ...(registryEntry.retiredModels ?? []),
+      ...(registryEntry.unmanagedModels ?? []),
     ]);
     const legacyModels = Array.isArray(provider.models) ? provider.models : [];
     provider.userModels = uniqueStrings([
