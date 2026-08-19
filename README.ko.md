@@ -17,7 +17,7 @@ bun add -g frogprogsy
 frogp --version
 ```
 
-태그를 붙이지 않으면 안정판 `latest` 채널을 설치하며, 현재 버전은 `0.0.1`입니다. 현재 시험판 `0.0.2-preview.1`을 사용하려면 `preview` 채널을 명시하세요.
+태그를 붙이지 않으면 안정판 `latest` 채널을 설치합니다. 시험판을 사용하려면 `preview` 채널을 명시하세요.
 
 ```bash
 bun add -g frogprogsy@preview
@@ -97,7 +97,7 @@ frogp claude reload-models <profile-id>
 
 이미 열려 있는 `/model` 화면은 hot reload되지 않습니다. 새 `claude` 세션을 시작하거나 resume해야 Claude Code가 `/v1/models`를 다시 가져옵니다.
 
-FrogProgsy는 proxy를 시작할 때 검증된 최신 모델 자료를 확인합니다. 새 목록을 적용하려면 proxy를 다시 시작하세요. 확인에 실패하면 마지막으로 검증해 저장한 사본과 설치 버전의 기본 자료를 비교해 catalog revision이 더 높은 쪽을 사용합니다. API 키, 사용자가 고른 기본 모델, 직접 추가한 모델은 바뀌지 않습니다. `frogp models`를 실행하면 각 모델이 **검증됨**인지 **발견됨**인지, 현재 어떤 모델 자료를 쓰는지 확인할 수 있습니다.
+FrogProgsy는 proxy를 시작할 때 검증된 최신 모델 자료를 확인합니다. 설치 버전의 기본 카탈로그에는 제공 경로별로 확인된 현재 모델 ID, 컨텍스트 크기, Claude Code 입력 형식만 들어가며, 이름이 같아도 다른 로그인 방식이나 gateway의 값을 대신 적용하지 않습니다. 새 목록을 적용하려면 proxy를 다시 시작하세요. 확인에 실패하면 마지막으로 검증해 저장한 사본과 설치 버전의 기본 자료를 비교해 catalog revision이 더 높은 쪽을 사용합니다. API 키, 사용자가 고른 기본 모델, 직접 추가한 모델은 바뀌지 않습니다. `frogp models`를 실행하면 각 모델이 **검증됨**인지 **발견됨**인지, 현재 어떤 모델 자료를 쓰는지 확인할 수 있습니다.
 
 설정한 모델의 제공이 끝났거나 일시적으로 응답하지 않으면 대시보드 **Models** 화면과 `frogp models continuity`에서 영향을 받은 설정과 정확한 복구 방법을 확인할 수 있습니다. 자동 대체는 사용자가 켜기 전까지 꺼져 있고, 선택해 둔 모델을 자동으로 바꾸지 않습니다. 자세한 내용은 [frogp 명령](https://zhsks311.github.io/Frogprogsy/ko/reference/cli/#models), [설정 파일 항목](https://zhsks311.github.io/Frogprogsy/ko/reference/configuration/#모델-연속성), [대시보드 흐름](https://zhsks311.github.io/Frogprogsy/ko/guides/web-dashboard/#종료된-모델-교체하기)에서 확인하세요.
 
@@ -113,7 +113,7 @@ claude "이 프로젝트의 진입점을 설명해 줘"
 
 ## auto mode 모델 지정하기 (시험판)
 
-메인 모델을 GPT로 골랐다고 해서 Claude Code가 내부적으로 두 번 호출하는 auto mode 모델까지 GPT가 되는 것은 아닙니다. 두 호출은 서로 별개입니다. `0.0.2-preview.1`에서는 대시보드에서 심사에 사용할 AI 서비스와 모델 한 쌍을 정한 뒤, 이 기능이 필요한 Claude Code 홈마다 **Route auto-mode reviews**를 켤 수 있습니다. 지정된 심사 요청만 선택한 모델로 보내며, 일반 요청의 대체 경로나 Model Mixing이 심사 모델을 바꾸지 않습니다.
+메인 모델을 GPT로 골랐다고 해서 Claude Code가 내부적으로 두 번 호출하는 auto mode 모델까지 GPT가 되는 것은 아닙니다. 두 호출은 서로 별개입니다. 이 시험 기능을 사용하려면 대시보드에서 심사에 사용할 AI 서비스와 모델 한 쌍을 정한 뒤, 필요한 Claude Code 홈마다 **Route auto-mode reviews**를 켜세요. 지정된 심사 요청만 선택한 모델로 보내며, 일반 요청의 대체 경로나 Model Mixing이 심사 모델을 바꾸지 않습니다.
 
 이 동작은 Claude Code 2.1.220에서 검증했습니다. 홈 설정을 바꾼 뒤에는 Claude Code 세션을 다시 시작하거나 resume하세요. 기능을 켠 동안 메인 모델을 바꿀 때는 Claude Code 내장 `sonnet` 단축명 대신 FrogProgsy 모델 목록의 정확한 항목을 선택해야 합니다. 자세한 사용법은 [대시보드와 사용 기록](https://zhsks311.github.io/Frogprogsy/ko/guides/web-dashboard/#auto-mode-경로)과 [설정 파일 항목](https://zhsks311.github.io/Frogprogsy/ko/reference/configuration/#auto-mode-라우팅)을 참고하세요.
 
