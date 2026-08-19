@@ -17,7 +17,7 @@ bun add -g frogprogsy
 frogp --version
 ```
 
-不带 tag 时会安装稳定版 `latest` 渠道，当前版本是 `0.0.1`。要试用当前预览版 `0.0.2-preview.1`，请明确安装 `preview` 渠道：
+不带 tag 时会安装稳定版 `latest` 渠道。要使用预览版，请明确安装 `preview` 渠道：
 
 ```bash
 bun add -g frogprogsy@preview
@@ -97,7 +97,7 @@ frogp claude reload-models <profile-id>
 
 已经打开的 `/model` 页面不会 hot reload；需要启动新的 `claude` 会话或 resume 一个会话，让 Claude Code 重新获取 `/v1/models`。
 
-FrogProgsy 会在 proxy 启动时检查经过验证的最新模型资料。要启用更新后的列表，请重启 proxy；检查失败时，FrogProgsy 会比较上次验证后保存的副本与当前安装版本自带的模型资料，并使用 catalog revision 较高的一份。API key、已选默认模型和手动添加的模型不会改变。运行 `frogp models` 可以查看每个模型是**已验证**还是**仅发现**，以及当前模型资料的来源。
+FrogProgsy 会在 proxy 启动时检查经过验证的最新模型资料。安装版本自带的 catalog 只记录各 provider 路径已验证的当前 model ID、context limit 和 Claude Code 输入能力；即使名称相同，也不会套用其他登录方式或 gateway 的值。要启用更新后的列表，请重启 proxy；检查失败时，FrogProgsy 会比较上次验证后保存的副本与当前安装版本自带的模型资料，并使用 catalog revision 较高的一份。API key、已选默认模型和手动添加的模型不会改变。运行 `frogp models` 可以查看每个模型是**已验证**还是**仅发现**，以及当前模型资料的来源。
 
 已配置的模型停止提供或暂时失败时，可以在 dashboard **Models** 页面或 `frogp models continuity` 中查看受影响的设置和精确修复操作。自动替代在你显式启用前保持关闭，也不会自动改写已选择的模型。完整说明见 [frogp 命令](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/cli/#models)、[配置参考](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/configuration/#模型连续性)与[仪表盘流程](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/web-dashboard/#替换已停止提供的模型)。
 
@@ -113,7 +113,7 @@ claude "解释这个项目的入口点"
 
 ## 指定 auto-mode 审查模型（预览版）
 
-把主模型设为 GPT，并不会自动把 Claude Code 内部的两次 auto-mode 审查调用也设为 GPT；它们是独立请求。在 `0.0.2-preview.1` 中，先在仪表盘选择一组明确的审查 provider/model，再为需要使用该功能的每个 Claude Code 目录启用 **Route auto-mode reviews**。只有保留的审查路由会使用这个目标；普通 provider fallback 和 Model Mixing 都不会替换它。
+把主模型设为 GPT，并不会自动把 Claude Code 内部的两次 auto-mode 审查调用也设为 GPT；它们是独立请求。要配置这项预览功能，请先在仪表盘选择一组明确的审查 provider/model，再为需要使用该功能的每个 Claude Code 目录启用 **Route auto-mode reviews**。只有保留的审查路由会使用这个目标；普通 provider fallback 和 Model Mixing 都不会替换它。
 
 此行为已在 Claude Code 2.1.220 上验证。更改目录设置后，请重启或 resume Claude Code 会话。启用该路由时，切换主模型要选择 FrogProgsy gateway catalog 中的精确条目，不要使用 Claude Code 内置的 `sonnet` 快捷名。详见[Dashboard 与 Activity](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/web-dashboard/#自动模式审查路由)和[配置参考](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/configuration/#自动模式审查路由)。
 
