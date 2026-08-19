@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +52,63 @@ describe("model catalog generator", () => {
     }
   });
 
+  test("OpenRouter catalog은 감사 범위 변경과 무관하게 그대로 유지한다", () => {
+    const openrouter = generateModelCatalog(input).providers.find(provider => provider.id === "openrouter");
+    const digest = createHash("sha256").update(JSON.stringify(openrouter)).digest("hex");
+
+    expect(openrouter?.models).toHaveLength(347);
+    expect(digest).toBe("1d8f3b6b7799ff0533b4ac25857a65604b8d66d336c33f2b2b026cbf4dc9ebc1");
+  });
+
+  test("명시한 current model만 관리하고 Jawcode·metadata 키는 멤버십을 만들지 않는다", () => {
+    const catalog = generateModelCatalog(input, [{
+      id: "verified-google",
+      label: "Verified Google",
+      adapter: "google",
+      baseUrl: "https://generativelanguage.googleapis.com",
+      authKind: "key",
+      models: ["gemini-2.5-flash", "gemini-3.5-flash"],
+      modelContextWindows: { "metadata-only": 123_000 },
+      jawcodeBundle: "google",
+      officialModelSources: ["https://ai.google.dev/gemini-api/docs/models"],
+      verifiedJawcodeModels: ["gemini-2.5-flash"],
+    }]);
+
+    expect(catalog.providers[0]?.models.map(model => model.id)).toEqual([
+      "gemini-2.5-flash",
+      "gemini-3.5-flash",
+    ]);
+    expect(catalog.providers[0]?.models.find(model => model.id === "gemini-3.5-flash"))
+      .toEqual({ id: "gemini-3.5-flash" });
+  });
+
+  test("공식 검증 목록이 없는 non-OpenRouter Jawcode bundle은 model을 관리하지 않는다", () => {
+    const catalog = generateModelCatalog(input, [{
+      id: "unverified-google",
+      label: "Unverified Google",
+      adapter: "google",
+      baseUrl: "https://generativelanguage.googleapis.com",
+      authKind: "key",
+      jawcodeBundle: "google",
+    }]);
+
+    expect(catalog.providers[0]?.models).toEqual([]);
+  });
+
+  test("OpenRouter는 이번 검증 정책 변경에서 기존 Jawcode catalog를 유지한다", () => {
+    const catalog = generateModelCatalog(input, [{
+      id: "openrouter",
+      label: "OpenRouter",
+      adapter: "openai-chat",
+      baseUrl: "https://openrouter.ai/api/v1",
+      authKind: "key",
+      jawcodeBundle: "openrouter",
+    }]);
+
+    expect(catalog.providers[0]?.models).toHaveLength(347);
+    expect(catalog.providers[0]?.models.some(model => model.id === "openai/gpt-5.5")).toBeTrue();
+  });
+
   test("provider와 model을 ID 순서로 정렬한다", () => {
     const catalog = generateModelCatalog(input);
     const providerIds = catalog.providers.map(provider => provider.id);
@@ -84,15 +142,12 @@ describe("model catalog generator", () => {
     ).ok).toBeTrue();
   });
 
-  test("registry의 retired model을 provider artifact에 직렬화한다", () => {
+  test("registry의 retired·unmanaged model을 provider artifact에 직렬화한다", () => {
     const providers = new Map(generateModelCatalog(input).providers.map(provider => [provider.id, provider]));
 
-    expect(providers.get("umans")?.retiredModels).toEqual([
-      "umans-glm-5.1",
-      "umans-kimi-k2.6",
-      "umans-qwen3.6-35b-a3b",
-    ]);
-    expect(providers.get("neuralwatt")?.retiredModels).toContain("kimi-k2.5-fast");
+    expect(providers.get("umans")?.retiredModels).toEqual(["umans-kimi-k2.7"]);
+    expect(providers.get("umans")?.unmanagedModels).toEqual(["umans-glm-5.1", "umans-kimi-k2.6"]);
+    expect(providers.get("neuralwatt")?.unmanagedModels).toContain("kimi-k2.5-fast");
     expect(providers.get("deepseek")?.retiredModels).toEqual(["deepseek-chat", "deepseek-reasoner"]);
   });
 
@@ -147,6 +202,18 @@ describe("model catalog generator", () => {
     expect(modelCatalogDocumentV1Schema.safeParse(invalid).success).toBeFalse();
   });
 
+  test("unmanaged model은 활성·retired model과 겹치면 거부한다", () => {
+    for (const invalidProvider of [
+      { ...validDocument.providers[0], unmanagedModels: ["model-a"] },
+      { ...validDocument.providers[0], retiredModels: ["retired-a"], unmanagedModels: ["retired-a"] },
+    ]) {
+      expect(modelCatalogDocumentV1Schema.safeParse({
+        ...validDocument,
+        providers: [invalidProvider],
+      }).success).toBeFalse();
+    }
+  });
+
   test("알 수 없는 object 필드를 거부한다", () => {
     const invalid = { ...validDocument, unexpected: true };
     expect(modelCatalogDocumentV1Schema.safeParse(invalid).success).toBeFalse();
@@ -164,6 +231,7 @@ describe("model catalog generator", () => {
       expect(modelCatalogDocumentV1Schema.safeParse(invalid).success).toBeFalse();
     }
   });
+
 
   test("지원하지 않는 reasoning effort를 거부한다", () => {
     const invalid = {

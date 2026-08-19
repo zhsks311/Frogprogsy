@@ -11,8 +11,8 @@ A release still contains a complete catalog snapshot. The proxy must start and s
 The catalog may describe only model-level data that the installed Frogprogsy already knows how to apply:
 
 - provider and model IDs;
-- managed default and retired model IDs;
-- context limits and input modalities;
+- managed default, retired model IDs, and neutral `unmanagedModels` tombstones;
+- context limits and Claude Code input modalities;
 - supported reasoning levels and provider wire-value mappings;
 - unsupported request parameters and tool-choice restrictions;
 - reasoning-content preservation and escaped built-in tool names;
@@ -32,6 +32,8 @@ A model that needs a new adapter, transport, or request transformation requires 
 ## One generated artifact
 
 One deterministic generator combines the maintained provider registry and generated Jawcode metadata into `model-catalog-v1.json`. A maintained positive integer, `catalogRevision`, changes whenever the generated model data changes. Reverting bad model data still increments this revision, so clients can accept an operational rollback. For a given source commit, revision, and generation timestamp, the generator produces the same bytes.
+
+For every provider except OpenRouter, only the registry's explicit `models` and `defaultModel` determine current managed membership. Jawcode rows and metadata-map keys may decorate those IDs but cannot create current models. OpenRouter is the sole passthrough exception: its complete Jawcode catalog and metadata remain unchanged. A provider's `verifiedJawcodeModels` list limits which Jawcode fields may decorate maintained or live-discovered IDs; unverified route metadata remains unknown.
 
 The generator serves two release paths:
 
@@ -94,7 +96,7 @@ For a catalog-managed provider with live discovery enabled, persisted `userModel
 
 The first version with this split performs one config-schema migration before normal startup. Because the old schema has no provenance, migration attaches a catalog ID only when the provider key equals a built-in ID and the immutable preset identity fields (`adapter`, normalized `baseUrl`, and canonical `authMode`) equal that built-in preset. For this comparison only, an absent legacy `authMode` means `key`, matching its existing runtime default. Credentials and model metadata do not participate in this match. Any ambiguous or renamed provider remains custom and is reported with an action to attach a built-in catalog explicitly.
 
-For an attached provider with live discovery enabled, model IDs outside the bundled managed and retired sets become `userModels`; bundled values are removed from preset-owned fields while narrower user differences remain explicit overrides. A fixed allowlist remains unchanged. An old explicit addition already equal to a managed ID cannot be distinguished; after migration, every new explicit addition has durable `userModels` provenance.
+For an attached provider with live discovery enabled, model IDs outside the bundled managed, retired, and unmanaged sets become `userModels`; bundled values are removed from preset-owned fields while narrower user differences remain explicit overrides. A fixed allowlist remains unchanged. An old explicit addition already equal to a managed ID cannot be distinguished; after migration, every new explicit addition has durable `userModels` provenance.
 
 Before mutation, Frogprogsy writes `<FROGPROGSY_HOME>/config.pre-model-catalog-v1.json` once with mode `0600`, then atomically saves `modelCatalogConfigVersion:1`. If backup or migration fails, startup keeps the original config, treats its providers as custom for that run, and reports the failure instead of partially migrating.
 
@@ -124,7 +126,7 @@ For providers with live discovery enabled, Frogprogsy combines live model IDs wi
 
 `liveModels:false` remains a fixed user allowlist. Frogprogsy does not query `/models` or add managed model IDs to that list. A user's current default remains unchanged even when the selected managed catalog retires it; continuity inventory diagnoses the owner, explicit `replace` changes it, and an exact opt-in route policy may temporarily handle ordinary requests. `userModels` remain available until the user removes them, even if a later catalog adopts or retires the same ID.
 
-The selected remote, cached, or bundled managed catalog is the only model-lifecycle authority. Only its exact `retiredModels` entries can retire a configured catalog-owned target. A missing live `/models` entry, model or provider name, URL, adapter, price, or family never supplies retirement evidence.
+The selected remote, cached, or bundled managed catalog is the only model-lifecycle authority. Only its exact `retiredModels` entries can retire a configured catalog-owned target. `unmanagedModels` only removes stale maintained metadata and does not claim retirement, block live discovery, or create a continuity fallback. A missing live `/models` entry, model or provider name, URL, adapter, price, or family never supplies retirement evidence.
 
 Startup reconciliation and provider creation keep registry-managed model data out of `config.json`. The merge rules instead produce the effective in-memory configuration.
 
@@ -154,7 +156,7 @@ The catalog has two compatibility gates:
 
 Validation runs in two stages. First, a stable envelope and each record's stable `id` and `minFrogprogsyVersion` prefix are validated. Records requiring a newer runtime and providers unknown to the installed Frogprogsy are then skipped and reported. Second, the remaining compatible records receive strict unknown-field and value validation. Defaults and every cross-record reference are checked again after filtering.
 
-Compatible selected records overlay the bundled catalog rather than deleting its safe baseline. A skipped too-new provider or model leaves the matching bundled record in place. If filtering makes a selected provider's default or references invalid, Frogprogsy rejects that selected provider record and retains its bundled provider record. Only a strictly validated, runtime-compatible retired list may remove a bundled model.
+Compatible selected records overlay the bundled catalog rather than deleting its safe baseline. A skipped too-new provider or model leaves the matching bundled record in place. If filtering makes a selected provider's default or references invalid, Frogprogsy rejects that selected provider record and retains its bundled provider record. Only a strictly validated, runtime-compatible `retiredModels` or `unmanagedModels` list may remove a bundled active model. A provider that uses `unmanagedModels` declares the first Frogprogsy version that understands the field, so an older reader skips only that provider and keeps its bundled baseline.
 
 An unsupported document envelope is rejected as a whole. Unknown providers are not installed: provider URLs, adapters, and authentication remain installed code.
 
@@ -182,12 +184,15 @@ The change is complete only when these checks pass:
    - changed model data without a higher revision fails publication;
    - duplicate IDs, invalid defaults, contradictory constraints, unknown fields, and forbidden sensitive fields fail generation;
    - the bundled artifact matches a fresh generation from the same inputs.
+   - non-OpenRouter membership comes only from explicit current IDs, while the OpenRouter snapshot remains byte-for-byte stable;
+   - unmanaged IDs are unique, disjoint from active and retired IDs, and require a provider-local reader version;
 
 2. **Refresh tests**
    - a valid higher-revision remote catalog replaces the cache and becomes active;
    - timeout, network failure, non-success status, malformed JSON, incompatible schema, and invalid records preserve the last valid cache;
    - content-type, decoded-size, provider-count, and model-count limits reject the response before unbounded allocation;
    - too-new and invalid-after-filter records retain their matching bundled provider/model records;
+   - compatible unmanaged tombstones remove bundled validation without becoming retired, while older readers retain that provider's bundled baseline;
    - equal revisions with different catalog digests reject the less-trusted candidate;
    - absence of both network and cache selects the bundled catalog;
    - interrupted writes do not corrupt the previous cache;
@@ -200,6 +205,7 @@ The change is complete only when these checks pass:
    - managed reasoning mappings win key conflicts, preservation sets are unioned, and tool-name escaping uses `true` precedence;
    - login and service creation do not persist managed catalog fields;
    - config migration separates managed fields from `userModels` and leaves fixed allowlists unchanged;
+   - migration does not reclassify unmanaged historical IDs as user additions;
    - user credentials, default selection, disabled models, and explicit additions remain unchanged;
    - `liveModels:false` remains unchanged and performs no live model request;
    - discovered and validated status remain deterministic.

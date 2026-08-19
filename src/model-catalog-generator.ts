@@ -52,21 +52,16 @@ function modelIdsForProvider(
   provider: ProviderRegistryEntry,
   jawcodeModels: readonly JawcodeModelMetadata[],
 ): string[] {
-  const ids = new Set<string>();
-  addModelIds(ids, provider.models);
-  addModelIds(ids, provider.defaultModel === undefined ? undefined : [provider.defaultModel]);
-  addModelIds(ids, Object.keys(provider.modelContextWindows ?? {}));
-  addModelIds(ids, Object.keys(provider.modelCapabilities ?? {}));
-  addModelIds(ids, Object.keys(provider.modelReasoningEfforts ?? {}));
-  addModelIds(ids, Object.keys(provider.modelMinFrogprogsyVersions ?? {}));
-  addModelIds(ids, Object.keys(provider.modelReasoningEffortMap ?? {}));
-  addModelIds(ids, provider.noReasoningModels);
-  addModelIds(ids, provider.noTemperatureModels);
-  addModelIds(ids, provider.noTopPModels);
-  addModelIds(ids, provider.noPenaltyModels);
-  addModelIds(ids, provider.autoToolChoiceOnlyModels);
-  addModelIds(ids, provider.preserveReasoningContentModels);
-  addModelIds(ids, jawcodeModels.map(model => model.id));
+  const ids = new Set<string>(provider.models ?? []);
+  if (provider.defaultModel !== undefined) {
+    ids.add(provider.defaultModel);
+  }
+  if (provider.id === "openrouter") {
+    addModelIds(ids, jawcodeModels.map(model => model.id));
+  }
+  for (const unmanagedModel of provider.unmanagedModels ?? []) {
+    ids.delete(unmanagedModel);
+  }
   return [...ids].sort();
 }
 
@@ -143,8 +138,14 @@ function providerFromRegistry(provider: ProviderRegistryEntry): ModelCatalogProv
   const jawcodeModels = provider.jawcodeBundle === undefined
     ? []
     : listJawcodeModelMetadata(provider.jawcodeBundle);
-  const jawcodeById = new Map(jawcodeModels.map(model => [model.id, model]));
-  const models = modelIdsForProvider(provider, jawcodeModels)
+  const verifiedJawcodeModelIds = provider.id === "openrouter"
+    ? undefined
+    : new Set(provider.verifiedJawcodeModels ?? []);
+  const managedJawcodeModels = verifiedJawcodeModelIds === undefined
+    ? jawcodeModels
+    : jawcodeModels.filter(model => verifiedJawcodeModelIds.has(model.id));
+  const jawcodeById = new Map(managedJawcodeModels.map(model => [model.id, model]));
+  const models = modelIdsForProvider(provider, managedJawcodeModels)
     .map(modelId => modelFromSources(provider, modelId, jawcodeById.get(modelId)));
 
   const catalogProvider: ModelCatalogProviderV1 = {
@@ -156,6 +157,9 @@ function providerFromRegistry(provider: ProviderRegistryEntry): ModelCatalogProv
   }
   if (provider.retiredModels !== undefined) {
     catalogProvider.retiredModels = [...provider.retiredModels].sort();
+  }
+  if (provider.unmanagedModels !== undefined) {
+    catalogProvider.unmanagedModels = [...provider.unmanagedModels].sort();
   }
   if (provider.defaultModel !== undefined) {
     catalogProvider.defaultModel = provider.defaultModel;
