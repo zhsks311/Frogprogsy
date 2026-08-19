@@ -33,6 +33,7 @@
 - product = **frogprogsy**, bin = **`frogp`**, config = `~/.frogprogsy/`. 문서 base 는 `/Frogprogsy`.
 - 유지보수 SOT = `structure/*.md`, 공개 문서 = `docs-site/`와 루트 다국어 README, 런타임 상태 = `.gjc/`(비추적). `docs/`와 `artifacts/`는 로컬 조사·검증용이며 gitignore하고 커밋하지 않는다.
 - **분류기 라우팅** SOT = `structure/07_classifier-routing.md`. 원칙: Claude Code 2.1.220에서 전역 `autoModeClassifierEnabled` 스위치가 모든 관리 홈과 등록 프로젝트에 설정하는 정확한 예약 alias만 단일 명시 대상(`autoModeClassifier`)으로 라우팅한다. 모델명·가격·프롬프트 내용으로 추측하지 않고, 일반 provider fallback/long-context/model mixing을 적용하지 않는다.
+- **모델 메타데이터 갱신**은 `structure/10_remote-model-catalog.md`의 `Maintaining provider model metadata` 절차를 따른다. 같은 모델명이나 공용 API 사양을 다른 로그인·게이트웨이 경로에 대입하지 않는다. 각 provider가 실제 노출하는 경로의 공식 문서나 `/models` 응답만 근거로 사용하고, OpenRouter만 전체 Jawcode passthrough 예외로 둔다.
 - frogprogsy 런타임은 `~/.claude`를 함부로 읽거나 수정하지 않는다(공인 inject 경로만).
 
 ## Bun 개발 패키징 · 설치

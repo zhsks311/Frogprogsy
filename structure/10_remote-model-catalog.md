@@ -48,6 +48,66 @@ The artifact contains a schema version, catalog revision, SHA-256 digest of the 
 
 The generator rejects duplicate provider/model IDs, invalid defaults, contradictory constraints, unknown fields, unsupported values, and sensitive transport or authentication fields.
 
+## Maintaining provider model metadata
+
+`src/providers/registry.ts` is the executable inventory. Each maintained provider records its current IDs, lifecycle sets, model fields, and `officialModelSources`. `src/generated/model-catalog-v1.json` is derived output; never edit it by hand.
+
+Follow this order when refreshing model data:
+
+1. Identify the exact product route. ChatGPT Codex, an API-key endpoint, a coding-plan gateway, and a public model API may expose the same model name with different limits or capabilities.
+2. Read provider-owned documentation and, when available, that route's `/models` response. Do not infer fields from model names, prices, another provider, or a shared upstream family.
+3. Classify every known ID:
+   - `models` contains only provider-confirmed current IDs;
+   - `retiredModels` requires explicit provider retirement or removal evidence;
+   - `unmanagedModels` removes stale maintained metadata when current availability or retirement cannot be verified.
+4. Record only verified fields:
+   - `modelContextWindows` uses the exact route's maximum usable context. When one live response reports both `context_window` and `max_context_window`, the maximum field is the available upper bound;
+   - `modelCapabilities` contains only Claude Code inputs (`text` and `image`). Audio, video, and other generation-only modalities do not make a model usable by Claude Code;
+   - reasoning levels and wire mappings list accepted values, not a guessed scale derived from a boolean “reasoning” flag;
+   - unsupported parameters, tool-choice rules, and reasoning-content preservation remain conservative restrictions.
+5. Treat `modelMaxOutputTokens` as an audited source note. Frogprogsy does not currently emit this field in catalog v1 or enforce an output cap. Do not present it as active runtime behavior.
+6. Add an ID to `verifiedJawcodeModels` only after the provider-owned sources verify that exact provider/model pair. A matching name on another route is insufficient. OpenRouter remains the sole full-Jawcode passthrough exception.
+7. Review every current managed ID for accidental metadata holes. Missing data stays unknown when the provider does not publish it; do not replace an unknown with a convenient family default.
+
+Model-data changes use a two-commit artifact flow:
+
+1. update registry data, tests, this document, and `MODEL_CATALOG_REVISION`;
+2. commit those source changes;
+3. regenerate `src/generated/model-catalog-v1.json` with that source commit's SHA and commit timestamp;
+4. run the deterministic `--check`, repository tests, and package checks; and
+5. commit the generated artifact separately.
+
+This keeps the artifact's `sourceCommit` anchored to the commit that defines its data rather than to the later artifact commit. Increment `catalogRevision` whenever generated model data changes, including a rollback.
+
+To update the bundled file, run `bun scripts/generate-model-catalog.ts --source-commit <40-char-source-SHA> --generated-at <source-commit-ISO-date> --out src/generated/model-catalog-v1.json`. Then repeat the command with `--check`. `bun run generate:model-catalog:git` writes the prepublish artifact in the Git common directory; it does not update the bundled source file.
+
+### Audited baseline: 2026-08-19
+
+The 2026-08-19 refresh audited Codex, xAI, Anthropic, Google, DeepSeek, Moonshot, Kimi Code, Z.AI, Neuralwatt, Umans, MiniMax, Cerebras, and Xiaomi provider data. It preserved OpenRouter's existing full catalog.
+
+The ChatGPT Codex route reported these maximum context values:
+
+| Model | ChatGPT Codex maximum context |
+| --- | ---: |
+| `gpt-5.6-sol` | 872,000 |
+| `gpt-5.6-terra` | 872,000 |
+| `gpt-5.6-luna` | 872,000 |
+| `gpt-5.5` | 272,000 |
+| `gpt-5.4` | 1,000,000 |
+| `gpt-5.4-mini` | 272,000 |
+| `gpt-5.3-codex-spark` | 128,000 |
+
+The public API specification's 1,050,000-token GPT-5.6 context is not substituted for the ChatGPT Codex route. Live Codex parsing prefers `max_context_window` over the lower default `context_window`, and the static fallback mirrors the route-specific maxima above.
+
+The same refresh established these maintenance decisions:
+
+- provider-owned `models` and `defaultModel` control non-OpenRouter membership;
+- unverified Jawcode rows cannot add or decorate fixed-provider models;
+- `gemini-flash-latest` retains its verified 1,048,576-token, text-and-image fallback metadata;
+- output-token limits remain source inventory only;
+- migration and runtime overlays preserve credentials, user defaults, disabled models, explicit additions, and fixed `liveModels:false` allowlists; and
+- `unmanagedModels` removes stale validation data without claiming retirement or creating a fallback route.
+
 ## Publication
 
 Every push to `main` triggers the GitHub Pages workflow, even when the changed paths are unrelated to the catalog. The workflow:
