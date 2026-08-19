@@ -1,9 +1,9 @@
 name: Release
 
-# Publish frogprogsy to the package registry: triggered from the Actions tab with an explicit
-# version, dist-tag, and a dry-run-first default. Bump package.json on main BEFORE dispatching
-# (or use `bun run release <version>`, which does the bump+commit+push+dispatch for you); the
-# workflow verifies the version matches before publishing.
+# Publish frogprogsy to the package registry from main with an explicit version, dist-tag,
+# and a dry-run-first default. Prepare package.json on develop with
+# `bun run release:prepare <version>`, then merge the develop -> main promotion before
+# dispatching; the workflow verifies that the promoted version matches before publishing.
 on:
   workflow_dispatch:
     inputs:
@@ -118,7 +118,7 @@ jobs:
           PKG=$(bun -e 'console.log((await Bun.file("package.json").json()).version)')
           echo "package.json=$PKG  input=$RELEASE_VERSION"
           test "$PKG" = "$RELEASE_VERSION" || {
-            echo "::error::package.json ($PKG) != requested ($RELEASE_VERSION) — bump package.json on main first"
+            echo "::error::package.json ($PKG) != requested ($RELEASE_VERSION) — run bun run release:prepare ${RELEASE_VERSION} on develop, then merge develop -> main"
             exit 1
           }
 

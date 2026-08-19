@@ -6,21 +6,10 @@ name: Package lifecycle
 # release gate can require a green run for that precise commit.
 on:
   pull_request:
-    branches: [main, dev]
-    paths:
-      - "src/**"
-      - "tests/**"
-      - "scripts/**"
-      - "gui/**"
-      - "package.json"
-      - "bun.lock"
-      - "tsconfig.json"
-      - "bunfig.toml"
-      - ".github/workflows/package-lifecycle.yml"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/release.yml"
+    branches: [main, develop]
+    types: [opened, synchronize, reopened, edited]
   push:
-    branches: [main, dev]
+    branches: [main, develop]
     paths:
       - "src/**"
       - "tests/**"

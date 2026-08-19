@@ -23,8 +23,7 @@
 - 완료 주장 전 검증: `bun run typecheck` + `bun test --isolate ./tests`(전체) + GUI 변경 시 `bun run build:gui` 가 그린인지 실제로 확인하고 수치로 보고.
 
 ## Git / 랜딩
-- 변경은 **별도 브랜치 + worktree**에서 하고, 거기서 커밋한 뒤 **`main`에 머지**한다. 머지 후 worktree/브랜치 정리.
-- Didimlog와 같은 `develop` 통합 → `main` 배포 승격 전략은 `structure/06_docs-and-release.md`에 **도입 결정만 기록**되어 있고 아직 적용되지 않았다. 해당 문서의 전환 목록이 한 번에 구현·검증되기 전까지는 위의 현행 규칙을 따른다.
+- 일반 변경은 현재 **`develop`에서 별도 task branch + worktree**를 만들고 검토 후 `develop`에 머지한다. 배포는 검토된 **`develop` → `main` 승격 PR의 merge commit**만 원본으로 사용한다. `main`은 기본·배포 브랜치이며, `dev` 장기 브랜치나 alias는 두지 않는다. 머지 후 worktree/브랜치를 정리한다.
 - **원격 `push`는 명시 요청 없이는 하지 않는다.** (`저장`/`커밋`/`머지`와 `push`는 별개.)
 - 사용자의 **진행 중 머지/충돌을 임의로 해결·커밋·revert 하지 않는다** (명시 요청 시에만). 요청받으면 검증 후 안전하게 랜딩한다.
 - `.gjc/**`는 런타임 소유(gitignore) — 직접 편집 금지, `gjc` CLI로만. **durable 명세와 유지보수 결정은 `structure/`에만** 남긴다.
@@ -44,6 +43,7 @@
 - 개발 패키지의 `uninstall`은 Bun 전역 패키지/링크만 제거해야 한다. `~/.frogprogsy`, Claude 홈, Keychain, grant, 자격증명을 읽거나 삭제하지 않으며, 제품 수준의 `frogp uninstall`로 대체하지 않는다.
 - npm CLI는 실제 배포 GitHub Actions lane에서만 허용한다. 일반 배포는 OIDC Trusted Publishing으로 Bun이 만든 정확한 tarball을 업로드한다. 최초 package bootstrap만 명시적 1회 입력과 단기 secret을 허용하며, 성공 즉시 credential과 secret을 제거한다. 유지보수 기준은 `structure/06_docs-and-release.md`.
 - 배포 전략의 단일 원본은 `structure/06_docs-and-release.md`, 실행 강제 장치는 `.github/workflows/release.yml`이다. README와 이 파일에 전체 절차를 중복하지 않는다.
+- 릴리스 버전은 깨끗한 `develop`에서 `bun run release:prepare <version>`으로 준비해 승격 PR에 포함한다. 승격 후 깨끗한 `main`에서 같은 버전으로 `bun run release <version> ...`를 실행해 dry-run과 실제 게시를 진행한다. helper는 commit하거나 push하지 않는다.
 - 정식 배포 전 해당 **정확한 release SHA**의 Cross-platform CI와 Package lifecycle 성공, release dry-run, Bun tarball 해시 검증을 모두 요구한다.
 - `preview`는 prerelease SemVer, `latest`는 stable SemVer에만 사용한다. 공개된 버전·tarball·`v<version>` 태그는 재사용하거나 강제로 이동하지 않고 다음 버전으로 수정 배포한다.
 - 폐기한 이전 제품명과 worktree 이름을 활성 소스·스크립트·테스트·사용자 문서에 다시 넣지 않는다.

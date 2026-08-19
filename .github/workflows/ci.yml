@@ -2,21 +2,10 @@ name: Cross-platform CI
 
 on:
   pull_request:
-    branches: [main, dev]
-    paths:
-      - "src/**"
-      - "tests/**"
-      - "scripts/**"
-      - "gui/**"
-      - "package.json"
-      - "bun.lock"
-      - "tsconfig.json"
-      - "bunfig.toml"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/package-lifecycle.yml"
-      - ".github/workflows/release.yml"
+    branches: [main, develop]
+    types: [opened, synchronize, reopened, edited]
   push:
-    branches: [main, dev]
+    branches: [main, develop]
     paths:
       - "src/**"
       - "tests/**"
@@ -39,6 +28,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  promotion-guard:
+    name: Develop promotion guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Require develop head for main pull requests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$BASE_REF" = "main" ]; then
+            if [ "$HEAD_REF" != "develop" ] || [ "$HEAD_REPO" != "$REPOSITORY" ]; then
+              echo "::error::Pull requests to main must come from this repository's develop branch; got ${HEAD_REPO}:${HEAD_REF}"
+              exit 1
+            fi
+          fi
+
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

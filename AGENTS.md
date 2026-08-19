@@ -46,9 +46,8 @@ Non-negotiable highlights (full detail in `CLAUDE.md`):
 
 ## Git
 
-Land work via a branch + worktree → commit → merge to `main`. Do NOT push to a remote without an explicit
+Start ordinary work from current `develop` in a dedicated task branch and worktree, then merge reviewed
+changes back into `develop`. Promote release-ready work only through a reviewed `develop` → `main` pull
+request; its merge commit is the only accepted release source. `main` remains the default and deployment
+branch, and there is no long-lived `dev` branch or alias. Do NOT push to a remote without an explicit
 request. Never resolve/commit/revert the user's in-progress merge or conflicts unless explicitly asked.
-The accepted two-branch target (`develop` integration → `main` release promotion), its rollout
-checklist, and its current inactive status are recorded in
-[`structure/06_docs-and-release.md`](structure/06_docs-and-release.md). Keep using the rule above
-until that checklist lands; do not claim the target strategy is active merely because it is documented.
