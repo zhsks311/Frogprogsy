@@ -375,6 +375,10 @@ and registry provenance rather than mutable labels or expiring artifacts.
 `.github/workflows/ci.yml` is the ordinary quality gate for runtime/package changes. It pins the Bun
 version declared by `packageManager` and runs on Linux, Windows, and macOS:
 
+Linux jobs use the `namespace-profile-linux-x86-4-8` runner profile, macOS matrix jobs use
+`namespace-profile-macos`, and Windows matrix jobs remain on GitHub-hosted `windows-latest`.
+The logical OS job names stay stable because branch protection requires those exact check contexts.
+
 ```bash
 bun install --frozen-lockfile
 bun x tsc --noEmit
@@ -391,7 +395,7 @@ cannot affect the suite. `--isolate` additionally gives each test file a fresh g
 `process.env` remains process-wide; tests that mutate other environment variables still own their
 explicit save/restore.
 
-The GitHub-hosted macOS lane runs a separately opted-in, bounded Keychain smoke. It creates one
+The macOS lane runs a separately opted-in, bounded Keychain smoke. It creates one
 unique grant-scoped item, verifies product read/status/delete behavior including idempotent deletion,
 and records only the scoped service/account needed by an `always()` cleanup step. It never targets
 the native `Claude Code-credentials` service.

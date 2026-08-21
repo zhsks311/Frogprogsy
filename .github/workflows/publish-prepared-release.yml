@@ -40,7 +40,7 @@ concurrency:
 jobs:
   dispatch:
     name: Verify and dispatch prepared release
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-4-8
     timeout-minutes: 50
     steps:
       - name: Checkout trusted dispatcher

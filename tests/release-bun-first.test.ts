@@ -241,7 +241,9 @@ describe("Bun-first release and installation contract", () => {
     // The matrix installs the SAME downloaded artifact on all three platforms and
     // never rebuilds it there.
     expect(lifecycle).toContain("needs: build");
-    expect(lifecycle).toContain("os: [ubuntu-latest, windows-latest, macos-latest]");
+    expect(lifecycle).toContain("- os: ubuntu-latest");
+    expect(lifecycle).toContain("- os: windows-latest");
+    expect(lifecycle).toContain("- os: macos-latest");
     expect(lifecycle).toContain("name: package-tarball");
     expect(lifecycle).toContain("bun scripts/package-lifecycle-smoke.ts --tarball-dir dist-tarball");
 

@@ -26,12 +26,19 @@ interface Workflow {
   };
   jobs: Record<string, {
     name?: string;
+    "runs-on"?: string;
+    strategy?: {
+      matrix?: {
+        include?: Array<{ os: string; runner: string }>;
+      };
+    };
     if?: string;
     needs?: string | string[];
     permissions?: Record<string, string>;
     outputs?: Record<string, string>;
     steps?: Array<{
       name?: string;
+      if?: string;
       id?: string;
       uses?: string;
       with?: Record<string, unknown>;
@@ -62,6 +69,45 @@ describe("develop to main branch promotion policy", () => {
       expect(workflow.on.push?.branches).not.toContain("dev");
     });
   }
+
+  test("routes supported platforms through the approved runner providers", async () => {
+    const linuxRunner = "namespace-profile-linux-x86-4-8";
+    const linuxJobs: Record<string, string[]> = {
+      ".github/workflows/ci.yml": ["promotion-guard"],
+      ".github/workflows/deploy-docs.yml": ["build", "deploy"],
+      ".github/workflows/package-lifecycle.yml": ["build"],
+      ".github/workflows/prepare-release.yml": ["snapshot", "mutate", "failure-state"],
+      ".github/workflows/publish-prepared-release.yml": ["dispatch"],
+      ".github/workflows/release.yml": ["preflight", "build", "inspect", "mutate"],
+    };
+
+    for (const [path, jobs] of Object.entries(linuxJobs)) {
+      const workflow = await readWorkflow(path);
+      for (const job of jobs) {
+        expect(workflow.jobs[job]?.["runs-on"]).toBe(linuxRunner);
+      }
+    }
+
+    const expectedMatrix = [
+      { os: "ubuntu-latest", runner: linuxRunner },
+      { os: "windows-latest", runner: "windows-latest" },
+      { os: "macos-latest", runner: "namespace-profile-macos" },
+    ];
+    for (const [path, job] of [
+      [".github/workflows/ci.yml", "test"],
+      [".github/workflows/package-lifecycle.yml", "smoke"],
+    ]) {
+      const workflow = await readWorkflow(path);
+      expect(workflow.jobs[job]?.["runs-on"]).toBe("${{ matrix.runner }}");
+      expect(workflow.jobs[job]?.strategy?.matrix?.include).toEqual(expectedMatrix);
+    }
+
+    const ci = await readWorkflow(".github/workflows/ci.yml");
+    const keychainSmoke = ci.jobs.test?.steps?.find(step => step.name === "macOS Keychain lifecycle smoke");
+    const keychainCleanup = ci.jobs.test?.steps?.find(step => step.name === "macOS Keychain smoke cleanup");
+    expect(keychainSmoke?.if).toBe("runner.os == 'macOS'");
+    expect(keychainCleanup?.if).toBe("always() && runner.os == 'macOS'");
+  });
 
   test("CI accepts only this repository's develop branch for main promotions", async () => {
     const workflow = await readWorkflow(".github/workflows/ci.yml");
