@@ -354,10 +354,10 @@ describe("immutable prepared-release dispatcher", () => {
     }
   });
 
-  test("accepts main pushes plus explicit exact-SHA recovery during bootstrap", async () => {
+  test("accepts develop and main pushes plus explicit exact-SHA recovery", async () => {
     const workflow = await readWorkflow(".github/workflows/publish-prepared-release.yml");
 
-    expect(workflow.on.push?.branches).toEqual(["main"]);
+    expect(workflow.on.push?.branches).toEqual(["develop", "main"]);
     expect(workflow.on.workflow_dispatch?.inputs).toEqual({
       "expected-sha": {
         description: "Full lowercase prepared merge commit SHA to recover",
