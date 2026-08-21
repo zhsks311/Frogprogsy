@@ -1,15 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { registryVersionListed } from "../scripts/release-registry";
 import {
-  assertPublishPackageVersion,
-  assertReleaseBranch,
-  latestWorkflowRun,
   parseReleaseCommand,
-  writePackageVersion,
-  type GhRun,
+  selectDispatchedWorkflowRun,
+  type WorkflowRun,
 } from "../scripts/release";
 
 const root = new URL("../", import.meta.url);
@@ -19,13 +13,12 @@ async function read(path: string): Promise<string> {
 }
 
 describe("Bun-first release and installation contract", () => {
-  test("release helper uses Bun for version and registry preparation", async () => {
+  test("release helper keeps registry inspection Bun-first without a local version-preparation path", async () => {
     const source = await read("scripts/release.ts");
-    expect(source).toContain('["bun", "pm", "view"');
-    expect(source).toContain("writePackageVersion");
+    expect(source).not.toContain("writePackageVersion");
+    expect(source).not.toContain('kind: "prepare"');
     expect(source).not.toContain("npm version");
     expect(source).not.toContain("npm install -g");
-    expect(source).toContain("bun add -g frogprogsy");
   });
 
   test("release registry preflight distinguishes used and unused versions", () => {
@@ -38,133 +31,126 @@ describe("Bun-first release and installation contract", () => {
     );
   });
 
-  test("release helper parses prepare separately while preserving publish flags and watch mode", () => {
-    expect(parseReleaseCommand(["prepare", "1.2.3"])).toEqual({
-      kind: "prepare",
-      version: "1.2.3",
-    });
-    expect(parseReleaseCommand(["1.2.3-preview.1", "--tag", "preview", "--publish"])).toEqual({
-      kind: "publish",
-      version: "1.2.3-preview.1",
-      tag: "preview",
+  test("release helper exposes only explicit recovery, bootstrap, and watch commands", () => {
+    const sha = "a".repeat(40);
+    expect(parseReleaseCommand([
+      "recover",
+      sha,
+      "--source-branch",
+      "develop",
+      "--publish",
+    ])).toEqual({
+      kind: "recovery",
+      expectedSha: sha,
+      sourceBranch: "develop",
       dryRun: false,
-      bootstrap: false,
+    });
+    expect(parseReleaseCommand([
+      "recover",
+      sha,
+      "--source-branch",
+      "main",
+    ])).toEqual({
+      kind: "recovery",
+      expectedSha: sha,
+      sourceBranch: "main",
+      dryRun: true,
+    });
+    expect(parseReleaseCommand([
+      "bootstrap",
+      "0.0.1",
+      "--expected-sha",
+      sha,
+      "--publish",
+    ])).toEqual({
+      kind: "bootstrap",
+      version: "0.0.1",
+      expectedSha: sha,
     });
     expect(parseReleaseCommand(["watch"])).toEqual({ kind: "watch" });
+    expect(() => parseReleaseCommand(["prepare", "1.2.3"])).toThrow("Usage:");
+    expect(() => parseReleaseCommand([
+      "recover",
+      sha.toUpperCase(),
+      "--source-branch",
+      "develop",
+    ])).toThrow("lowercase");
+    expect(() => parseReleaseCommand([
+      "recover",
+      sha,
+      "--source-branch",
+      "feature",
+    ])).toThrow("develop or main");
   });
 
-  test("release preparation is develop-only and publishing is main-only", () => {
-    expect(() => assertReleaseBranch("prepare", "develop")).not.toThrow();
-    expect(() => assertReleaseBranch("prepare", "main")).toThrow(
-      "must be on develop",
-    );
-    expect(() => assertReleaseBranch("publish", "main")).not.toThrow();
-    expect(() => assertReleaseBranch("publish", "develop")).toThrow(
-      "must be on main",
-    );
+  test("release helper binds only the exact correlated workflow_dispatch run on main", () => {
+    const dispatchedAt = Date.parse("2026-08-21T12:00:00.500Z");
+    const run = (
+      databaseId: number,
+      displayTitle: string,
+      createdAt: string,
+      event = "workflow_dispatch",
+      headBranch = "main",
+    ): WorkflowRun => ({
+      databaseId,
+      displayTitle,
+      createdAt,
+      event,
+      headBranch,
+      status: "queued",
+      url: `https://example.test/runs/${databaseId}`,
+    });
+    const expectedTitle = "Release [0f5527d4-0406-4fb1-9bf7-8c56b2319f4c]";
+
+    expect(selectDispatchedWorkflowRun([
+      run(20, "Release [other-id]", "2026-08-21T12:00:05Z"),
+      run(12, expectedTitle, "2026-08-21T12:00:01Z"),
+      run(21, expectedTitle, "2026-08-21T12:00:03Z", "push"),
+      run(22, expectedTitle, "2026-08-21T12:00:04Z", "workflow_dispatch", "develop"),
+      run(23, expectedTitle, "2026-08-21T11:59:59Z"),
+    ], expectedTitle, dispatchedAt)).toMatchObject({ databaseId: 12 });
+
+    expect(selectDispatchedWorkflowRun([
+      run(20, "Release [other-id]", "2026-08-21T12:00:05Z"),
+      run(21, expectedTitle, "2026-08-21T12:00:03Z", "push"),
+    ], expectedTitle, dispatchedAt)).toBeNull();
   });
 
-  test("release preparation changes only the package version", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "frogprogsy-release-"));
-    const packagePath = join(directory, "package.json");
-    const originalPackage = {
-      name: "frogprogsy-test",
-      version: "1.2.2",
-      private: true,
-      scripts: { test: "bun test" },
-    };
-
-    try {
-      await Bun.write(packagePath, `${JSON.stringify(originalPackage, null, 2)}\n`);
-
-      expect(await writePackageVersion("1.2.3", packagePath)).toBe(true);
-      expect(JSON.parse(await Bun.file(packagePath).text())).toEqual({
-        ...originalPackage,
-        version: "1.2.3",
-      });
-      expect(await readdir(directory)).toEqual(["package.json"]);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-
-  test("release publishing rejects a package version mismatch", () => {
-    expect(() => assertPublishPackageVersion("1.2.3", "1.2.2")).toThrow(
-      "package.json version 1.2.2 does not match requested release version 1.2.3",
-    );
-    expect(() => assertPublishPackageVersion("1.2.3", "1.2.3")).not.toThrow();
-  });
-
-  test("release helper never commits or pushes and verifies origin/main around the exact-SHA gates", async () => {
+  test("release helper dispatches only explicit recovery or one-time bootstrap inputs", async () => {
     const source = await read("scripts/release.ts");
     const packageJson = JSON.parse(await read("package.json")) as { scripts?: Record<string, string> };
 
     expect(packageJson.scripts?.release).toBe("bun scripts/release.ts");
-    expect(packageJson.scripts?.["release:prepare"]).toBe("bun scripts/release.ts prepare");
+    expect(packageJson.scripts?.["release:prepare"]).toBeUndefined();
+    expect(packageJson.scripts?.["release:watch"]).toBe("bun scripts/release.ts watch");
     expect(source).not.toContain("git add");
     expect(source).not.toContain("git commit");
-    expect(source).not.toContain("git push origin main");
+    expect(source).not.toContain("git push");
+    expect(source).not.toContain("waitForReleaseGates");
+    expect(source).not.toContain("assertOriginMainMatches");
 
-    const gateIndex = source.indexOf("await waitForReleaseGates(releaseSha)");
-    const dispatchIndex = source.indexOf("gh workflow run release.yml");
-    const originChecks = [...source.matchAll(/await assertOriginMainMatches\(releaseSha\)/g)]
-      .map(match => match.index);
-
-    expect(originChecks).toHaveLength(2);
-    expect(originChecks[0]).toBeLessThan(gateIndex);
-    expect(originChecks[1]).toBeGreaterThan(gateIndex);
-    expect(originChecks[1]).toBeLessThan(dispatchIndex);
+    expect(source).toContain("gh workflow run publish-prepared-release.yml");
+    expect(source).toContain("-f expected-sha=${command.expectedSha}");
+    expect(source).toContain("-f source-branch=${command.sourceBranch}");
+    expect(source).toContain("-f dry-run=${String(command.dryRun)}");
+    expect(source).toContain("gh workflow run release.yml");
+    expect(source).toContain("-f source-branch=main");
+    expect(source).toContain("-f tag=latest");
+    expect(source).toContain("-f bootstrap=true");
+    expect(source).toContain("-f recovery=false");
+    expect(source).toContain("randomUUID()");
+    expect(source).toContain("-f dispatch-id=${dispatchId}");
+    expect(source).toContain("waitForDispatchedWorkflowRun");
+    expect(source).toContain("run.displayTitle === displayTitle");
+    expect(source).toContain('run.event === "workflow_dispatch"');
+    expect(source).toContain('run.headBranch === "main"');
+    expect(source).toContain("RELEASE_RUN_WAIT_TIMEOUT_MS");
+    expect(source).toContain("await watchRun(releaseRun.databaseId)");
+    expect(source).not.toContain("snapshotWorkflowRuns");
+    expect(source).not.toContain("Bun.sleep(4000)");
+    expect(source).not.toContain("--limit 1 --json");
   });
 
-  test("release helper waits fail-closed on the latest exact-SHA CI, package, and Pages runs before dispatching", async () => {
-    const source = await read("scripts/release.ts");
-
-    expect(source).toContain('const CI_WORKFLOW = "ci.yml"');
-    expect(source).toContain('const PACKAGE_LIFECYCLE_WORKFLOW = "package-lifecycle.yml"');
-    expect(source).toContain('const PAGES_WORKFLOW = "deploy-docs.yml"');
-    expect(source).toContain("{ workflow: CI_WORKFLOW, label: \"Cross-platform CI\" }");
-    expect(source).toContain("{ workflow: PACKAGE_LIFECYCLE_WORKFLOW, label: \"Package lifecycle\" }");
-    expect(source).toContain("{ workflow: PAGES_WORKFLOW, label: \"Pages catalog\" }");
-    expect(source).toContain("gh run list --workflow ${workflow} --commit ${sha}");
-    expect(source).toContain("const latest = latestWorkflowRun(runs)");
-    expect(source).toContain("${gate.label} (${gate.workflow}) failed for ${sha}");
-    expect(source).toContain("const deadline = Date.now() + RELEASE_GATE_WAIT_TIMEOUT_MS");
-    expect(source).toContain("timed out waiting for ${gate.label}");
-    expect(source).toContain("await waitForReleaseGates(releaseSha)");
-    expect(source).not.toContain("waitForSuccessfulCi");
-    const gateIndex = source.indexOf("await waitForReleaseGates(releaseSha)");
-    const dispatchIndex = source.indexOf("gh workflow run release.yml");
-    expect(gateIndex).toBeGreaterThan(-1);
-    expect(dispatchIndex).toBeGreaterThan(gateIndex);
-  });
-
-  test("release helper judges only the newest exact-SHA workflow attempt", () => {
-    const sha = "a".repeat(40);
-    const run = (
-      databaseId: number,
-      status: string,
-      conclusion: string | null,
-    ): GhRun => ({ databaseId, status, conclusion, headSha: sha, url: `https://example.test/${databaseId}` });
-
-    expect(latestWorkflowRun([
-      run(10, "completed", "success"),
-      run(12, "queued", null),
-      run(11, "completed", "failure"),
-    ])).toMatchObject({ databaseId: 12, status: "queued" });
-    expect(latestWorkflowRun([
-      run(20, "completed", "success"),
-      run(21, "in_progress", null),
-    ])).toMatchObject({ databaseId: 21, status: "in_progress" });
-    expect(latestWorkflowRun([
-      run(30, "completed", "success"),
-      run(31, "completed", "failure"),
-    ])).toMatchObject({ databaseId: 31, conclusion: "failure" });
-    expect(latestWorkflowRun([
-      run(40, "completed", "failure"),
-      run(41, "completed", "success"),
-    ])).toMatchObject({ databaseId: 41, conclusion: "success" });
-    expect(latestWorkflowRun([])).toBeNull();
-  });
 
   test("release workflow confines npm to the final trusted-publish lane", async () => {
     const workflow = await read(".github/workflows/release.yml");
@@ -172,14 +158,12 @@ describe("Bun-first release and installation contract", () => {
     expect(workflow).toContain("bun pm view");
     expect(workflow).toContain("bun run prepublishOnly");
     expect(workflow).toContain("bun scripts/dev-package.ts build --skip-gates");
-    expect(workflow).toContain(
-      'NPM_CONFIG_TOKEN=frogprogsy-dry-run-placeholder bun publish --dry-run "$TARBALL" --tag "$REGISTRY_DIST_TAG" --access public',
-    );
-    expect(workflow).not.toMatch(/bun publish[^\r\n]*--token/);
+    expect(workflow).not.toContain("bun publish");
+    expect(workflow).not.toMatch(/npm publish[^\r\n]*--token/);
     expect(workflow).toContain('npm publish "$TARBALL" --tag "$REGISTRY_DIST_TAG" --access public');
     expect(workflow).not.toContain("npm pack");
     expect(workflow).not.toContain("npm run prepublishOnly");
-    expect(workflow).not.toContain("npm view");
+    expect(workflow).toContain('npm view "$PACKAGE_NAME" dist-tags --json');
     expect(workflow).not.toContain('release_tag="v${{ inputs.');
     expect(workflow).not.toContain('if [ "${{ inputs.');
     expect(workflow).toContain("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683");
@@ -193,28 +177,20 @@ describe("Bun-first release and installation contract", () => {
     expect(workflow).not.toContain("npm install -g npm@latest");
   });
 
-  test("release policy enforces channels, one-time bootstrap, and canonical provenance metadata", async () => {
-    const helper = await read("scripts/release.ts");
+  test("release policy keeps OIDC normal publication and isolates bootstrap credentials", async () => {
     const workflow = await read(".github/workflows/release.yml");
     const pkg = JSON.parse(await read("package.json")) as { repository?: { url?: string } };
 
-    expect(helper).toContain('tag !== "latest" && tag !== "preview"');
-    expect(helper).toContain('(tag === "preview") !== prerelease');
-    expect(helper).toContain("-f bootstrap=${String(bootstrap)}");
-    expect(helper).toContain("-f expected-sha=${releaseSha}");
-    expect(workflow).toContain("Workflow checkout SHA ${GITHUB_SHA} != expected release SHA ${EXPECTED_SHA}");
-    expect(workflow).toContain("latest requires a stable SemVer");
-    expect(workflow).toContain("preview requires a prerelease SemVer");
+    expect(workflow).toContain('test "$(git rev-parse HEAD)" = "${{ inputs.expected-sha }}"');
+    expect(workflow).toContain("latest requires X.Y.Z");
+    expect(workflow).toContain("preview requires X.Y.Z-preview.N");
     expect(workflow).toContain("bootstrap is one-time only");
-    expect(helper).toContain("--bootstrap must publish a stable version to the latest channel");
-    expect(workflow).toContain("bootstrap must create the default latest channel");
-    expect(workflow).not.toContain('|*"not found"*)');
+    expect(workflow).toContain("bootstrap must use source-branch main and tag latest");
     expect(workflow).toContain('bun pm view "$pkg_name" versions --json');
-    expect(workflow).toContain('import { registryVersionListed } from "./scripts/release-registry"');
+    expect(workflow).toContain('versions.every(version => typeof version === "string")');
+    expect(workflow).not.toContain('import { registryVersionListed } from "./scripts/release-registry"');
     expect(workflow).toContain("Invalid registry versions response for ${pkg_name}");
-    expect(workflow).not.toContain('bun pm view "${pkg_name}@${RELEASE_VERSION}" version >"$version_probe_file"');
     expect(workflow).toContain("Unable to determine whether GitHub Release ${release_tag} exists");
-    expect(helper).not.toContain('output.includes("release not found") ||');
     expect(workflow).toContain("secrets.NPM_BOOTSTRAP_TOKEN");
     expect(workflow).toContain('if [ "$BOOTSTRAP" = "true" ] && [ -z "$NODE_AUTH_TOKEN" ]');
     const buildIndex = workflow.indexOf("bun scripts/dev-package.ts build --skip-gates");
@@ -223,17 +199,15 @@ describe("Bun-first release and installation contract", () => {
     expect(workflow.split("NODE_AUTH_TOKEN:").length - 1).toBe(1);
     expect(buildIndex).toBeGreaterThan(-1);
     expect(secretIndex).toBeGreaterThan(buildIndex);
-    expect(workflow).toContain("Keep the bootstrap credential out of install, build, lifecycle, and dry-run steps");
+    expect(workflow).toContain("The bootstrap credential exists only in this no-source mutation step");
+    expect(workflow.split("PACKAGE_NAME: frogprogsy")).toHaveLength(3);
+    expect(workflow).not.toContain("needs.inspect.outputs.package_name");
+    expect(workflow).not.toContain('Bun.file("package.json")');
     expect(pkg.repository?.url).toBe("git+https://github.com/zhsks311/Frogprogsy.git");
     expect(workflow).toContain("release_flags=(--prerelease=false --latest)");
-    expect(workflow.replace(/\r\n/g, "\n")).toContain([
-      'if [ "$REGISTRY_DIST_TAG" = "preview" ]; then',
-      "            release_flags=(--prerelease --latest=false)",
-      "          fi",
-    ].join("\n"));
     expect(workflow).toContain("release_flags=(--prerelease --latest=false)");
-    expect(workflow).toContain('gh release edit "$release_tag" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"');
-    expect(workflow).toContain('gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"');
+    expect(workflow).not.toContain("gh release edit");
+    expect(workflow).toContain('gh release create "$release_tag" --target "$EXPECTED_SHA"');
   });
 
   test("package lifecycle workflow builds the shared tarball once and installs it across three OSes", async () => {
@@ -250,7 +224,8 @@ describe("Bun-first release and installation contract", () => {
     // Least privilege + safe concurrency.
     expect(lifecycle).toContain("contents: read");
     expect(lifecycle).toContain("concurrency:");
-    expect(lifecycle).toContain("group: package-lifecycle-${{ github.ref }}");
+    expect(lifecycle).toContain("group: package-lifecycle-${{ github.event_name == 'push' && github.sha || github.ref }}");
+    expect(lifecycle).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
 
     // Bun 1.3.14 frozen install -> GUI build -> build once -> resolve path.
     expect(lifecycle).toContain("bun-version: 1.3.14");
@@ -282,21 +257,22 @@ describe("Bun-first release and installation contract", () => {
     expect(lifecycle).toContain("timeout-minutes:");
   });
 
-  test("release is gated on the latest successful CI, package, and Pages runs for the exact commit SHA", async () => {
+  test("release rechecks newest exact-SHA gates with channel-specific Pages policy", async () => {
     const workflow = await read(".github/workflows/release.yml");
 
-    // Fail closed on all three exact-SHA publication prerequisites. Looking up the
-    // latest run without a success filter prevents an older green retry from hiding
-    // a newer failed, cancelled, queued, or in-progress run.
-    expect(workflow).toContain("require_latest_success() {");
+    expect(workflow).toContain("latest_run() {");
     expect(workflow).toContain("require_latest_success ci.yml");
     expect(workflow).toContain("require_latest_success package-lifecycle.yml");
-    expect(workflow).toContain("require_latest_success deploy-docs.yml");
-    expect(workflow).toContain('--commit "$GITHUB_SHA"');
+    expect(workflow).toContain("wait_for_latest_success deploy-docs.yml");
+    expect(workflow).toContain('if [ "$REGISTRY_DIST_TAG" = "latest" ]; then');
+    expect(workflow).toContain("head_sha=${EXPECTED_SHA}");
+    expect(workflow).toContain('.event == "push"');
+    expect(workflow).toContain(".head_branch == $branch");
+    expect(workflow).toContain("sort_by(.id, .run_attempt) | last");
     expect(workflow).not.toContain("--status success");
-    expect(workflow).toContain("databaseId,conclusion,headSha,status,url,workflowName");
-    expect(workflow).toContain('test "$gate_status" = "completed"');
-    expect(workflow).toContain('test "$gate_conclusion" = "success"');
+    expect(workflow).toContain('test "$status" = "completed"');
+    expect(workflow).toContain('test "$conclusion" = "success"');
+    expect(workflow).toContain("Superseded exact-SHA");
   });
 
   test("runtime update and package removal are Bun-managed", async () => {

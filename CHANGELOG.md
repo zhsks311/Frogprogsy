@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Label-driven release automation now prepares and cancels versions, publishes previews from accepted `develop` merge SHAs, and publishes stable releases from accepted `develop` to `main` merge SHAs after channel-specific exact-SHA gates.
+- Maintainers can promote only the current exactly reconciled preview and recover partial publication only for the original prepared SHA without reusing a consumed version.
+
+### Changed
+
+- Normal npm releases now use tokenless Trusted Publishing. A short-lived bootstrap token remains limited to the first package publish, and optional `preview` dist-tag removal remains a manual maintainer action.
+
 ## 0.0.3
 
 ### Added

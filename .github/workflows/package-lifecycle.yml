@@ -22,14 +22,16 @@ on:
       - ".github/workflows/package-lifecycle.yml"
       - ".github/workflows/ci.yml"
       - ".github/workflows/release.yml"
+      - ".github/workflows/prepare-release.yml"
+      - ".github/workflows/publish-prepared-release.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: package-lifecycle-${{ github.ref }}
-  cancel-in-progress: true
+  group: package-lifecycle-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:

@@ -1,0 +1,1124 @@
+name: Prepare release
+
+on:
+  pull_request_target:
+    branches: [main, develop]
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: "Open pull request number to reconcile"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-preparation-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: Snapshot and materialize trusted plan
+    if: >-
+      (github.event_name != 'workflow_dispatch' ||
+       github.ref_name == github.event.repository.default_branch) &&
+      (github.event_name != 'pull_request_target' ||
+       github.event.label.name != 'release:ready' ||
+       github.actor != 'github-actions[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      same_repository: ${{ steps.guard.outputs.same_repository }}
+      artifact_name: ${{ steps.plan.outputs.artifact_name }}
+      push_required: ${{ steps.plan.outputs.push_required }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
+      PACKAGE_NAME: frogprogsy
+    steps:
+      - name: Checkout trusted default branch policy only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: trusted
+
+      - name: Setup Bun for trusted policy
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: 1.3.14
+
+      - name: Resolve live pull request and refuse forks
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          test -n "$PR_NUMBER"
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > pull-request.json
+          state="$(jq -r '.state' pull-request.json)"
+          head_repository="$(jq -r '.head.repo.full_name // ""' pull-request.json)"
+          if [ "$state" != "open" ]; then
+            echo "::error::Pull request #${PR_NUMBER} is not open"
+            exit 1
+          fi
+          if [ "${head_repository,,}" != "${REPOSITORY,,}" ]; then
+            echo "same_repository=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Release preparation refuses fork pull requests without attempting a write"
+            exit 1
+          fi
+          echo "same_repository=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create deterministic live-state collector
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-plan
+          cat > release-plan/collect-live.sh <<'COLLECT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          output="${1:?output path required}"
+          pr_file="$(mktemp)"
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "$pr_file"
+
+          state="$(jq -r '.state' "$pr_file")"
+          base_branch="$(jq -r '.base.ref' "$pr_file")"
+          base_sha="$(jq -r '.base.sha' "$pr_file")"
+          head_branch="$(jq -r '.head.ref' "$pr_file")"
+          head_sha="$(jq -r '.head.sha' "$pr_file")"
+          head_repository="$(jq -r '.head.repo.full_name // ""' "$pr_file")"
+          main_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+
+          test "$state" = "open"
+          test "${head_repository,,}" = "${REPOSITORY,,}"
+          case "${base_branch}:${head_branch}" in
+            develop:*) test "$head_branch" != "develop" ;;
+            main:develop) ;;
+            *) echo "unsupported release pull request ${head_branch} -> ${base_branch}" >&2; exit 1 ;;
+          esac
+
+          git -C "$TRUSTED_GIT" fetch --force --no-tags origin "$head_sha" "$base_sha" "$main_sha"
+          git -C "$TRUSTED_GIT" fetch --force --tags origin
+
+          main_version="$(git -C "$TRUSTED_GIT" show "${main_sha}:package.json" | jq -er '.version')"
+          head_version="$(git -C "$TRUSTED_GIT" show "${head_sha}:package.json" | jq -er '.version')"
+          labels="$(jq -c '[.labels[].name] | sort' "$pr_file")"
+          npm_versions="$(npm view "$PACKAGE_NAME" versions --json | jq -c 'if type == "array" then sort else [.] end')"
+          npm_dist_tags="$(npm view "$PACKAGE_NAME" dist-tags --json | jq -cS '.')"
+          npm_latest="$(jq -er '.latest' <<<"$npm_dist_tags")"
+          npm_preview="$(jq -r '.preview // ""' <<<"$npm_dist_tags")"
+
+          collect_registry_proof() {
+            local version="$1"
+            local required_source_sha="$2"
+            local output_file="$3"
+            local proof_dir metadata_file tarball_file package_file catalog_file
+            local attestation_file bundle_file verification_file raw_proof_file
+            local tarball_url attestation_url trusted_workflow_shas
+            proof_dir="$(mktemp -d)"
+            metadata_file="$proof_dir/metadata.json"
+            tarball_file="$proof_dir/package.tgz"
+            package_file="$proof_dir/package.json"
+            catalog_file="$proof_dir/model-catalog-v1.json"
+            attestation_file="$proof_dir/attestations.json"
+            bundle_file="$proof_dir/attestations.jsonl"
+            verification_file="$proof_dir/verified.json"
+            raw_proof_file="$proof_dir/raw-proof.json"
+
+            npm view "${PACKAGE_NAME}@${version}" --json > "$metadata_file"
+            tarball_url="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' "$metadata_file")"
+            attestation_url="$(jq -er '.dist.attestations.url | select(type == "string" and length > 0)' "$metadata_file")"
+            curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --retry 3 --retry-delay 1 --retry-all-errors \
+              --output "$tarball_file" "$tarball_url"
+            curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --retry 3 --retry-delay 1 --retry-all-errors \
+              --output "$attestation_file" "$attestation_url"
+            jq -c '.. | objects | select(has("dsseEnvelope") and has("verificationMaterial"))' \
+              "$attestation_file" > "$bundle_file"
+            test -s "$bundle_file"
+            gh attestation verify "$tarball_file" \
+              --bundle "$bundle_file" \
+              --repo zhsks311/Frogprogsy \
+              --signer-workflow zhsks311/Frogprogsy/.github/workflows/release.yml \
+              --source-ref refs/heads/main \
+              --digest-alg sha512 \
+              --format json > "$verification_file"
+            tar -xOf "$tarball_file" package/package.json > "$package_file"
+            tar -xOf "$tarball_file" package/src/generated/model-catalog-v1.json > "$catalog_file"
+
+            PACKAGE_NAME="$PACKAGE_NAME" \
+            REQUIRED_SOURCE_SHA="$required_source_sha" \
+            EXPECTED_VERSION="$version" \
+            METADATA_FILE="$metadata_file" \
+            PACKAGE_FILE="$package_file" \
+            CATALOG_FILE="$catalog_file" \
+            TARBALL_FILE="$tarball_file" \
+            VERIFICATION_FILE="$verification_file" \
+            RAW_PROOF_FILE="$raw_proof_file" \
+              bun - <<'BUN'
+          import { createHash } from "node:crypto";
+
+          const canonicalize = (value: unknown): unknown => {
+            if (Array.isArray(value)) return value.map(canonicalize);
+            if (value === null || typeof value !== "object") return value;
+            const source = value as Record<string, unknown>;
+            const sorted: Record<string, unknown> = {};
+            for (const key of Object.keys(source).sort()) {
+              if (source[key] !== undefined) sorted[key] = canonicalize(source[key]);
+            }
+            return sorted;
+          };
+
+          const packageName = process.env.PACKAGE_NAME!;
+          const expectedVersion = process.env.EXPECTED_VERSION!;
+          const requiredSourceSha = process.env.REQUIRED_SOURCE_SHA!;
+          if (requiredSourceSha && !/^[0-9a-f]{40}$/.test(requiredSourceSha)) {
+            throw new Error("required registry source must be a lowercase full SHA");
+          }
+          const metadata = await Bun.file(process.env.METADATA_FILE!).json();
+          const packageManifest = await Bun.file(process.env.PACKAGE_FILE!).json();
+          const catalog = await Bun.file(process.env.CATALOG_FILE!).json();
+          const tarball = Buffer.from(await Bun.file(process.env.TARBALL_FILE!).arrayBuffer());
+          const verified = await Bun.file(process.env.VERIFICATION_FILE!).json();
+          const sha1 = createHash("sha1").update(tarball).digest("hex");
+          const sha512Hex = createHash("sha512").update(tarball).digest("hex");
+          const integrity = `sha512-${createHash("sha512").update(tarball).digest("base64")}`;
+
+          if (
+            metadata.name !== packageName
+            || metadata.version !== expectedVersion
+            || metadata.dist?.integrity !== integrity
+            || metadata.dist?.shasum !== sha1
+          ) {
+            throw new Error("registry metadata, integrity, or shasum disagrees with downloaded bytes");
+          }
+          if (packageManifest.name !== packageName || packageManifest.version !== expectedVersion) {
+            throw new Error("registry tarball package identity or version disagrees");
+          }
+          if (
+            catalog === null
+            || typeof catalog !== "object"
+            || catalog.schemaVersion !== 1
+            || !Number.isInteger(catalog.catalogRevision)
+            || catalog.catalogRevision <= 0
+            || !Array.isArray(catalog.providers)
+            || !/^[0-9a-f]{40}$/.test(catalog.sourceCommit)
+            || (requiredSourceSha && catalog.sourceCommit !== requiredSourceSha)
+          ) {
+            throw new Error("bundled model catalog identity or source commit disagrees");
+          }
+          const catalogDigest = createHash("sha256")
+            .update(JSON.stringify(canonicalize(catalog.providers)))
+            .digest("hex");
+          if (catalog.catalogDigest !== catalogDigest) {
+            throw new Error("bundled model catalog digest is invalid");
+          }
+
+          const expectedWorkflowRepository = "zhsks311/Frogprogsy";
+          const expectedWorkflowRef = "refs/heads/main";
+          const expectedBuildSignerUri =
+            "https://github.com/zhsks311/Frogprogsy/.github/workflows/release.yml@refs/heads/main";
+          const workflowShas: string[] = [];
+          for (const row of Array.isArray(verified) ? verified : []) {
+            const verificationResult = row?.verificationResult;
+            const statement = verificationResult?.statement;
+            if (
+              statement?.predicateType !== "https://slsa.dev/provenance/v1"
+              || statement.subject?.some((subject: {
+                digest?: { sha512?: string };
+              }) => subject.digest?.sha512 === sha512Hex) !== true
+            ) {
+              continue;
+            }
+            const certificate = verificationResult?.signature?.certificate;
+            const workflowSha = certificate?.githubWorkflowSHA;
+            if (
+              certificate?.githubWorkflowRepository === expectedWorkflowRepository
+              && certificate.githubWorkflowRef === expectedWorkflowRef
+              && certificate.buildSignerURI === expectedBuildSignerUri
+              && typeof workflowSha === "string"
+              && /^[0-9a-f]{40}$/.test(workflowSha)
+            ) {
+              workflowShas.push(workflowSha);
+            }
+          }
+          const uniqueWorkflowShas = [...new Set(workflowShas)].sort();
+          if (uniqueWorkflowShas.length === 0) {
+            throw new Error("signed SLSA provenance lacks the exact trusted release workflow certificate");
+          }
+          await Bun.write(process.env.RAW_PROOF_FILE!, `${JSON.stringify({
+            version: expectedVersion,
+            sourceSha: catalog.sourceCommit,
+            integrity,
+            shasum: sha1,
+            tarballSha512: sha512Hex,
+            workflowShas: uniqueWorkflowShas,
+          }, null, 2)}\n`);
+          BUN
+
+            trusted_workflow_shas='[]'
+            while IFS= read -r workflow_sha; do
+              [[ "$workflow_sha" =~ ^[0-9a-f]{40}$ ]]
+              if git -C "$TRUSTED_GIT" merge-base --is-ancestor "$workflow_sha" "$main_sha"; then
+                trusted_workflow_shas="$(
+                  jq -cn \
+                    --argjson shas "$trusted_workflow_shas" \
+                    --arg sha "$workflow_sha" \
+                    '$shas + [$sha]'
+                )"
+              fi
+            done < <(jq -r '.workflowShas[]' "$raw_proof_file")
+            test "$(jq 'length' <<<"$trusted_workflow_shas")" -gt 0
+            jq --argjson shas "$trusted_workflow_shas" \
+              '.workflowShas=$shas' "$raw_proof_file" > "$output_file"
+            rm -rf "$proof_dir"
+          }
+
+          npm_latest_proof='null'
+          npm_preview_proof='null'
+          selected_release="$(
+            jq -r '
+              ["release:none", "release:patch", "release:minor", "release:major",
+               "release:preview-patch", "release:preview-minor", "release:preview-major",
+               "release:promote"] as $selections
+              | [.[] | select(. as $label | $selections | index($label))]
+              | if length == 1 then .[0] else "" end
+            ' <<<"$labels"
+          )"
+          if [ -n "$selected_release" ] && [ "$selected_release" != "release:none" ]; then
+            collect_registry_proof "$npm_latest" "$main_sha" "$pr_file.latest-proof.json"
+            npm_latest_proof="$(jq -cS . "$pr_file.latest-proof.json")"
+          fi
+          if [ "$selected_release" = "release:promote" ]; then
+            test -n "$npm_preview"
+            collect_registry_proof "$npm_preview" "" "$pr_file.preview-proof.json"
+            npm_preview_proof="$(jq -cS . "$pr_file.preview-proof.json")"
+          fi
+
+          tag_refs="$({
+            git -C "$TRUSTED_GIT" ls-remote --refs --tags origin 'refs/tags/v*' |
+              while IFS=$'\t' read -r sha ref; do
+                jq -cn --arg sha "$sha" --arg version "${ref#refs/tags/v}" '{version:$version,sha:($sha|ascii_downcase)}'
+              done
+          } | jq -cs 'sort_by(.version)')"
+          releases="$({
+            gh api --paginate "repos/${REPOSITORY}/releases?per_page=100" --jq \
+              '.[] | {version:(.tag_name | sub("^v"; "")), sourceSha:.target_commitish, draft:.draft, prerelease:.prerelease}'
+          } | jq -cs 'sort_by(.version)')"
+          open_pull_requests="$({
+            gh api --paginate "repos/${REPOSITORY}/pulls?state=open&per_page=100" --jq \
+              '.[] | {number:.number, labels:([.labels[].name] | sort)}'
+          } | jq -cs 'sort_by(.number)')"
+
+          commits='[]'
+          while IFS= read -r commit_sha; do
+            test -n "$commit_sha" || continue
+            commit_json="$(gh api "repos/${REPOSITORY}/commits/${commit_sha}")"
+            record="$(jq -c '{
+              sha:(.sha | ascii_downcase),
+              message:.commit.message,
+              parents:[.parents[].sha | ascii_downcase],
+              verified:(.commit.verification.verified == true),
+              committerLogin:(.committer.login // ""),
+              changedPaths:([.files[].filename] | sort)
+            }' <<<"$commit_json")"
+            commits="$(jq -cn --argjson values "$commits" --argjson record "$record" '$values + [$record]')"
+          done < <(git -C "$TRUSTED_GIT" rev-list --reverse "${base_sha}..${head_sha}")
+
+          jq -S -n \
+            --arg repository "$REPOSITORY" \
+            --argjson pullRequest "$PR_NUMBER" \
+            --arg state "${state^^}" \
+            --arg baseBranch "$base_branch" \
+            --arg baseSha "${base_sha,,}" \
+            --arg headBranch "$head_branch" \
+            --arg headSha "${head_sha,,}" \
+            --arg headRepository "$head_repository" \
+            --arg mainSha "${main_sha,,}" \
+            --arg mainVersion "$main_version" \
+            --arg headVersion "$head_version" \
+            --arg npmLatest "$npm_latest" \
+            --arg npmPreview "$npm_preview" \
+            --argjson npmLatestProof "$npm_latest_proof" \
+            --argjson npmPreviewProof "$npm_preview_proof" \
+            --argjson labels "$labels" \
+            --argjson npmVersions "$npm_versions" \
+            --argjson npmDistTags "$npm_dist_tags" \
+            --argjson gitTags "$tag_refs" \
+            --argjson githubReleases "$releases" \
+            --argjson openPullRequests "$open_pull_requests" \
+            --argjson commits "$commits" \
+            --argjson ownedCommitShas '[]' \
+            '{
+              schemaVersion:1,
+              repository:$repository,
+              pullRequest:$pullRequest,
+              state:$state,
+              baseBranch:$baseBranch,
+              baseSha:$baseSha,
+              headBranch:$headBranch,
+              headSha:$headSha,
+              headRepository:$headRepository,
+              sameRepository:(($headRepository|ascii_downcase)==($repository|ascii_downcase)),
+              mainSha:$mainSha,
+              labels:$labels,
+              mainVersion:$mainVersion,
+              headVersion:$headVersion,
+              npmLatest:$npmLatest,
+              npmPreview:$npmPreview,
+              npmLatestProof:$npmLatestProof,
+              npmPreviewProof:$npmPreviewProof,
+              npmVersions:$npmVersions,
+              npmDistTags:$npmDistTags,
+              gitTags:$gitTags,
+              githubReleases:$githubReleases,
+              openPullRequests:$openPullRequests,
+              commits:$commits,
+              ownedCommitShas:$ownedCommitShas
+            }' > "$output"
+          COLLECT
+          chmod 700 release-plan/collect-live.sh
+
+      - name: Capture snapshot and calculate policy plan
+        shell: bash
+        env:
+          TRUSTED_GIT: trusted
+        run: |
+          set -euo pipefail
+          bash release-plan/collect-live.sh release-plan/snapshot.json
+          bun - <<'BUN'
+          import {
+            allocatePreviewVersion,
+            assertSoleSelectedPullRequest,
+            calculatePromotionTarget,
+            formatCancellationTrailers,
+            formatPreparationTrailers,
+            calculateStableTarget,
+            findLatestUncancelledPreparation,
+            parseStrictVersion,
+            requireSingleReleaseSelection,
+            parseReleaseRecord,
+            replacePackageVersion,
+            validatePullRequestSelection,
+          } from "./trusted/scripts/release-policy.ts";
+
+          const snapshot = await Bun.file("release-plan/snapshot.json").json();
+          const repository = snapshot.repository;
+          const headRepository = snapshot.headRepository;
+          if (snapshot.state !== "OPEN") throw new Error(`pull request #${snapshot.pullRequest} is not open`);
+          if (!(headRepository === repository || headRepository.toLowerCase() === repository.toLowerCase())) {
+            throw new Error("fork pull requests cannot enter a write-capable release job");
+          }
+
+          const selectedLabel = requireSingleReleaseSelection(snapshot.labels);
+          const effectiveSelection = selectedLabel;
+          validatePullRequestSelection({
+            selection: effectiveSelection,
+            repository,
+            headRepository,
+            headBranch: snapshot.headBranch,
+            baseBranch: snapshot.baseBranch,
+          });
+          if (effectiveSelection !== "release:none") {
+            assertSoleSelectedPullRequest(snapshot.pullRequest, snapshot.openPullRequests);
+          }
+
+          parseStrictVersion(snapshot.mainVersion);
+          parseStrictVersion(snapshot.headVersion);
+          const ownedCommitShas = snapshot.commits
+            .filter((commit: {
+              verified: boolean;
+              committerLogin: string;
+              parents: string[];
+              changedPaths: string[];
+            }) => {
+              const record = parseReleaseRecord(commit);
+              return record !== null
+                && commit.verified
+                && commit.committerLogin === "github-actions[bot]"
+                && commit.parents.length === 1
+                && commit.changedPaths.length === 1
+                && commit.changedPaths[0] === "package.json";
+            })
+            .map((commit: { sha: string }) => commit.sha);
+          const pending = findLatestUncancelledPreparation({
+            pullRequest: snapshot.pullRequest,
+            commitsOldestFirst: snapshot.commits,
+            ownedCommitShas,
+          });
+          if (effectiveSelection !== "release:none") {
+            if (
+              snapshot.mainVersion !== snapshot.npmLatest
+              || snapshot.npmLatestProof?.version !== snapshot.mainVersion
+              || snapshot.npmLatestProof?.sourceSha !== snapshot.mainSha
+            ) {
+              throw new Error("main SHA and exact npm latest package proof disagree");
+            }
+            const stableTag = snapshot.gitTags.find((tag: { version: string }) => tag.version === snapshot.mainVersion);
+            const stableRelease = snapshot.githubReleases.find(
+              (release: { version: string }) => release.version === snapshot.mainVersion,
+            );
+            if (!stableTag || stableTag.sha !== snapshot.mainSha) {
+              throw new Error("main SHA and immutable stable tag disagree");
+            }
+            if (
+              !stableRelease
+              || stableRelease.draft
+              || stableRelease.prerelease
+              || stableRelease.sourceSha.toLowerCase() !== snapshot.mainSha
+            ) {
+              throw new Error("main SHA and non-draft GitHub stable Release disagree");
+            }
+          }
+          const stores = {
+            npmVersions: snapshot.npmVersions,
+            gitTags: snapshot.gitTags.map((tag: { version: string }) => `v${tag.version}`),
+            githubReleases: snapshot.githubReleases.map((release: { version: string }) => `v${release.version}`),
+          };
+
+          let targetVersion: string | null = null;
+          const promotionSourceSha = pending?.selection === "release:promote"
+            && pending.commitSha === snapshot.headSha
+            ? pending.sourceSha
+            : snapshot.headSha;
+          if (effectiveSelection === "release:promote") {
+            if (
+              !snapshot.npmPreview
+              || snapshot.npmPreviewProof?.version !== snapshot.npmPreview
+              || snapshot.npmPreviewProof?.sourceSha !== promotionSourceSha
+            ) {
+              throw new Error("promotion requires exact npm preview package and provenance proof");
+            }
+            const previewTag = snapshot.gitTags.find(
+              (tag: { version: string }) => tag.version === snapshot.npmPreview,
+            );
+            const previewRelease = snapshot.githubReleases.find(
+              (release: { version: string }) => release.version === snapshot.npmPreview,
+            );
+            if (!previewTag || !previewRelease || previewRelease.draft || !previewRelease.prerelease) {
+              throw new Error("promotion requires immutable preview tag and non-draft GitHub prerelease");
+            }
+            targetVersion = calculatePromotionTarget({
+              registryPreview: snapshot.npmPreviewProof,
+              previewDistTag: snapshot.npmPreview,
+              immutableTag: { version: previewTag.version, sourceSha: previewTag.sha },
+              githubPrerelease: previewRelease,
+              developSha: promotionSourceSha,
+            });
+          } else if (effectiveSelection !== "release:none") {
+            const stableTarget = calculateStableTarget(
+              snapshot.mainVersion,
+              snapshot.npmLatest,
+              effectiveSelection,
+            );
+            targetVersion = effectiveSelection.startsWith("release:preview-")
+              ? allocatePreviewVersion(stableTarget, stores)
+              : stableTarget;
+          }
+
+          if (
+            targetVersion
+            && !targetVersion.includes("-preview.")
+            && (
+              snapshot.npmVersions.includes(targetVersion)
+              || snapshot.gitTags.some((tag: { version: string }) => tag.version === targetVersion)
+              || snapshot.githubReleases.some((release: { version: string }) => release.version === targetVersion)
+            )
+          ) {
+            throw new Error(`stable target ${targetVersion} is already occupied`);
+          }
+
+          const pendingMatches = pending !== null
+            && pending.selection === effectiveSelection
+            && pending.stableBaseline === snapshot.mainVersion
+            && pending.targetVersion === targetVersion
+            && pending.baseSha === snapshot.baseSha
+            && pending.commitSha === snapshot.headSha
+            && snapshot.headVersion === pending.targetVersion;
+          const cancel = pending !== null && !pendingMatches;
+          const prepare = targetVersion !== null && !pendingMatches;
+          const pushBranch = effectiveSelection.startsWith("release:preview-")
+            ? snapshot.headBranch
+            : snapshot.headBranch === "develop" ? "develop" : snapshot.headBranch;
+
+          const headPackageResult = Bun.spawnSync([
+            "git", "-C", "trusted", "show", `${snapshot.headSha}:package.json`,
+          ]);
+          if (headPackageResult.exitCode !== 0) {
+            throw new Error("current head package.json is unavailable");
+          }
+          const originalPackage = headPackageResult.stdout.toString();
+          let currentPackage = originalPackage;
+          const operations: Record<string, unknown>[] = [];
+          await Bun.$`mkdir -p release-plan/packages`;
+
+          const digest = (value: string): string => {
+            const hasher = new Bun.CryptoHasher("sha256");
+            hasher.update(value);
+            return hasher.digest("hex");
+          };
+          const appendOperation = async (
+            kind: "cancellation" | "preparation",
+            afterPackage: string,
+            messageTemplate: string,
+          ): Promise<void> => {
+            const index = operations.length + 1;
+            const beforeFile = `packages/${index}.before.json`;
+            const afterFile = `packages/${index}.after.json`;
+            await Bun.write(`release-plan/${beforeFile}`, currentPackage);
+            await Bun.write(`release-plan/${afterFile}`, afterPackage);
+            operations.push({
+              kind,
+              beforeFile,
+              afterFile,
+              beforeSha256: digest(currentPackage),
+              afterSha256: digest(afterPackage),
+              messageTemplate,
+            });
+            currentPackage = afterPackage;
+          };
+
+          let restoreVersion: string | null = null;
+          if (cancel && pending) {
+            const sourcePackage = Bun.spawnSync([
+              "git", "-C", "trusted", "show", `${pending.sourceSha}:package.json`,
+            ]);
+            if (sourcePackage.exitCode !== 0) {
+              throw new Error("pending preparation source package.json is unavailable");
+            }
+            const sourceJson = JSON.parse(sourcePackage.stdout.toString());
+            restoreVersion = sourceJson.version;
+            parseStrictVersion(restoreVersion);
+            const afterPackage = replacePackageVersion(currentPackage, restoreVersion);
+            const message = `Cancel release preparation\n\n${formatCancellationTrailers({
+              pullRequest: pending.pullRequest,
+              selection: pending.selection,
+              stableBaseline: pending.stableBaseline,
+              targetVersion: pending.targetVersion,
+              baseSha: pending.baseSha,
+              sourceSha: pending.sourceSha,
+              cancelTarget: pending.commitSha,
+            })}`;
+            await appendOperation("cancellation", afterPackage, message);
+          }
+
+          if (prepare && targetVersion) {
+            const placeholderSha = "0".repeat(40);
+            const sourceSha = cancel ? placeholderSha : snapshot.headSha;
+            const trailers = formatPreparationTrailers({
+              pullRequest: snapshot.pullRequest,
+              selection: effectiveSelection,
+              stableBaseline: snapshot.mainVersion,
+              targetVersion,
+              baseSha: snapshot.baseSha,
+              sourceSha,
+            });
+            const message = `Prepare ${targetVersion}\n\n${trailers}`.replace(
+              placeholderSha,
+              "{{PARENT_SHA}}",
+            );
+            await appendOperation(
+              "preparation",
+              replacePackageVersion(currentPackage, targetVersion),
+              message,
+            );
+          }
+
+          await Bun.write("release-plan/package.before.json", originalPackage);
+          await Bun.write("release-plan/package.after.json", currentPackage);
+          const plan = {
+            schemaVersion: 1,
+            pullRequest: snapshot.pullRequest,
+            selectedLabel,
+            effectiveSelection,
+            stableBaseline: snapshot.mainVersion,
+            originalHeadSha: snapshot.headSha,
+            baseSha: snapshot.baseSha,
+            mainSha: snapshot.mainSha,
+            pushBranch,
+            cancel,
+            ownedCommitShas,
+            pendingPreparation: pending,
+            cancellation: cancel ? { ...pending, restoreVersion } : null,
+            prepare,
+            targetVersion,
+            resultVersion: JSON.parse(currentPackage).version,
+            preserve: pendingMatches,
+            pushRequired: operations.length > 0,
+            operations,
+          };
+          await Bun.write("release-plan/plan.json", `${JSON.stringify(plan, null, 2)}\n`);
+          BUN
+
+      - name: Preserve trusted policy used by mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp trusted/scripts/release-policy.ts release-plan/trusted-release-policy.ts
+
+      - name: Seal content-addressed plan
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd release-plan
+            shasum -a 256 snapshot.json plan.json package.before.json package.after.json \
+              trusted-release-policy.ts collect-live.sh > manifest.sha256
+            if compgen -G 'packages/*' >/dev/null; then
+              shasum -a 256 packages/* >> manifest.sha256
+            fi
+          )
+          artifact_name="release-plan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "push_required=$(jq -r '.pushRequired' release-plan/plan.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable release plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.plan.outputs.artifact_name }}
+          path: release-plan/
+          if-no-files-found: error
+          retention-days: 3
+
+  mutate:
+    name: Revalidate, fast-forward, and project release state
+    needs: snapshot
+    if: needs.snapshot.result == 'success' && needs.snapshot.outputs.same_repository == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
+      PACKAGE_NAME: frogprogsy
+      TRUSTED_GIT: trusted-git
+    steps:
+      - name: Download content-addressed plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.snapshot.outputs.artifact_name }}
+          path: release-plan
+
+      - name: Setup Bun for sealed trusted policy
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: 1.3.14
+
+      - name: Verify manifest before reading the plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-plan
+          shasum -a 256 --check manifest.sha256
+
+      - name: Re-read every bound field immediately before writes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$TRUSTED_GIT"
+          git -C "$TRUSTED_GIT" remote add origin "https://github.com/${REPOSITORY}.git"
+          gh auth setup-git
+          bash release-plan/collect-live.sh release-plan/live-snapshot.json
+          cmp --silent release-plan/snapshot.json release-plan/live-snapshot.json || {
+            echo "::error::Live release state changed after planning; refusing all planned writes"
+            exit 1
+          }
+
+      - name: Verify sealed package-only operation chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun - <<'BUN'
+          import { replacePackageVersion } from "./release-plan/trusted-release-policy.ts";
+          const plan = await Bun.file("release-plan/plan.json").json();
+          const digest = (value: string): string => {
+            const hasher = new Bun.CryptoHasher("sha256");
+            hasher.update(value);
+            return hasher.digest("hex");
+          };
+          let expectedBefore = await Bun.file("release-plan/package.before.json").text();
+          for (const operation of plan.operations) {
+            const before = await Bun.file(`release-plan/${operation.beforeFile}`).text();
+            const after = await Bun.file(`release-plan/${operation.afterFile}`).text();
+            if (before !== expectedBefore) throw new Error("operation package chain is discontinuous");
+            if (
+              digest(before) !== operation.beforeSha256
+              || digest(after) !== operation.afterSha256
+            ) {
+              throw new Error("operation package digest disagrees with sealed plan");
+            }
+            const targetVersion = JSON.parse(after).version;
+            if (replacePackageVersion(before, targetVersion) !== after) {
+              throw new Error("operation changes more than package.json.version");
+            }
+            expectedBefore = after;
+          }
+          const expectedAfter = await Bun.file("release-plan/package.after.json").text();
+          if (expectedBefore !== expectedAfter) throw new Error("sealed final package content disagrees");
+          if (plan.pushRequired !== (plan.operations.length > 0)) {
+            throw new Error("pushRequired disagrees with sealed operations");
+          }
+          BUN
+
+      - name: Create verified bot commits and update one ref fast-forward
+        id: push
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORIGINAL_HEAD="$(jq -r '.originalHeadSha' release-plan/plan.json)"
+          RESULT_BRANCH="$(jq -r '.pushBranch' release-plan/plan.json)"
+          PUSH_REQUIRED="$(jq -r '.pushRequired' release-plan/plan.json)"
+
+          # release:ready is automation-owned and is removed before any state-changing update.
+          if jq -e '.labels | index("release:ready") != null' release-plan/snapshot.json >/dev/null; then
+            gh pr edit "$PR_NUMBER" --repo "$REPOSITORY" --remove-label release:ready
+          fi
+          jq --argjson pullRequest "$PR_NUMBER" '
+            .labels=(.labels - ["release:ready"])
+            | .openPullRequests |= map(
+                if .number == $pullRequest then .labels=(.labels - ["release:ready"]) else . end
+              )' release-plan/snapshot.json | jq -S . > release-plan/before-push-snapshot.json
+
+          # This comparison is unconditional, including when no ready label was present.
+          bash release-plan/collect-live.sh release-plan/live-snapshot.json
+          cmp --silent release-plan/before-push-snapshot.json release-plan/live-snapshot.json
+
+          parent_sha="$ORIGINAL_HEAD"
+          created_commits='[]'
+          operation_count="$(jq '.operations | length' release-plan/plan.json)"
+          for ((index=0; index<operation_count; index+=1)); do
+            bash release-plan/collect-live.sh release-plan/live-snapshot.json
+            cmp --silent release-plan/before-push-snapshot.json release-plan/live-snapshot.json
+
+            after_file="$(jq -r ".operations[$index].afterFile" release-plan/plan.json)"
+            message_template="$(jq -r ".operations[$index].messageTemplate" release-plan/plan.json)"
+            message="${message_template//\{\{PARENT_SHA\}\}/$parent_sha}"
+            base_tree="$(gh api "repos/${REPOSITORY}/git/commits/${parent_sha}" --jq '.tree.sha')"
+            blob_sha="$(
+              base64 < "release-plan/${after_file}" | tr -d '\n' |
+                jq -Rs '{content:.,encoding:"base64"}' |
+                gh api --method POST "repos/${REPOSITORY}/git/blobs" --input - --jq '.sha'
+            )"
+            tree_sha="$(
+              jq -n --arg baseTree "$base_tree" --arg blobSha "$blob_sha" '{
+                base_tree:$baseTree,
+                tree:[{path:"package.json",mode:"100644",type:"blob",sha:$blobSha}]
+              }' |
+                gh api --method POST "repos/${REPOSITORY}/git/trees" --input - --jq '.sha'
+            )"
+            commit_sha="$(
+              jq -n --arg message "$message" --arg tree "$tree_sha" --arg parent "$parent_sha" '{
+                message:$message,tree:$tree,parents:[$parent]
+              }' |
+                gh api --method POST "repos/${REPOSITORY}/git/commits" --input - --jq '.sha'
+            )"
+
+            commit_json="$(gh api "repos/${REPOSITORY}/commits/${commit_sha}")"
+            jq -e --arg parent "$parent_sha" --arg message "$message" '
+              .commit.verification.verified == true
+              and .committer.login == "github-actions[bot]"
+              and ([.parents[].sha] == [$parent])
+              and ([.files[].filename] == ["package.json"])
+              and .commit.message == $message' <<<"$commit_json" >/dev/null
+            operation_kind="$(jq -r ".operations[$index].kind" release-plan/plan.json)"
+            COMMIT_SHA="$commit_sha" COMMIT_MESSAGE="$message" PARENT_SHA="$parent_sha" \
+              EXPECTED_KIND="$operation_kind" bun - <<'BUN'
+          import { parseReleaseRecord } from "./release-plan/trusted-release-policy.ts";
+          const record = parseReleaseRecord({
+            sha: process.env.COMMIT_SHA!,
+            message: process.env.COMMIT_MESSAGE!,
+            parents: [process.env.PARENT_SHA!],
+          });
+          if (!record || record.kind !== process.env.EXPECTED_KIND) {
+            throw new Error("GitHub commit does not contain the sealed release record");
+          }
+          if (record.kind === "preparation" && record.sourceSha !== process.env.PARENT_SHA) {
+            throw new Error("preparation source trailer does not bind its sole parent");
+          }
+          BUN
+            record="$(jq -c '{
+              sha:(.sha | ascii_downcase),
+              message:.commit.message,
+              parents:[.parents[].sha | ascii_downcase],
+              verified:(.commit.verification.verified == true),
+              committerLogin:(.committer.login // ""),
+              changedPaths:([.files[].filename] | sort)
+            }' <<<"$commit_json")"
+            created_commits="$(jq -cn --argjson values "$created_commits" --argjson record "$record" '$values + [$record]')"
+            parent_sha="$commit_sha"
+          done
+          RESULT_SHA="$parent_sha"
+
+          if [ "$PUSH_REQUIRED" = "true" ]; then
+            test "$operation_count" -gt 0
+            bash release-plan/collect-live.sh release-plan/live-snapshot.json
+            cmp --silent release-plan/before-push-snapshot.json release-plan/live-snapshot.json
+            jq -n --arg sha "$RESULT_SHA" '{sha:$sha,force:false}' |
+              gh api --method PATCH "repos/${REPOSITORY}/git/refs/heads/${RESULT_BRANCH}" --input - >/dev/null
+          else
+            test "$RESULT_SHA" = "$ORIGINAL_HEAD"
+          fi
+
+          jq --arg resultSha "$RESULT_SHA" \
+            --arg resultVersion "$(jq -r '.resultVersion' release-plan/plan.json)" \
+            --argjson commits "$created_commits" \
+            --argjson pullRequest "$PR_NUMBER" '
+              .headSha=$resultSha
+              | .headVersion=$resultVersion
+              | .commits += $commits
+              | .labels=(.labels - ["release:ready"])
+              | .openPullRequests |= map(
+                  if .number == $pullRequest then .labels=(.labels - ["release:ready"]) else . end
+                )' release-plan/snapshot.json | jq -S . > release-plan/post-snapshot.json
+          echo "result_sha=$RESULT_SHA" >> "$GITHUB_OUTPUT"
+          echo "result_branch=$RESULT_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch and bind exact-ref workflow run ids
+        shell: bash
+        env:
+          RESULT_SHA: ${{ steps.push.outputs.result_sha }}
+          RESULT_BRANCH: ${{ steps.push.outputs.result_branch }}
+        run: |
+          set -euo pipefail
+          revalidate_post_state() {
+            bash release-plan/collect-live.sh release-plan/live-snapshot.json
+            cmp --silent release-plan/post-snapshot.json release-plan/live-snapshot.json
+          }
+          find_exact_ref_run_id() {
+            local workflow="$1"
+            local created_after="$2"
+            local excluded_id="${3:-}"
+            gh api -X GET "repos/${REPOSITORY}/actions/workflows/${workflow}/runs" \
+              -f event=workflow_dispatch -f branch="$RESULT_BRANCH" -f per_page=100 |
+              jq -r --arg sha "$RESULT_SHA" --arg branch "$RESULT_BRANCH" \
+                --arg since "$created_after" --arg excluded "$excluded_id" '
+                [.workflow_runs[]
+                  | select(
+                      .event == "workflow_dispatch"
+                      and .head_sha == $sha
+                      and .head_branch == $branch
+                      and ($since == "" or .created_at >= $since)
+                      and ($excluded == "" or (.id | tostring) != $excluded)
+                    )]
+                | sort_by(.created_at, .id)
+                | (last.id // "")'
+          }
+          await_dispatched_run_id() {
+            local workflow="$1"
+            local created_after="$2"
+            local excluded_id="$3"
+            local run_id=""
+            for attempt in $(seq 1 30); do
+              run_id="$(find_exact_ref_run_id "$workflow" "$created_after" "$excluded_id")"
+              if [ -n "$run_id" ]; then
+                printf '%s\n' "$run_id"
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+
+          : > release-plan/ci.run-id
+          : > release-plan/package.run-id
+          revalidate_post_state
+          if [ "$(jq -r '.pushRequired' release-plan/plan.json)" = "true" ]; then
+            previous_ci_run_id="$(find_exact_ref_run_id ci.yml "" "")"
+            ci_created_after="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            gh workflow run ci.yml --repo "$REPOSITORY" --ref "$RESULT_BRANCH"
+            await_dispatched_run_id ci.yml "$ci_created_after" "$previous_ci_run_id" > release-plan/ci.run-id
+            revalidate_post_state
+            previous_package_run_id="$(find_exact_ref_run_id package-lifecycle.yml "" "")"
+            package_created_after="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            gh workflow run package-lifecycle.yml --repo "$REPOSITORY" --ref "$RESULT_BRANCH"
+            await_dispatched_run_id package-lifecycle.yml "$package_created_after" "$previous_package_run_id" > release-plan/package.run-id
+          elif [ "$(jq -r '.effectiveSelection' release-plan/plan.json)" != "release:none" ]; then
+            find_exact_ref_run_id ci.yml "" > release-plan/ci.run-id
+            find_exact_ref_run_id package-lifecycle.yml "" > release-plan/package.run-id
+            test -s release-plan/ci.run-id
+            test -s release-plan/package.run-id
+          fi
+          revalidate_post_state
+          gh api "repos/${REPOSITORY}/statuses/${RESULT_SHA}" \
+            -f state=pending \
+            -f context='Release state' \
+            -f description='Waiting for bound exact-ref CI and package attempts'
+
+      - name: Wait fail-closed for bound exact-ref attempts
+        shell: bash
+        env:
+          RESULT_SHA: ${{ steps.push.outputs.result_sha }}
+          RESULT_BRANCH: ${{ steps.push.outputs.result_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$(jq -r '.effectiveSelection' release-plan/plan.json)" = "release:none" ] &&
+             [ "$(jq -r '.pushRequired' release-plan/plan.json)" = "false" ]; then
+            exit 0
+          fi
+          ci_run_id="$(cat release-plan/ci.run-id)"
+          package_run_id="$(cat release-plan/package.run-id)"
+          [[ "$ci_run_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$package_run_id" =~ ^[1-9][0-9]*$ ]]
+          latest_exact_ref_run_id() {
+            local workflow="$1"
+            gh api -X GET "repos/${REPOSITORY}/actions/workflows/${workflow}/runs" \
+              -f event=workflow_dispatch -f branch="$RESULT_BRANCH" -f per_page=100 |
+              jq -r --arg sha "$RESULT_SHA" --arg branch "$RESULT_BRANCH" '
+                [.workflow_runs[]
+                  | select(
+                      .event == "workflow_dispatch"
+                      and .head_sha == $sha
+                      and .head_branch == $branch
+                    )]
+                | sort_by(.created_at, .id)
+                | (last.id // "")'
+          }
+
+          for attempt in $(seq 1 40); do
+            latest_ci_run_id="$(latest_exact_ref_run_id ci.yml)"
+            latest_package_run_id="$(latest_exact_ref_run_id package-lifecycle.yml)"
+            if [ "$latest_ci_run_id" != "$ci_run_id" ] ||
+               [ "$latest_package_run_id" != "$package_run_id" ]; then
+              echo "::error::A newer exact-ref workflow_dispatch superseded the bound run"
+              exit 1
+            fi
+            ci_run="$(gh api "repos/${REPOSITORY}/actions/runs/${ci_run_id}")"
+            package_run="$(gh api "repos/${REPOSITORY}/actions/runs/${package_run_id}")"
+            jq -e --arg sha "$RESULT_SHA" --arg branch "$RESULT_BRANCH" '
+              .event == "workflow_dispatch" and .head_sha == $sha and .head_branch == $branch' \
+              <<<"$ci_run" >/dev/null
+            jq -e --arg sha "$RESULT_SHA" --arg branch "$RESULT_BRANCH" '
+              .event == "workflow_dispatch" and .head_sha == $sha and .head_branch == $branch' \
+              <<<"$package_run" >/dev/null
+            ci_status="$(jq -r '.status' <<<"$ci_run")"
+            package_status="$(jq -r '.status' <<<"$package_run")"
+            if [ "$ci_status" = "completed" ] && [ "$package_status" = "completed" ]; then
+              test "$(jq -r '.conclusion' <<<"$ci_run")" = "success"
+              test "$(jq -r '.conclusion' <<<"$package_run")" = "success"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::Bound exact-ref workflow attempts are missing or unfinished"
+          exit 1
+
+      - name: Revalidate exact head and set ready state
+        shell: bash
+        env:
+          RESULT_SHA: ${{ steps.push.outputs.result_sha }}
+          RESULT_BRANCH: ${{ steps.push.outputs.result_branch }}
+        run: |
+          set -euo pipefail
+          require_bound_runs_are_latest() {
+            if [ ! -s release-plan/ci.run-id ] && [ ! -s release-plan/package.run-id ]; then
+              return 0
+            fi
+            ci_run_id="$(cat release-plan/ci.run-id)"
+            package_run_id="$(cat release-plan/package.run-id)"
+            latest_run_id() {
+              local workflow="$1"
+              gh api -X GET "repos/${REPOSITORY}/actions/workflows/${workflow}/runs" \
+                -f event=workflow_dispatch -f branch="$RESULT_BRANCH" -f per_page=100 |
+                jq -r --arg sha "$RESULT_SHA" --arg branch "$RESULT_BRANCH" '
+                  [.workflow_runs[]
+                    | select(
+                        .event == "workflow_dispatch"
+                        and .head_sha == $sha
+                        and .head_branch == $branch
+                      )]
+                  | sort_by(.created_at, .id)
+                  | (last.id // "")'
+            }
+            test "$(latest_run_id ci.yml)" = "$ci_run_id"
+            test "$(latest_run_id package-lifecycle.yml)" = "$package_run_id"
+          }
+          revalidate_ready_state() {
+            require_bound_runs_are_latest
+            bash release-plan/collect-live.sh release-plan/live-snapshot.json
+            cmp --silent release-plan/post-snapshot.json release-plan/live-snapshot.json
+            test "$(jq -r '.headSha' release-plan/live-snapshot.json)" = "$RESULT_SHA"
+            selected="$(jq -r '.effectiveSelection' release-plan/plan.json)"
+            if [ "$selected" != "release:none" ]; then
+              owners="$(jq -r '
+                ["release:patch", "release:minor", "release:major",
+                 "release:preview-patch", "release:preview-minor", "release:preview-major",
+                 "release:promote"] as $selections
+                | [.openPullRequests[]
+                    | select(any(.labels[]; . as $label | $selections | index($label)))
+                    | .number]
+                | unique
+                | @tsv' release-plan/live-snapshot.json)"
+              test "$owners" = "$PR_NUMBER"
+            fi
+          }
+
+          revalidate_ready_state
+          gh api "repos/${REPOSITORY}/statuses/${RESULT_SHA}" \
+            -f state=success \
+            -f context='Release state' \
+            -f description='Exact-head release checks passed'
+          if [ "$(jq -r '.effectiveSelection' release-plan/plan.json)" != "release:none" ]; then
+            revalidate_ready_state
+            gh pr edit "$PR_NUMBER" --repo "$REPOSITORY" --add-label release:ready
+          fi
+
+  failure-state:
+    name: Fail closed after snapshot or mutation failure
+    needs: [snapshot, mutate]
+    if: >-
+      always() &&
+      (needs.snapshot.result == 'failure' || needs.mutate.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request_number }}
+    steps:
+      - name: Remove stale ready and fail the exact live head
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          live_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          state="$(jq -r '.state' <<<"$live_pr")"
+          head_repository="$(jq -r '.head.repo.full_name // ""' <<<"$live_pr")"
+          base_branch="$(jq -r '.base.ref' <<<"$live_pr")"
+          if [ "$state" != "open" ] || [ "${head_repository,,}" != "${REPOSITORY,,}" ]; then
+            exit 0
+          fi
+          case "$base_branch" in
+            main|develop) ;;
+            *) exit 0 ;;
+          esac
+          if jq -e '[.labels[].name] | index("release:ready") != null' <<<"$live_pr" >/dev/null; then
+            gh pr edit "$PR_NUMBER" --repo "$REPOSITORY" --remove-label release:ready
+          fi
+          live_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          test "$(jq -r '.state' <<<"$live_pr")" = "open"
+          test "$(jq -r '.head.repo.full_name // ""' <<<"$live_pr" | tr '[:upper:]' '[:lower:]')" = \
+            "$(tr '[:upper:]' '[:lower:]' <<<"$REPOSITORY")"
+          head_sha="$(jq -r '.head.sha' <<<"$live_pr")"
+          gh api "repos/${REPOSITORY}/statuses/${head_sha}" \
+            -f state=failure \
+            -f context='Release state' \
+            -f description='Release preparation state changed or exact-head checks failed'

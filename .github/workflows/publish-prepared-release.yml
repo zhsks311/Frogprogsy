@@ -1,0 +1,394 @@
+name: Publish prepared release
+run-name: "Publish prepared release [${{ inputs.dispatch-id }}]"
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      expected-sha:
+        description: "Full lowercase prepared merge commit SHA to recover"
+        required: true
+        type: string
+      source-branch:
+        description: "Remote branch containing the prepared merge commit"
+        required: true
+        type: choice
+        options:
+          - develop
+          - main
+      dry-run:
+        description: "Validate and build without publishing"
+        required: true
+        type: boolean
+        default: true
+      dispatch-id:
+        description: "Optional correlation ID for a manual dispatcher"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: publish-prepared-release-${{ github.event_name == 'push' && github.event.after || inputs.expected-sha }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Verify and dispatch prepared release
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout trusted dispatcher
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: 1.3.14
+
+      - name: Classify immutable preparation
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_AFTER: ${{ github.event.after }}
+          PUSH_BRANCH: ${{ github.ref_name }}
+          RECOVERY_SHA: ${{ inputs.expected-sha }}
+          RECOVERY_BRANCH: ${{ inputs.source-branch }}
+          RECOVERY_DRY_RUN: ${{ inputs.dry-run }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "push" ]; then
+            EXPECTED_SHA="$PUSH_AFTER"
+            SOURCE_BRANCH="$PUSH_BRANCH"
+            DRY_RUN=false
+            RECOVERY=false
+          else
+            EXPECTED_SHA="$RECOVERY_SHA"
+            SOURCE_BRANCH="$RECOVERY_BRANCH"
+            DRY_RUN="$RECOVERY_DRY_RUN"
+            RECOVERY=true
+          fi
+
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::expected-sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          }
+          case "$SOURCE_BRANCH" in
+            develop|main) ;;
+            *)
+              echo "::error::source-branch must be develop or main"
+              exit 1
+              ;;
+          esac
+
+          git fetch --force --tags origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/develop:refs/remotes/origin/develop"
+          git cat-file -e "${EXPECTED_SHA}^{commit}" || {
+            echo "::error::Expected commit ${EXPECTED_SHA} is unavailable"
+            exit 1
+          }
+
+          if [ "$RECOVERY" = "true" ] && ! git merge-base --is-ancestor "$EXPECTED_SHA" "refs/remotes/origin/${SOURCE_BRANCH}"; then
+            echo "::error::Recovery SHA ${EXPECTED_SHA} is not contained in origin/${SOURCE_BRANCH}"
+            exit 1
+          fi
+
+          read -r -a merge_parents <<<"$(git show -s --format=%P "$EXPECTED_SHA")"
+          if [ "${#merge_parents[@]}" -ne 2 ]; then
+            if [ "$RECOVERY" = "true" ]; then
+              echo "::error::Recovery SHA must be an exact two-parent merge commit"
+              exit 1
+            fi
+            echo "Push ${EXPECTED_SHA} is not a two-parent merge; no prepared release to dispatch"
+            echo "should-dispatch=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          associated_prs="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${REPOSITORY}/commits/${EXPECTED_SHA}/pulls"
+          )"
+          matching_prs="$(
+            jq -c \
+              --arg sha "$EXPECTED_SHA" \
+              --arg branch "$SOURCE_BRANCH" \
+              '[.[] | select(
+                ((.merge_commit_sha // "") | ascii_downcase) == $sha
+                and .merged_at != null
+                and .base.ref == $branch
+              )]' <<<"$associated_prs"
+          )"
+          matching_count="$(jq 'length' <<<"$matching_prs")"
+          if [ "$matching_count" -eq 0 ]; then
+            if [ "$RECOVERY" = "true" ]; then
+              echo "::error::Recovery SHA is not the recorded merge commit of a pull request into ${SOURCE_BRANCH}"
+              exit 1
+            fi
+            echo "Merge ${EXPECTED_SHA} is not associated with a pull request into ${SOURCE_BRANCH}; no release"
+            echo "should-dispatch=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$matching_count" -ne 1 ]; then
+            echo "::error::Expected exactly one merged pull request for ${EXPECTED_SHA}; found ${matching_count}"
+            exit 1
+          fi
+          pull_request="$(jq -r '.[0].number' <<<"$matching_prs")"
+
+          source_commits='[]'
+          while IFS= read -r commit_sha; do
+            test -n "$commit_sha" || continue
+            commit_json="$(gh api "repos/${REPOSITORY}/commits/${commit_sha}")"
+            record="$(jq -c '{
+              sha:(.sha | ascii_downcase),
+              message:.commit.message,
+              parents:[.parents[].sha | ascii_downcase],
+              verified:(.commit.verification.verified == true),
+              committerLogin:(.committer.login // ""),
+              changedPaths:([.files[].filename] | sort)
+            }' <<<"$commit_json")"
+            source_commits="$(jq -cn --argjson values "$source_commits" --argjson record "$record" '$values + [$record]')"
+          done < <(git rev-list --reverse "${merge_parents[0]}..${merge_parents[1]}")
+
+          merge_message="$(git show -s --format=%B "$EXPECTED_SHA")"
+          merge_version="$(git show "${EXPECTED_SHA}:package.json" | jq -er '.version | select(type == "string")')"
+          candidate="$RUNNER_TEMP/prepared-release-candidate.json"
+          jq -S -n \
+            --argjson pullRequest "$pull_request" \
+            --arg mergeSha "$EXPECTED_SHA" \
+            --arg mergeMessage "$merge_message" \
+            --arg baseParent "${merge_parents[0],,}" \
+            --arg sourceParent "${merge_parents[1],,}" \
+            --arg sourceBranch "$SOURCE_BRANCH" \
+            --arg mergeVersion "$merge_version" \
+            --arg dryRun "$DRY_RUN" \
+            --arg recovery "$RECOVERY" \
+            --argjson sourceCommits "$source_commits" \
+            '{
+              pullRequest:$pullRequest,
+              mergeCommit:{sha:$mergeSha,message:$mergeMessage,parents:[$baseParent,$sourceParent]},
+              sourceSideCommitsOldestFirst:$sourceCommits,
+              sourceBranch:$sourceBranch,
+              mergeVersion:$mergeVersion,
+              dryRun:$dryRun,
+              recovery:$recovery
+            }' > "$candidate"
+
+          cat > "$RUNNER_TEMP/classify-prepared-release.ts" <<'BUN'
+          const {
+            classifyMergedRelease,
+            parseReleaseRecord,
+          } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/release-policy.ts`);
+
+          const snapshot = await Bun.file(process.env.CANDIDATE_PATH!).json();
+          const ownedCommits = snapshot.sourceSideCommitsOldestFirst.filter((commit: {
+            verified: boolean;
+            committerLogin: string;
+            parents: string[];
+            changedPaths: string[];
+          }) => {
+            if (
+              !commit.verified
+              || commit.committerLogin !== "github-actions[bot]"
+              || commit.parents.length !== 1
+              || commit.changedPaths.length !== 1
+              || commit.changedPaths[0] !== "package.json"
+            ) {
+              return false;
+            }
+            return parseReleaseRecord(commit) !== null;
+          });
+
+          const classification = classifyMergedRelease({
+            pullRequest: snapshot.pullRequest,
+            mergeCommit: snapshot.mergeCommit,
+            sourceSideCommitsOldestFirst: ownedCommits,
+          });
+          const outputPath = process.env.GITHUB_OUTPUT;
+          if (!outputPath) {
+            throw new Error("GITHUB_OUTPUT is unavailable");
+          }
+          if (classification.kind === "no-release") {
+            await Bun.write(outputPath, "should-dispatch=false\n");
+            console.log("Ordinary merge has no current verified preparation; publication is a no-op");
+            process.exit(0);
+          }
+
+          const tag = classification.kind === "preview" ? "preview" : "latest";
+          const requiredBranch = tag === "preview" ? "develop" : "main";
+          if (snapshot.sourceBranch !== requiredBranch) {
+            throw new Error(`${tag} preparation cannot publish from ${snapshot.sourceBranch}`);
+          }
+          if (snapshot.mergeVersion !== classification.preparation.targetVersion) {
+            throw new Error(
+              `merge package version ${snapshot.mergeVersion} does not match prepared version ${classification.preparation.targetVersion}`,
+            );
+          }
+
+          await Bun.write(outputPath, [
+            "should-dispatch=true",
+            `expected-sha=${snapshot.mergeCommit.sha}`,
+            `source-branch=${requiredBranch}`,
+            `version=${classification.preparation.targetVersion}`,
+            `tag=${tag}`,
+            `dry-run=${snapshot.dryRun}`,
+            `recovery=${snapshot.recovery}`,
+            "",
+          ].join("\n"));
+          BUN
+          CANDIDATE_PATH="$candidate" bun "$RUNNER_TEMP/classify-prepared-release.ts"
+
+      - name: Wait for exact-SHA gates
+        id: gates
+        if: ${{ steps.classify.outputs.should-dispatch == 'true' }}
+        env:
+          EXPECTED_SHA: ${{ steps.classify.outputs.expected-sha }}
+          SOURCE_BRANCH: ${{ steps.classify.outputs.source-branch }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          latest_run() {
+            local workflow="$1"
+            gh api "repos/${REPOSITORY}/actions/workflows/${workflow}/runs?head_sha=${EXPECTED_SHA}&event=push&branch=${SOURCE_BRANCH}&per_page=100" |
+              jq -c --arg sha "$EXPECTED_SHA" --arg branch "$SOURCE_BRANCH" '
+                [.workflow_runs[] | select(
+                  (.head_sha | ascii_downcase) == $sha
+                  and .event == "push"
+                  and .head_branch == $branch
+                )]
+                | sort_by(.id, .run_attempt) | last // empty'
+          }
+
+          deadline=$((SECONDS + 2700))
+          wait_for_gate() {
+            local workflow="$1"
+            local display_name="$2"
+            while true; do
+              local run_record
+              run_record="$(latest_run "$workflow")"
+              if [ -n "$run_record" ]; then
+                local run_id run_attempt status conclusion
+                run_id="$(jq -r '.id' <<<"$run_record")"
+                run_attempt="$(jq -r '.run_attempt' <<<"$run_record")"
+                status="$(jq -r '.status' <<<"$run_record")"
+                conclusion="$(jq -r '.conclusion // ""' <<<"$run_record")"
+                if [ "$status" = "completed" ]; then
+                  if [ "$conclusion" != "success" ]; then
+                    echo "::error::Newest ${display_name} run ${run_id} attempt ${run_attempt} concluded ${conclusion:-without a conclusion}"
+                    exit 1
+                  fi
+                  printf '%s:%s\n' "$run_id" "$run_attempt"
+                  return
+                fi
+                case "$status" in
+                  queued|in_progress|pending|requested|waiting) ;;
+                  *)
+                    echo "::error::Newest ${display_name} run ${run_id} attempt ${run_attempt} has invalid status ${status}"
+                    exit 1
+                    ;;
+                esac
+              fi
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "::error::Timed out waiting for a newest successful ${display_name} push run at ${EXPECTED_SHA}"
+                exit 1
+              fi
+              sleep 15
+            done
+          }
+
+          ci_run="$(wait_for_gate ci.yml 'Cross-platform CI')"
+          package_run="$(wait_for_gate package-lifecycle.yml 'Package lifecycle')"
+          echo "ci-run=${ci_run}" >> "$GITHUB_OUTPUT"
+          echo "package-run=${package_run}" >> "$GITHUB_OUTPUT"
+
+      - name: Recheck exact-SHA gates
+        if: ${{ steps.classify.outputs.should-dispatch == 'true' }}
+        env:
+          EXPECTED_SHA: ${{ steps.classify.outputs.expected-sha }}
+          SOURCE_BRANCH: ${{ steps.classify.outputs.source-branch }}
+          CI_RUN: ${{ steps.gates.outputs.ci-run }}
+          PACKAGE_RUN: ${{ steps.gates.outputs.package-run }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          latest_run() {
+            local workflow="$1"
+            gh api "repos/${REPOSITORY}/actions/workflows/${workflow}/runs?head_sha=${EXPECTED_SHA}&event=push&branch=${SOURCE_BRANCH}&per_page=100" |
+              jq -c --arg sha "$EXPECTED_SHA" --arg branch "$SOURCE_BRANCH" '
+                [.workflow_runs[] | select(
+                  (.head_sha | ascii_downcase) == $sha
+                  and .event == "push"
+                  and .head_branch == $branch
+                )]
+                | sort_by(.id, .run_attempt) | last // empty'
+          }
+
+          require_same_successful_attempt() {
+            local workflow="$1"
+            local display_name="$2"
+            local bound="$3"
+            local run_record
+            run_record="$(latest_run "$workflow")"
+            test -n "$run_record" || {
+              echo "::error::Newest exact-SHA ${display_name} run disappeared before dispatch"
+              exit 1
+            }
+            local expected_id="${bound%%:*}"
+            local expected_attempt="${bound##*:}"
+            local actual_id actual_attempt status conclusion
+            actual_id="$(jq -r '.id' <<<"$run_record")"
+            actual_attempt="$(jq -r '.run_attempt' <<<"$run_record")"
+            status="$(jq -r '.status' <<<"$run_record")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run_record")"
+            if [ "$actual_id" != "$expected_id" ] || [ "$actual_attempt" != "$expected_attempt" ]; then
+              echo "::error::Superseded exact-SHA ${display_name} attempt: accepted ${bound}, newest is ${actual_id}:${actual_attempt}"
+              exit 1
+            fi
+            if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+              echo "::error::Newest exact-SHA ${display_name} attempt is no longer a completed success"
+              exit 1
+            fi
+          }
+
+          require_same_successful_attempt ci.yml "Cross-platform CI" "$CI_RUN"
+          require_same_successful_attempt package-lifecycle.yml "Package lifecycle" "$PACKAGE_RUN"
+
+      - name: Dispatch immutable release
+        if: ${{ steps.classify.outputs.should-dispatch == 'true' }}
+        env:
+          EXPECTED_SHA: ${{ steps.classify.outputs.expected-sha }}
+          SOURCE_BRANCH: ${{ steps.classify.outputs.source-branch }}
+          VERSION: ${{ steps.classify.outputs.version }}
+          TAG: ${{ steps.classify.outputs.tag }}
+          DRY_RUN: ${{ steps.classify.outputs.dry-run }}
+          RECOVERY: ${{ steps.classify.outputs.recovery }}
+          DISPATCH_ID: ${{ inputs.dispatch-id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml --ref main \
+            -f expected-sha="$EXPECTED_SHA" \
+            -f source-branch="$SOURCE_BRANCH" \
+            -f version="$VERSION" \
+            -f tag="$TAG" \
+            -f dry-run="$DRY_RUN" \
+            -f bootstrap=false \
+            -f recovery="$RECOVERY" \
+            -f dispatch-id="$DISPATCH_ID"
