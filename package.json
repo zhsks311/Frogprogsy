@@ -34,7 +34,6 @@
     "dev:package": "bun scripts/dev-package.ts",
     "prepublishOnly": "bun run generate:model-catalog:git && bun run sync:assets:check && bun run typecheck && bun run build:gui",
     "release": "bun scripts/release.ts",
-    "release:prepare": "bun scripts/release.ts prepare",
     "release:watch": "bun scripts/release.ts watch"
   },
   "dependencies": {

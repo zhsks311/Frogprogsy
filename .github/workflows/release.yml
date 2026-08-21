@@ -1,201 +1,560 @@
 name: Release
+run-name: "Release [${{ inputs.dispatch-id }}]"
 
-# Publish frogprogsy to the package registry from main with an explicit version, dist-tag,
-# and a dry-run-first default. Prepare package.json on develop with
-# `bun run release:prepare <version>`, then merge the develop -> main promotion before
-# dispatching; the workflow verifies that the promoted version matches before publishing.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish — must equal package.json (e.g. 0.1.0)"
+        description: "Prepared version to publish"
         required: true
         type: string
       expected-sha:
-        description: "Exact 40-character main commit SHA to release"
+        description: "Full lowercase prepared merge commit SHA"
         required: true
         type: string
+      source-branch:
+        description: "Remote branch containing the prepared merge commit"
+        required: true
+        type: choice
+        options:
+          - develop
+          - main
       tag:
-        description: "Registry dist-tag"
+        description: "Registry dist-tag derived from preparation evidence"
         required: true
         type: choice
         options:
           - latest
           - preview
-        default: latest
       dry-run:
-        description: "Dry run (build + pack, no actual publish)"
-        required: false
+        description: "Validate and build without publishing"
+        required: true
         type: boolean
         default: true
       bootstrap:
-        description: "One-time first package publish with NPM_BOOTSTRAP_TOKEN (real publish only)"
-        required: false
+        description: "One-time first package publish with NPM_BOOTSTRAP_TOKEN"
+        required: true
         type: boolean
         default: false
+      recovery:
+        description: "Recover an immutable previously prepared release"
+        required: true
+        type: boolean
+        default: false
+      dispatch-id:
+        description: "Optional correlation ID for a manual dispatcher"
+        required: false
+        type: string
+        default: ""
 
-permissions:
-  contents: write # create the matching GitHub Release + version tag after npm publish
-  actions: read # verify the release commit already passed Cross-platform CI
-  id-token: write # OIDC auth for Trusted Publishing + automatic provenance attestation
+permissions: {}
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  publish:
+  preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 50
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      artifact_name: ${{ steps.dispatch.outputs.artifact_name }}
+      ci_run: ${{ steps.gates.outputs.ci_run }}
+      package_run: ${{ steps.gates.outputs.package_run }}
+      pages_run: ${{ steps.gates.outputs.pages_run }}
     steps:
-      - name: Checkout
+      - name: Setup trusted Bun runtime
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: 1.3.14
+
+      - name: Verify dispatch identity and exact SHA containment
+        id: dispatch
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY: ${{ inputs.recovery }}
+          REGISTRY_DIST_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          SOURCE_BRANCH: ${{ inputs.source-branch }}
+          TRUSTED_WORKFLOW_REF: ${{ github.workflow_ref }}
+          TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::expected-sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          }
+          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::Trusted workflow definition SHA is not a full lowercase commit SHA"
+            exit 1
+          }
+          test "$TRUSTED_WORKFLOW_REF" = "${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main" || {
+            echo "::error::Release must use the trusted main workflow definition; got ${TRUSTED_WORKFLOW_REF}"
+            exit 1
+          }
+          case "$SOURCE_BRANCH" in
+            develop|main) ;;
+            *) echo "::error::source-branch must be develop or main"; exit 1 ;;
+          esac
+          case "$BOOTSTRAP:$RECOVERY:$DRY_RUN" in
+            true:true:*) echo "::error::bootstrap and recovery are mutually exclusive"; exit 1 ;;
+            true:false:true) echo "::error::bootstrap is valid only for a real publish"; exit 1 ;;
+            true:false:false|false:true:true|false:true:false|false:false:true|false:false:false) ;;
+            *) echo "::error::bootstrap, recovery, and dry-run must be booleans"; exit 1 ;;
+          esac
+          case "$REGISTRY_DIST_TAG:$SOURCE_BRANCH" in
+            preview:develop)
+              [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-preview\.[1-9][0-9]*$ ]] || {
+                echo "::error::preview requires X.Y.Z-preview.N with positive N"; exit 1;
+              }
+              ;;
+            latest:main)
+              [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+                echo "::error::latest requires X.Y.Z"; exit 1;
+              }
+              ;;
+            preview:*) echo "::error::preview requires source-branch develop"; exit 1 ;;
+            latest:*) echo "::error::latest requires source-branch main"; exit 1 ;;
+            *) echo "::error::tag must be latest or preview"; exit 1 ;;
+          esac
+          if [ "$BOOTSTRAP" = "true" ] && { [ "$SOURCE_BRANCH" != "main" ] || [ "$REGISTRY_DIST_TAG" != "latest" ]; }; then
+            echo "::error::bootstrap must use source-branch main and tag latest"
+            exit 1
+          fi
+          source_status="$(gh api "repos/${REPOSITORY}/compare/${EXPECTED_SHA}...${SOURCE_BRANCH}" --jq '.status')"
+          case "$source_status" in
+            ahead|identical) ;;
+            *) echo "::error::Expected SHA ${EXPECTED_SHA} is not contained in ${SOURCE_BRANCH}"; exit 1 ;;
+          esac
+          workflow_status="$(gh api "repos/${REPOSITORY}/compare/${TRUSTED_WORKFLOW_SHA}...main" --jq '.status')"
+          case "$workflow_status" in
+            ahead|identical) ;;
+            *) echo "::error::Trusted workflow definition is not contained in main history"; exit 1 ;;
+          esac
+          package_file="$RUNNER_TEMP/preflight-package.json"
+          gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/${REPOSITORY}/contents/package.json?ref=${EXPECTED_SHA}" > "$package_file"
+          PACKAGE_FILE="$package_file" RELEASE_VERSION="$RELEASE_VERSION" bun - <<'BUN'
+          const pkg = await Bun.file(process.env.PACKAGE_FILE!).json();
+          if (pkg.name !== "frogprogsy" || pkg.version !== process.env.RELEASE_VERSION) {
+            throw new Error(
+              `package identity ${pkg.name}@${pkg.version} != frogprogsy@${process.env.RELEASE_VERSION}`,
+            );
+          }
+          if (pkg.repository?.url !== "git+https://github.com/zhsks311/Frogprogsy.git") {
+            throw new Error("package.json repository.url must identify zhsks311/Frogprogsy exactly");
+          }
+          BUN
+          echo "artifact_name=release-${EXPECTED_SHA}-${RUN_ID}-${RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Reclassify immutable preparation evidence
+        if: ${{ inputs.bootstrap != true }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY_DIST_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_BRANCH: ${{ inputs.source-branch }}
+          TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          merge_json="$(gh api "repos/${REPOSITORY}/commits/${EXPECTED_SHA}")"
+          mapfile -t merge_parents < <(jq -r '.parents[].sha | ascii_downcase' <<<"$merge_json")
+          test "${#merge_parents[@]}" -eq 2 || {
+            echo "::error::Prepared release SHA must be an exact two-parent merge commit"
+            exit 1
+          }
+          associated_prs="$(gh api -H "Accept: application/vnd.github+json" "repos/${REPOSITORY}/commits/${EXPECTED_SHA}/pulls")"
+          matching_prs="$(jq -c --arg sha "$EXPECTED_SHA" --arg branch "$SOURCE_BRANCH" '[.[] | select(((.merge_commit_sha // "") | ascii_downcase) == $sha and .merged_at != null and .base.ref == $branch)]' <<<"$associated_prs")"
+          matching_count="$(jq 'length' <<<"$matching_prs")"
+          test "$matching_count" -eq 1 || {
+            echo "::error::Expected exactly one merged pull request for ${EXPECTED_SHA} into ${SOURCE_BRANCH}; found ${matching_count}"
+            exit 1
+          }
+          pull_request="$(jq -r '.[0].number' <<<"$matching_prs")"
+          compare_file="$RUNNER_TEMP/source-side-compare.json"
+          gh api --paginate "repos/${REPOSITORY}/compare/${merge_parents[0]}...${merge_parents[1]}?per_page=100" --slurp > "$compare_file"
+          mapfile -t source_shas < <(jq -r '[.[].commits[].sha | ascii_downcase] | reduce .[] as $sha ([]; if index($sha) == null then . + [$sha] else . end)[]' "$compare_file")
+          test "${#source_shas[@]}" -gt 0 || {
+            echo "::error::Prepared merge has no source-side commits"
+            exit 1
+          }
+          source_commits='[]'
+          for commit_sha in "${source_shas[@]}"; do
+            commit_pages="$RUNNER_TEMP/commit-${commit_sha}.json"
+            gh api --paginate "repos/${REPOSITORY}/commits/${commit_sha}?per_page=100" --slurp > "$commit_pages"
+            record="$(jq -c '.[0] as $commit | {sha:($commit.sha | ascii_downcase),message:$commit.commit.message,parents:[$commit.parents[].sha | ascii_downcase],verified:($commit.commit.verification.verified == true),committerLogin:($commit.committer.login // ""),changedPaths:([.[].files[].filename] | sort)}' "$commit_pages")"
+            source_commits="$(jq -cn --argjson values "$source_commits" --argjson record "$record" '$values + [$record]')"
+          done
+          candidate="$RUNNER_TEMP/release-evidence.json"
+          jq -S -n \
+            --argjson pullRequest "$pull_request" \
+            --arg mergeSha "$EXPECTED_SHA" \
+            --arg mergeMessage "$(jq -r '.commit.message' <<<"$merge_json")" \
+            --arg baseParent "${merge_parents[0]}" \
+            --arg sourceParent "${merge_parents[1]}" \
+            --arg releaseVersion "$RELEASE_VERSION" \
+            --arg registryTag "$REGISTRY_DIST_TAG" \
+            --arg sourceBranch "$SOURCE_BRANCH" \
+            --argjson sourceCommits "$source_commits" \
+            '{pullRequest:$pullRequest,mergeCommit:{sha:$mergeSha,message:$mergeMessage,parents:[$baseParent,$sourceParent]},sourceSideCommitsOldestFirst:$sourceCommits,releaseVersion:$releaseVersion,registryTag:$registryTag,sourceBranch:$sourceBranch}' > "$candidate"
+          gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/${REPOSITORY}/contents/scripts/release-policy.ts?ref=${TRUSTED_WORKFLOW_SHA}" \
+            > "$RUNNER_TEMP/trusted-release-policy.ts"
+          cat > "$RUNNER_TEMP/reclassify-release.ts" <<'BUN'
+          const { classifyMergedRelease, parseReleaseRecord } = await import(
+            `${process.env.RUNNER_TEMP}/trusted-release-policy.ts`
+          );
+          const snapshot = await Bun.file(process.env.CANDIDATE_PATH!).json();
+          const ownedCommits = snapshot.sourceSideCommitsOldestFirst.filter((commit: {
+            verified: boolean; committerLogin: string; parents: string[]; changedPaths: string[];
+          }) => commit.verified
+            && commit.committerLogin === "github-actions[bot]"
+            && commit.parents.length === 1
+            && commit.changedPaths.length === 1
+            && commit.changedPaths[0] === "package.json"
+            && parseReleaseRecord(commit) !== null);
+          const classification = classifyMergedRelease({
+            pullRequest: snapshot.pullRequest,
+            mergeCommit: snapshot.mergeCommit,
+            sourceSideCommitsOldestFirst: ownedCommits,
+          });
+          if (classification.kind === "no-release") throw new Error("merge has no current verified immutable preparation");
+          const expectedKind = snapshot.registryTag === "preview" ? "preview" : "latest";
+          const expectedBranch = expectedKind === "preview" ? "develop" : "main";
+          if (classification.kind !== expectedKind) throw new Error(`preparation channel ${classification.kind} does not match ${expectedKind}`);
+          if (snapshot.sourceBranch !== expectedBranch) throw new Error(`${expectedKind} preparation cannot publish from ${snapshot.sourceBranch}`);
+          if (classification.preparation.targetVersion !== snapshot.releaseVersion) {
+            throw new Error(`prepared version ${classification.preparation.targetVersion} does not match ${snapshot.releaseVersion}`);
+          }
+          BUN
+          CANDIDATE_PATH="$candidate" bun "$RUNNER_TEMP/reclassify-release.ts"
+
+      - name: Bind newest exact-SHA gate attempts
+        id: gates
+        env:
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY_DIST_TAG: ${{ inputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_BRANCH: ${{ inputs.source-branch }}
+        run: |
+          set -euo pipefail
+
+          latest_run() {
+            local workflow="$1"
+            local branch="$2"
+            gh api "repos/${REPOSITORY}/actions/workflows/${workflow}/runs?head_sha=${EXPECTED_SHA}&event=push&branch=${branch}&per_page=100" |
+              jq -c --arg sha "$EXPECTED_SHA" --arg branch "$branch" '
+                [.workflow_runs[] | select(
+                  (.head_sha | ascii_downcase) == $sha
+                  and .event == "push"
+                  and .head_branch == $branch
+                )]
+                | sort_by(.id, .run_attempt) | last // empty'
+          }
+
+          require_latest_success() {
+            local workflow="$1"
+            local branch="$2"
+            local display_name="$3"
+            local run_record
+            run_record="$(latest_run "$workflow" "$branch")"
+            test -n "$run_record" || {
+              echo "::error::No ${display_name} push run exists for ${EXPECTED_SHA} on ${branch}"
+              exit 1
+            }
+            local run_id run_attempt status conclusion
+            run_id="$(jq -r '.id' <<<"$run_record")"
+            run_attempt="$(jq -r '.run_attempt' <<<"$run_record")"
+            status="$(jq -r '.status' <<<"$run_record")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run_record")"
+            test "$status" = "completed" || {
+              echo "::error::Newest ${display_name} run ${run_id}:${run_attempt} is ${status}; refusing release"
+              exit 1
+            }
+            test "$conclusion" = "success" || {
+              echo "::error::Newest ${display_name} run ${run_id}:${run_attempt} concluded ${conclusion:-without a conclusion}"
+              exit 1
+            }
+            printf '%s:%s\n' "$run_id" "$run_attempt"
+          }
+
+          PAGES_GATE_WAIT_TIMEOUT_SECONDS=2700
+          wait_for_latest_success() {
+            local workflow="$1"
+            local branch="$2"
+            local display_name="$3"
+            local deadline=$((SECONDS + PAGES_GATE_WAIT_TIMEOUT_SECONDS))
+            while true; do
+              local run_record run_id run_attempt status conclusion
+              run_record="$(latest_run "$workflow" "$branch")"
+              if [ -n "$run_record" ]; then
+                run_id="$(jq -r '.id' <<<"$run_record")"
+                run_attempt="$(jq -r '.run_attempt' <<<"$run_record")"
+                status="$(jq -r '.status' <<<"$run_record")"
+                conclusion="$(jq -r '.conclusion // ""' <<<"$run_record")"
+                if [ "$status" = "completed" ]; then
+                  if [ "$conclusion" != "success" ]; then
+                    echo "::error::Newest ${display_name} run ${run_id}:${run_attempt} concluded ${conclusion:-without a conclusion}" >&2
+                    exit 1
+                  fi
+                  printf '%s:%s\n' "$run_id" "$run_attempt"
+                  return
+                fi
+                case "$status" in
+                  queued|in_progress|pending|requested|waiting) ;;
+                  *)
+                    echo "::error::Newest ${display_name} run ${run_id}:${run_attempt} has invalid status ${status}" >&2
+                    exit 1
+                    ;;
+                esac
+              fi
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "::error::Timed out waiting for newest successful ${display_name} push run at ${EXPECTED_SHA}" >&2
+                exit 1
+              fi
+              echo "::notice::Waiting for newest ${display_name} push attempt at ${EXPECTED_SHA}" >&2
+              sleep 15
+            done
+          }
+
+          ci_run="$(require_latest_success ci.yml "$SOURCE_BRANCH" "Cross-platform CI")"
+          package_run="$(require_latest_success package-lifecycle.yml "$SOURCE_BRANCH" "Package lifecycle")"
+          echo "ci_run=${ci_run}" >> "$GITHUB_OUTPUT"
+          echo "package_run=${package_run}" >> "$GITHUB_OUTPUT"
+          if [ "$REGISTRY_DIST_TAG" = "latest" ]; then
+            pages_run="$(wait_for_latest_success deploy-docs.yml "$SOURCE_BRANCH" "Pages deployment")"
+            echo "pages_run=${pages_run}" >> "$GITHUB_OUTPUT"
+          else
+            echo "pages_run=" >> "$GITHUB_OUTPUT"
+          fi
+  build:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout exact prepared SHA
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 0
+          ref: ${{ inputs.expected-sha }}
+          fetch-depth: 1
+          persist-credentials: false
 
-      # frogprogsy is bun-native (the prepublishOnly GUI build + typecheck run under bun).
       - name: Setup Bun
         uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
         with:
           bun-version: 1.3.14
 
-      # Node + npm exist only in the real-publish lane. registry-url points npm at the public registry.
-      - name: Setup Node
-        if: ${{ inputs.dry-run != true }}
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
-          registry-url: "https://registry.npmjs.org"
+      - name: Install dependencies without lifecycle scripts
+        run: bun install --frozen-lockfile --ignore-scripts
 
-      # Trusted Publishing (OIDC) needs npm >= 11.5.1 — the runner's bundled npm may be older.
-      - name: Use OIDC-capable npm
-        if: ${{ inputs.dry-run != true }}
-        run: npm install -g npm@11.5.1
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Verify version, channel, and package metadata
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-          REGISTRY_DIST_TAG: ${{ inputs.tag }}
-          EXPECTED_SHA: ${{ inputs.expected-sha }}
+      - name: Build exactly one release tarball
         run: |
           set -euo pipefail
-          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[[:alnum:]_.]+)?$ ]] || {
-            echo "::error::Invalid release version: $RELEASE_VERSION"
+          test "$(git rev-parse HEAD)" = "${{ inputs.expected-sha }}"
+          bun run prepublishOnly
+          bun scripts/dev-package.ts build --skip-gates
+          TARBALL="$(bun scripts/dev-package.ts path)"
+          test -f "$TARBALL" || {
+            echo "::error::Package builder did not return a tarball"
             exit 1
           }
-
-          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "::error::expected-sha must be a lowercase 40-character commit SHA"
-            exit 1
-          }
-          test "$GITHUB_SHA" = "$EXPECTED_SHA" || {
-            echo "::error::Workflow checkout SHA ${GITHUB_SHA} != expected release SHA ${EXPECTED_SHA}"
-            exit 1
-          }
-
-          case "$REGISTRY_DIST_TAG" in
-            latest)
-              [[ "$RELEASE_VERSION" != *-* ]] || {
-                echo "::error::latest requires a stable SemVer; got ${RELEASE_VERSION}"
-                exit 1
-              }
-              ;;
-            preview)
-              [[ "$RELEASE_VERSION" == *-* ]] || {
-                echo "::error::preview requires a prerelease SemVer; got ${RELEASE_VERSION}"
-                exit 1
-              }
-              ;;
-            *)
-              echo "::error::Unsupported registry dist-tag: ${REGISTRY_DIST_TAG}"
-              exit 1
-              ;;
+          resolved_tarball="$(realpath "$TARBALL")"
+          case "$resolved_tarball" in
+            "$GITHUB_WORKSPACE"/*) ;;
+            *) echo "::error::Package builder returned a path outside the selected workspace"; exit 1 ;;
           esac
-
-          PKG=$(bun -e 'console.log((await Bun.file("package.json").json()).version)')
-          echo "package.json=$PKG  input=$RELEASE_VERSION"
-          test "$PKG" = "$RELEASE_VERSION" || {
-            echo "::error::package.json ($PKG) != requested ($RELEASE_VERSION) — run bun run release:prepare ${RELEASE_VERSION} on develop, then merge develop -> main"
+          tarball_dir="$(dirname "$resolved_tarball")"
+          shopt -s nullglob
+          tarballs=("$tarball_dir"/*.tgz)
+          test "${#tarballs[@]}" -eq 1 && test "${tarballs[0]}" = "$resolved_tarball" || {
+            echo "::error::Package builder must produce exactly one tarball"
             exit 1
           }
+          mkdir -p "$RUNNER_TEMP/release-upload"
+          cp "$resolved_tarball" "$RUNNER_TEMP/release-upload/"
 
-          REPOSITORY=$(bun -e 'console.log((await Bun.file("package.json").json()).repository?.url ?? "")')
-          test "$REPOSITORY" = "git+https://github.com/zhsks311/Frogprogsy.git" || {
-            echo "::error::package.json repository.url must exactly identify zhsks311/Frogprogsy for npm provenance"
-            exit 1
-          }
+      - name: Upload untrusted build artifact under preflight-fixed name
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ needs.preflight.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release-upload/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+  inspect:
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PACKAGE_NAME: frogprogsy
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      tarball_name: ${{ steps.artifact.outputs.tarball_name }}
+      sha1: ${{ steps.artifact.outputs.sha1 }}
+      sha256: ${{ steps.artifact.outputs.sha256 }}
+      sha512_hex: ${{ steps.artifact.outputs.sha512_hex }}
+      integrity: ${{ steps.artifact.outputs.integrity }}
+      publish_required: ${{ steps.state.outputs.publish_required }}
+      tag_required: ${{ steps.state.outputs.tag_required }}
+      release_required: ${{ steps.state.outputs.release_required }}
+    steps:
+      - name: Setup trusted Bun runtime
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: 1.3.14
 
-      - name: Require latest successful CI, package, and Pages runs for this commit
+      - name: Download preflight-named artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.preflight.outputs.artifact_name }}
+          path: release-artifact
+
+      - name: Inspect exact artifact bytes and package identity
+        id: artifact
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::Release must run from main; got ${GITHUB_REF}"
-            exit 1
-          fi
-
-          # Fail closed on the latest run for this exact SHA. Filtering to successful
-          # runs would let an older green retry hide a newer failed or queued run.
-          require_latest_success() {
-            workflow="$1"
-            gate_fields="$(
-              gh run list \
-                --workflow "$workflow" \
-                --commit "$GITHUB_SHA" \
-                --limit 20 \
-                --json databaseId,conclusion,headSha,status,url,workflowName \
-                --jq '(sort_by(.databaseId) | reverse | .[0] // empty) | [.headSha, .status, (.conclusion // "none"), .url] | @tsv'
-            )"
-            if [ -z "$gate_fields" ]; then
-              echo "::error::No ${workflow} run found for exact release SHA ${GITHUB_SHA}."
-              exit 1
-            fi
-
-            IFS=$'\t' read -r gate_sha gate_status gate_conclusion gate_url <<< "$gate_fields"
-            test "$gate_sha" = "$GITHUB_SHA" || {
-              echo "::error::Latest ${workflow} run resolved to ${gate_sha}, not ${GITHUB_SHA}."
-              exit 1
-            }
-            test "$gate_status" = "completed" || {
-              echo "::error::Latest ${workflow} run for ${GITHUB_SHA} is ${gate_status}; refusing release."
-              exit 1
-            }
-            test "$gate_conclusion" = "success" || {
-              echo "::error::Latest ${workflow} run for ${GITHUB_SHA} concluded ${gate_conclusion}; refusing release."
-              exit 1
-            }
-            echo "${workflow} passed for ${GITHUB_SHA}: ${gate_url}"
-          }
-
-          require_latest_success ci.yml
-          require_latest_success package-lifecycle.yml
-          require_latest_success deploy-docs.yml
-
-      # Normal real publishes are tokenless Trusted Publishing (OIDC): npm auto-detects the
-      # OIDC environment (`id-token: write` above) and generates provenance automatically.
-      # The explicit one-time bootstrap input is the only credential fallback. It is accepted
-      # only while the package does not yet exist and requires the scoped NPM_BOOTSTRAP_TOKEN
-      # Actions secret. Delete that secret immediately after bootstrap and configure the npm
-      # Trusted Publisher for zhsks311/Frogprogsy + release.yml.
-      - name: Preflight release metadata
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.version }}
-          DRY_RUN: ${{ inputs.dry-run }}
-          BOOTSTRAP: ${{ inputs.bootstrap }}
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+          EXPECTED_VERSION: ${{ inputs.version }}
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
+          PAGES_CATALOG_URL: https://zhsks311.github.io/Frogprogsy/catalog/v1/model-catalog.json
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          tarballs=(release-artifact/*.tgz)
+          test "${#tarballs[@]}" -eq 1 || {
+            echo "::error::Build artifact must contain exactly one tarball"
+            exit 1
+          }
+          TARBALL="${tarballs[0]}"
+          inspect_dir="$(mktemp -d)"
+          trap 'rm -rf "$inspect_dir"' EXIT
+          tar -xzf "$TARBALL" -C "$inspect_dir" \
+            package/package.json package/src/generated/model-catalog-v1.json
+          PACKAGE_JSON="$inspect_dir/package/package.json" \
+          PACKAGE_CATALOG="$inspect_dir/package/src/generated/model-catalog-v1.json" \
+          TARBALL_PATH="$TARBALL" \
+            bun - <<'BUN'
+          import { createHash } from "node:crypto";
+          import { appendFileSync } from "node:fs";
+          import { basename } from "node:path";
+          const canonicalize = (value: unknown): unknown => {
+            if (Array.isArray(value)) return value.map(canonicalize);
+            if (value === null || typeof value !== "object") return value;
+            const source = value as Record<string, unknown>;
+            const sorted: Record<string, unknown> = {};
+            for (const key of Object.keys(source).sort()) {
+              if (source[key] !== undefined) sorted[key] = canonicalize(source[key]);
+            }
+            return sorted;
+          };
+          const bytes = Buffer.from(await Bun.file(process.env.TARBALL_PATH!).arrayBuffer());
+          const pkg = await Bun.file(process.env.PACKAGE_JSON!).json();
+          const catalog = await Bun.file(process.env.PACKAGE_CATALOG!).json();
+          if (
+            pkg.name !== "frogprogsy"
+            || pkg.version !== process.env.EXPECTED_VERSION
+            || pkg.repository?.url !== "git+https://github.com/zhsks311/Frogprogsy.git"
+          ) throw new Error("artifact package identity differs from the requested release");
+          if (
+            catalog === null
+            || typeof catalog !== "object"
+            || catalog.schemaVersion !== 1
+            || !Number.isInteger(catalog.catalogRevision)
+            || catalog.catalogRevision <= 0
+            || !Array.isArray(catalog.providers)
+            || catalog.sourceCommit !== process.env.EXPECTED_SHA
+          ) throw new Error("artifact catalog identity or source commit differs");
+          const catalogDigest = createHash("sha256")
+            .update(JSON.stringify(canonicalize(catalog.providers)))
+            .digest("hex");
+          if (catalog.catalogDigest !== catalogDigest) throw new Error("artifact catalog digest is invalid");
+          const sha1 = createHash("sha1").update(bytes).digest("hex");
+          const sha256 = createHash("sha256").update(bytes).digest("hex");
+          const sha512Hex = createHash("sha512").update(bytes).digest("hex");
+          const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+          appendFileSync(process.env.GITHUB_OUTPUT!, [
+            `tarball_name=${basename(process.env.TARBALL_PATH!)}`,
+            `sha1=${sha1}`,
+            `sha256=${sha256}`,
+            `sha512_hex=${sha512Hex}`,
+            `integrity=${integrity}`,
+            "",
+          ].join("\n"));
+          BUN
+          if [ "$REGISTRY_DIST_TAG" = "latest" ]; then
+            pages_catalog="$inspect_dir/pages-model-catalog-v1.json"
+            curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --retry 3 --retry-delay 1 --retry-all-errors \
+              --header "Cache-Control: no-cache" \
+              --header "Pragma: no-cache" \
+              --output "$pages_catalog" \
+              "${PAGES_CATALOG_URL}?release-sha=${EXPECTED_SHA}"
+            PACKAGE_CATALOG="$inspect_dir/package/src/generated/model-catalog-v1.json" \
+            PAGES_CATALOG="$pages_catalog" EXPECTED_SHA="$EXPECTED_SHA" bun - <<'BUN'
+          import { createHash } from "node:crypto";
+          const canonicalize = (value: unknown): unknown => {
+            if (Array.isArray(value)) return value.map(canonicalize);
+            if (value === null || typeof value !== "object") return value;
+            const source = value as Record<string, unknown>;
+            const sorted: Record<string, unknown> = {};
+            for (const key of Object.keys(source).sort()) {
+              if (source[key] !== undefined) sorted[key] = canonicalize(source[key]);
+            }
+            return sorted;
+          };
+          const packageCatalog = await Bun.file(process.env.PACKAGE_CATALOG!).json();
+          const pagesCatalog = await Bun.file(process.env.PAGES_CATALOG!).json();
+          const digest = (catalog: any) => createHash("sha256")
+            .update(JSON.stringify(canonicalize(catalog.providers)))
+            .digest("hex");
+          if (
+            pagesCatalog.sourceCommit !== process.env.EXPECTED_SHA
+            || pagesCatalog.catalogDigest !== digest(pagesCatalog)
+            || packageCatalog.catalogRevision !== pagesCatalog.catalogRevision
+            || packageCatalog.catalogDigest !== pagesCatalog.catalogDigest
+          ) throw new Error("deployed Pages catalog differs from the inspected artifact");
+          BUN
+          fi
+          echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
+          rm -rf "$inspect_dir"
+          trap - EXIT
 
-          pkg_name="$(bun -e 'console.log((await Bun.file("package.json").json()).name)')"
+      - name: Resolve normal or recovery state
+        id: state
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+          GH_TOKEN: ${{ github.token }}
+          LOCAL_TARBALL_INTEGRITY: ${{ steps.artifact.outputs.integrity }}
+          LOCAL_TARBALL_SHA1: ${{ steps.artifact.outputs.sha1 }}
+          LOCAL_TARBALL_SHA512_HEX: ${{ steps.artifact.outputs.sha512_hex }}
+          RECOVERY: ${{ inputs.recovery }}
+          REGISTRY_DIST_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pkg_name="$PACKAGE_NAME"
           release_tag="v${RELEASE_VERSION}"
-          dry_run="${DRY_RUN}"
-          bootstrap="${BOOTSTRAP}"
 
           package_probe_file="$(mktemp)"
           if bun pm view "$pkg_name" name >"$package_probe_file" 2>&1; then
@@ -203,9 +562,7 @@ jobs:
           else
             package_probe="$(<"$package_probe_file")"
             case "$package_probe" in
-              *"E404"*|*"404 Not Found"*|*"does not exist in this registry"*|*"No match found"*)
-                package_exists=false
-                ;;
+              *"E404"*|*"404 Not Found"*|*"does not exist in this registry"*|*"No match found"*) package_exists=false ;;
               *)
                 echo "::error::Unable to determine whether ${pkg_name} exists in the registry"
                 sed 's/^/registry: /' "$package_probe_file"
@@ -217,275 +574,913 @@ jobs:
 
           version_exists=false
           if [ "$package_exists" = "true" ]; then
-            version_probe_file="$(mktemp)"
-            if ! bun pm view "$pkg_name" versions --json >"$version_probe_file" 2>&1; then
+            versions_file="$(mktemp)"
+            if ! bun pm view "$pkg_name" versions --json >"$versions_file" 2>&1; then
               echo "::error::Unable to list registry versions for ${pkg_name}"
-              sed 's/^/registry: /' "$version_probe_file"
+              sed 's/^/registry: /' "$versions_file"
               exit 1
             fi
-
-            if VERSION_PROBE_FILE="$version_probe_file" bun -e '
-              import { registryVersionListed } from "./scripts/release-registry";
-              const output = await Bun.file(process.env.VERSION_PROBE_FILE).text();
-              process.exit(registryVersionListed(output, process.env.RELEASE_VERSION ?? "") ? 0 : 3);
+            if VERSION_PROBE_FILE="$versions_file" RELEASE_VERSION="$RELEASE_VERSION" bun -e '
+              const value = JSON.parse(await Bun.file(process.env.VERSION_PROBE_FILE!).text());
+              const versions = Array.isArray(value) ? value : [value];
+              if (!versions.every(version => typeof version === "string")) {
+                throw new Error("registry versions response must contain only strings");
+              }
+              process.exit(versions.includes(process.env.RELEASE_VERSION!) ? 0 : 3);
             '; then
               version_exists=true
             else
-              version_probe_status=$?
-              if [ "$version_probe_status" -ne 3 ]; then
+              probe_status=$?
+              test "$probe_status" -eq 3 || {
                 echo "::error::Invalid registry versions response for ${pkg_name}"
-                sed 's/^/registry: /' "$version_probe_file"
                 exit 1
-              fi
+              }
             fi
-            rm -f "$version_probe_file"
+            rm -f "$versions_file"
           fi
 
-          if [ "$bootstrap" = "true" ] && [ "$dry_run" = "true" ]; then
-            echo "::error::bootstrap is valid only for a real publish"
-            exit 1
-          fi
-          if [ "$bootstrap" = "true" ] && [ "$REGISTRY_DIST_TAG" != "latest" ]; then
-            echo "::error::bootstrap must create the default latest channel"
-            exit 1
-          fi
-          if [ "$dry_run" != "true" ] && [ "$package_exists" = "false" ] && [ "$bootstrap" != "true" ]; then
-            echo "::error::${pkg_name} does not exist yet; the first real publish requires bootstrap=true"
-            exit 1
-          fi
-          if [ "$package_exists" = "true" ] && [ "$bootstrap" = "true" ]; then
-            echo "::error::bootstrap is one-time only and is forbidden after ${pkg_name} exists"
-            exit 1
-          fi
-
-          git fetch --force --tags origin
-
-          existing_tag_sha="$(git rev-parse -q --verify "refs/tags/${release_tag}^{commit}" || true)"
-          if [ -n "$existing_tag_sha" ] && [ "$existing_tag_sha" != "$GITHUB_SHA" ]; then
-            echo "::error::${release_tag} already points at ${existing_tag_sha}, not ${GITHUB_SHA}"
-            exit 1
-          fi
-
-          if [ -n "$existing_tag_sha" ]; then
-            if [ "$dry_run" = "true" ]; then
-              echo "::notice::${release_tag} already exists at this commit; dry-run only"
-            else
-              echo "::error::${release_tag} already exists. Refusing to publish a version with pre-existing Git metadata."
+          tag_line="$(git ls-remote --tags "https://github.com/${REPOSITORY}.git" "refs/tags/${release_tag}" "refs/tags/${release_tag}^{}")"
+          tag_sha="$(printf '%s\n' "$tag_line" | jq -Rrs --arg tag "refs/tags/${release_tag}" '
+            split("\n")
+            | map(select(length > 0) | split("\t"))
+            | (map(select(.[1] == ($tag + "^{}"))) + map(select(.[1] == $tag)))
+            | .[0][0] // ""')"
+          tag_exists=false
+          if [ -n "$tag_sha" ]; then
+            tag_exists=true
+            test "$tag_sha" = "$EXPECTED_SHA" || {
+              echo "::error::Git tag ${release_tag} points to ${tag_sha}, not ${EXPECTED_SHA}"
               exit 1
-            fi
+            }
           fi
 
-          release_probe_file="$(mktemp)"
-          if gh release view "$release_tag" --json tagName >"$release_probe_file" 2>&1; then
+          release_file="$(mktemp)"
+          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish >"$release_file" 2>&1; then
             release_exists=true
+            EXPECTED_SHA="$EXPECTED_SHA" REGISTRY_DIST_TAG="$REGISTRY_DIST_TAG" RELEASE_FILE="$release_file" RELEASE_TAG="$release_tag" bun -e '
+              const release = await Bun.file(process.env.RELEASE_FILE!).json();
+              const preview = process.env.REGISTRY_DIST_TAG === "preview";
+              if (
+                release.tagName !== process.env.RELEASE_TAG
+                || release.targetCommitish?.toLowerCase() !== process.env.EXPECTED_SHA
+                || release.isPrerelease !== preview
+                || release.isDraft !== false
+              ) {
+                throw new Error("existing GitHub Release has a SHA or channel conflict");
+              }
+            '
+            if [ "$REGISTRY_DIST_TAG" = "latest" ]; then
+              latest_release_tag="$(gh api "repos/${REPOSITORY}/releases/latest" --jq '.tag_name')"
+              test "$latest_release_tag" = "$release_tag" || {
+                echo "::error::Existing stable release ${release_tag} is not GitHub Latest"
+                exit 1
+              }
+            fi
           else
-            release_probe="$(<"$release_probe_file")"
+            release_probe="$(<"$release_file")"
             case "$release_probe" in
-              *"release not found"*)
-                release_exists=false
-                ;;
+              *"release not found"*) release_exists=false ;;
               *)
                 echo "::error::Unable to determine whether GitHub Release ${release_tag} exists"
-                sed 's/^/github: /' "$release_probe_file"
+                sed 's/^/github: /' "$release_file"
                 exit 1
                 ;;
             esac
           fi
-          rm -f "$release_probe_file"
+          rm -f "$release_file"
 
+          if [ "$BOOTSTRAP" = "true" ]; then
+            if [ "$package_exists" = "true" ]; then
+              echo "::error::bootstrap is one-time only and is forbidden after ${pkg_name} exists"
+              exit 1
+            fi
+            if [ "$tag_exists" = "true" ] || [ "$release_exists" = "true" ]; then
+              echo "::error::bootstrap requires absent Git tag and GitHub Release metadata"
+              exit 1
+            fi
+          fi
+
+          validate_existing_npm() {
+            local proof_dir metadata_file tags_file registry_tarball attestation_file bundle_file verification_file workflow_commits_file
+            local tarball_url attestation_url metadata_integrity metadata_shasum
+            proof_dir="$(mktemp -d)"
+            metadata_file="$proof_dir/metadata.json"
+            tags_file="$proof_dir/tags.json"
+            registry_tarball="$proof_dir/registry.tgz"
+            attestation_file="$proof_dir/attestations.json"
+            bundle_file="$proof_dir/attestations.jsonl"
+            verification_file="$proof_dir/verified.json"
+            workflow_commits_file="$proof_dir/workflow-commits.txt"
+
+            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json > "$metadata_file"
+            bun pm view "$pkg_name" dist-tags --json > "$tags_file"
+            tarball_url="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' "$metadata_file")"
+            attestation_url="$(jq -er '.dist.attestations.url | select(type == "string" and length > 0)' "$metadata_file")"
+            curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --retry 3 --retry-delay 1 --retry-all-errors \
+              --output "$registry_tarball" "$tarball_url"
+            cmp -s "$TARBALL" "$registry_tarball" || {
+              echo "::error::registry tarball bytes differ from the inspected artifact"
+              return 1
+            }
+            curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --retry 3 --retry-delay 1 --retry-all-errors \
+              --output "$attestation_file" "$attestation_url"
+            jq -c '.. | objects | select(has("dsseEnvelope") and has("verificationMaterial"))' \
+              "$attestation_file" > "$bundle_file"
+            test -s "$bundle_file" || {
+              echo "::error::npm attestation response contains no DSSE bundles"
+              return 1
+            }
+            gh attestation verify "$TARBALL" \
+              --bundle "$bundle_file" \
+              --repo zhsks311/Frogprogsy \
+              --signer-workflow zhsks311/Frogprogsy/.github/workflows/release.yml \
+              --source-ref refs/heads/main \
+              --digest-alg sha512 \
+              --format json > "$verification_file"
+
+            EXPECTED_CHANNEL="$REGISTRY_DIST_TAG" \
+            EXPECTED_INTEGRITY="$LOCAL_TARBALL_INTEGRITY" \
+            EXPECTED_SHA1="$LOCAL_TARBALL_SHA1" \
+            EXPECTED_SHA512_HEX="$LOCAL_TARBALL_SHA512_HEX" \
+            EXPECTED_VERSION="$RELEASE_VERSION" \
+            METADATA_FILE="$metadata_file" \
+            TAGS_FILE="$tags_file" \
+            VERIFICATION_FILE="$verification_file" \
+            WORKFLOW_COMMITS_FILE="$workflow_commits_file" \
+              bun - <<'BUN'
+          const metadata = await Bun.file(process.env.METADATA_FILE!).json();
+          const tags = await Bun.file(process.env.TAGS_FILE!).json();
+          if (
+            metadata.version !== process.env.EXPECTED_VERSION
+            || metadata.dist?.integrity !== process.env.EXPECTED_INTEGRITY
+            || metadata.dist?.shasum !== process.env.EXPECTED_SHA1
+            || tags[process.env.EXPECTED_CHANNEL!] !== process.env.EXPECTED_VERSION
+          ) {
+            throw new Error("existing npm version failed exact digest or channel validation");
+          }
+          const verified = await Bun.file(process.env.VERIFICATION_FILE!).json();
+          const expectedDigest = process.env.EXPECTED_SHA512_HEX!;
+          const expectedRepository = "zhsks311/Frogprogsy";
+          const expectedRef = "refs/heads/main";
+          const expectedSignerUri =
+            "https://github.com/zhsks311/Frogprogsy/.github/workflows/release.yml@refs/heads/main";
+          const workflowCommits: string[] = [];
+          for (const row of Array.isArray(verified) ? verified : []) {
+            const verificationResult = row?.verificationResult;
+            const statement = verificationResult?.statement;
+            if (
+              statement?.predicateType !== "https://slsa.dev/provenance/v1"
+              || statement.subject?.some((subject: { digest?: { sha512?: string } }) =>
+                subject.digest?.sha512 === expectedDigest
+              ) !== true
+            ) continue;
+            const certificate = verificationResult?.signature?.certificate;
+            const workflowSha = certificate?.githubWorkflowSHA;
+            if (
+              certificate?.githubWorkflowRepository !== expectedRepository
+              || certificate.githubWorkflowRef !== expectedRef
+              || certificate.buildSignerURI !== expectedSignerUri
+              || typeof workflowSha !== "string"
+              || !/^[0-9a-f]{40}$/.test(workflowSha)
+              || certificate.buildSignerDigest !== workflowSha
+              || certificate.buildConfigDigest !== workflowSha
+            ) continue;
+            workflowCommits.push(workflowSha);
+          }
+          const uniqueWorkflowCommits = [...new Set(workflowCommits)].sort();
+          if (uniqueWorkflowCommits.length === 0) {
+            throw new Error("verified certificate lacks the trusted release workflow identity");
+          }
+          await Bun.write(process.env.WORKFLOW_COMMITS_FILE!, `${uniqueWorkflowCommits.join("\n")}\n`);
+          BUN
+
+            local provenance_on_main=false workflow_commit comparison
+            while IFS= read -r workflow_commit; do
+              [[ "$workflow_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+              comparison="$(gh api "repos/${REPOSITORY}/compare/${workflow_commit}...main" --jq '.status')" || return 1
+              case "$comparison" in
+                ahead|identical) provenance_on_main=true ;;
+              esac
+            done < "$workflow_commits_file"
+            test "$provenance_on_main" = "true" || {
+              echo "::error::verified release workflow commit is not in current main history"
+              return 1
+            }
+            rm -rf "$proof_dir"
+          }
+
+          if [ "$RECOVERY" != "true" ]; then
+            if [ "$version_exists" = "true" ] || [ "$tag_exists" = "true" ] || [ "$release_exists" = "true" ]; then
+              echo "::error::normal release requires npm version, Git tag, and GitHub Release all absent"
+              exit 1
+            fi
+            echo "publish_required=true" >> "$GITHUB_OUTPUT"
+            echo "tag_required=true" >> "$GITHUB_OUTPUT"
+            echo "release_required=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$version_exists" != "true" ]; then
+            if [ "$tag_exists" = "true" ] || [ "$release_exists" = "true" ]; then
+              echo "::error::npm is absent while immutable Git or GitHub metadata already exists"
+              exit 1
+            fi
+            echo "publish_required=true" >> "$GITHUB_OUTPUT"
+            echo "tag_required=true" >> "$GITHUB_OUTPUT"
+            echo "release_required=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Never republish an existing npm version. Recovery first proves that
+          # provenance, tarball bytes, source SHA, and channel are identical.
+          validate_existing_npm
+          echo "publish_required=false" >> "$GITHUB_OUTPUT"
+          if [ "$tag_exists" = "true" ]; then
+            echo "tag_required=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_required=true" >> "$GITHUB_OUTPUT"
+          fi
           if [ "$release_exists" = "true" ]; then
-            if [ "$dry_run" = "true" ]; then
-              echo "::notice::GitHub Release ${release_tag} already exists; dry-run only"
-            else
-              echo "::error::GitHub Release ${release_tag} already exists. Choose the next unused patch version."
-              exit 1
-            fi
+            echo "release_required=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_required=true" >> "$GITHUB_OUTPUT"
           fi
+  mutate:
+    if: ${{ inputs.dry-run != true }}
+    needs: [preflight, inspect]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PACKAGE_NAME: frogprogsy
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    steps:
+      - name: Setup trusted Bun runtime
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
+        with:
+          bun-version: 1.3.14
 
-          if [ "$version_exists" = "true" ]; then
-            if [ "$dry_run" = "true" ]; then
-              echo "::notice::${pkg_name}@${RELEASE_VERSION} already exists in the registry; dry-run only"
-            else
-              echo "::error::${pkg_name}@${RELEASE_VERSION} already exists in the registry. Choose the next unused patch version."
-              exit 1
-            fi
-          fi
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
 
-      - name: Build and validate exact tarball
+      - name: Use OIDC-capable npm
+        run: npm install -g npm@11.5.1
+
+      - name: Download preflight-named artifact again
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.preflight.outputs.artifact_name }}
+          path: release-artifact
+
+      - name: Reverify exact artifact bytes and identity
         env:
-          DRY_RUN: ${{ inputs.dry-run }}
-          REGISTRY_DIST_TAG: ${{ inputs.tag }}
-          PAGES_CATALOG_URL: https://zhsks311.github.io/Frogprogsy/catalog/v1/model-catalog.json
+          EXPECTED_INTEGRITY: ${{ needs.inspect.outputs.integrity }}
+          EXPECTED_PACKAGE_NAME: ${{ env.PACKAGE_NAME }}
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+          EXPECTED_SHA1: ${{ needs.inspect.outputs.sha1 }}
+          EXPECTED_SHA256: ${{ needs.inspect.outputs.sha256 }}
+          EXPECTED_SHA512_HEX: ${{ needs.inspect.outputs.sha512_hex }}
+          EXPECTED_TARBALL_NAME: ${{ needs.inspect.outputs.tarball_name }}
+          EXPECTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          bun run prepublishOnly
-          bun scripts/dev-package.ts build --skip-gates
-          TARBALL="$(bun scripts/dev-package.ts path)"
-          echo "verified tarball=${TARBALL}"
-          echo "TARBALL=${TARBALL}" >> "$GITHUB_ENV"
-
-          catalog_dir="$(mktemp -d)"
-          trap 'rm -rf "$catalog_dir"' EXIT
-          tar -xzf "$TARBALL" -C "$catalog_dir" package/src/generated/model-catalog-v1.json
-          echo "Verify packaged catalog matches deployed Pages catalog"
-          catalog_url="${PAGES_CATALOG_URL}?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          for attempt in 1 2 3; do
-            curl --fail-with-body --silent --show-error --location \
-              --retry 3 --retry-delay 1 --retry-all-errors \
-              --header "Cache-Control: no-cache" \
-              --header "Pragma: no-cache" \
-              --output "$catalog_dir/pages-model-catalog-v1.json" \
-              "${catalog_url}-${attempt}"
-            if EXPECTED_SHA="$GITHUB_SHA" PAGES_CATALOG="$catalog_dir/pages-model-catalog-v1.json" bun -e '
-              import { modelCatalogDocumentV1Schema } from "./src/model-catalog-schema";
-              const pagesCatalog = modelCatalogDocumentV1Schema.parse(await Bun.file(process.env.PAGES_CATALOG).json());
-              process.exit(pagesCatalog.sourceCommit === process.env.EXPECTED_SHA ? 0 : 1);
-            '; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "::error::Pages catalog did not converge to release SHA ${GITHUB_SHA}"
+          shopt -s nullglob
+          tarballs=(release-artifact/*.tgz)
+          test "${#tarballs[@]}" -eq 1 || {
+            echo "::error::Mutation artifact must contain exactly one tarball"
+            exit 1
+          }
+          TARBALL="${tarballs[0]}"
+          test "$(basename "$TARBALL")" = "$EXPECTED_TARBALL_NAME" || {
+            echo "::error::Mutation tarball name differs from inspected artifact"
+            exit 1
+          }
+          actual_sha1="$(sha1sum "$TARBALL" | cut -d' ' -f1)"
+          actual_sha256="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
+          actual_sha512_hex="$(sha512sum "$TARBALL" | cut -d' ' -f1)"
+          actual_sha512_base64="$(openssl dgst -sha512 -binary "$TARBALL" | openssl base64 -A)"
+          test "$actual_sha1" = "$EXPECTED_SHA1" \
+            && test "$actual_sha256" = "$EXPECTED_SHA256" \
+            && test "$actual_sha512_hex" = "$EXPECTED_SHA512_HEX" \
+            && test "sha512-${actual_sha512_base64}" = "$EXPECTED_INTEGRITY" || {
+              echo "::error::Mutation tarball digest differs from inspected artifact"
               exit 1
-            fi
-            sleep 2
-          done
-          EXPECTED_SHA="$GITHUB_SHA" \
-            PACKAGE_CATALOG="$catalog_dir/package/src/generated/model-catalog-v1.json" \
-            PAGES_CATALOG="$catalog_dir/pages-model-catalog-v1.json" \
-            bun -e '
-              import { catalogDataDigest } from "./src/model-catalog-generator";
-              import { modelCatalogDocumentV1Schema } from "./src/model-catalog-schema";
-              const expectedSha = process.env.EXPECTED_SHA;
-              const packageCatalog = modelCatalogDocumentV1Schema.parse(await Bun.file(process.env.PACKAGE_CATALOG).json());
-              const pagesCatalog = modelCatalogDocumentV1Schema.parse(await Bun.file(process.env.PAGES_CATALOG).json());
-              for (const catalog of [packageCatalog, pagesCatalog]) {
-                if (catalog.catalogDigest !== catalogDataDigest({ providers: catalog.providers })) {
-                  throw new Error(`Catalog revision ${catalog.catalogRevision} has an invalid digest`);
-                }
-              }
-              if (packageCatalog.sourceCommit !== expectedSha) {
-                throw new Error(`Package catalog source ${packageCatalog.sourceCommit} != release ${expectedSha}`);
-              }
-              if (pagesCatalog.sourceCommit !== expectedSha) {
-                throw new Error(`Pages catalog source ${pagesCatalog.sourceCommit} != release ${expectedSha}`);
-              }
-              if (packageCatalog.catalogRevision !== pagesCatalog.catalogRevision) {
-                throw new Error("Package and Pages catalog revisions differ");
-              }
-              if (packageCatalog.catalogDigest !== pagesCatalog.catalogDigest) {
-                throw new Error("Package and Pages catalog digests differ");
-              }
-            '
-          rm -rf "$catalog_dir"
+            }
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          tar -xzf "$TARBALL" -C "$verify_dir" \
+            package/package.json package/src/generated/model-catalog-v1.json
+          PACKAGE_JSON="$verify_dir/package/package.json" \
+          PACKAGE_CATALOG="$verify_dir/package/src/generated/model-catalog-v1.json" \
+            bun - <<'BUN'
+          import { createHash } from "node:crypto";
+          const canonicalize = (value: unknown): unknown => {
+            if (Array.isArray(value)) return value.map(canonicalize);
+            if (value === null || typeof value !== "object") return value;
+            const source = value as Record<string, unknown>;
+            const sorted: Record<string, unknown> = {};
+            for (const key of Object.keys(source).sort()) {
+              if (source[key] !== undefined) sorted[key] = canonicalize(source[key]);
+            }
+            return sorted;
+          };
+          const pkg = await Bun.file(process.env.PACKAGE_JSON!).json();
+          const catalog = await Bun.file(process.env.PACKAGE_CATALOG!).json();
+          const digest = createHash("sha256")
+            .update(JSON.stringify(canonicalize(catalog.providers)))
+            .digest("hex");
+          if (
+            pkg.name !== process.env.EXPECTED_PACKAGE_NAME
+            || pkg.version !== process.env.EXPECTED_VERSION
+            || pkg.repository?.url !== "git+https://github.com/zhsks311/Frogprogsy.git"
+            || catalog.sourceCommit !== process.env.EXPECTED_SHA
+            || catalog.catalogDigest !== digest
+          ) throw new Error("mutation artifact identity differs from inspected artifact");
+          BUN
+          echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
+          rm -rf "$verify_dir"
           trap - EXIT
 
-          if [ "$DRY_RUN" = "true" ]; then
-            echo "::notice::DRY RUN — validating the exact Bun-built tarball, not publishing"
-            # Bun 1.3.14 requires NPM_CONFIG_TOKEN even for a client-side dry-run.
-            # This fixed placeholder is not a credential; --dry-run performs no upload.
-            NPM_CONFIG_TOKEN=frogprogsy-dry-run-placeholder bun publish --dry-run "$TARBALL" --tag "$REGISTRY_DIST_TAG" --access public
+      - name: Recompute normal or recovery state immediately before mutation
+        id: current_state
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+          GH_TOKEN: ${{ github.token }}
+          LOCAL_TARBALL_INTEGRITY: ${{ needs.inspect.outputs.integrity }}
+          LOCAL_TARBALL_SHA1: ${{ needs.inspect.outputs.sha1 }}
+          LOCAL_TARBALL_SHA512_HEX: ${{ needs.inspect.outputs.sha512_hex }}
+          RECOVERY: ${{ inputs.recovery }}
+          REGISTRY_DIST_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pkg_name="$PACKAGE_NAME"
+          release_tag="v${RELEASE_VERSION}"
+
+          package_probe_file="$(mktemp)"
+          if bun pm view "$pkg_name" name >"$package_probe_file" 2>&1; then
+            package_exists=true
+          else
+            package_probe="$(<"$package_probe_file")"
+            case "$package_probe" in
+              *"E404"*|*"404 Not Found"*|*"does not exist in this registry"*|*"No match found"*) package_exists=false ;;
+              *)
+                echo "::error::Unable to determine whether ${pkg_name} exists in the registry"
+                sed 's/^/registry: /' "$package_probe_file"
+                exit 1
+                ;;
+            esac
+          fi
+          rm -f "$package_probe_file"
+
+          version_exists=false
+          if [ "$package_exists" = "true" ]; then
+            versions_file="$(mktemp)"
+            if ! bun pm view "$pkg_name" versions --json >"$versions_file" 2>&1; then
+              echo "::error::Unable to list registry versions for ${pkg_name}"
+              sed 's/^/registry: /' "$versions_file"
+              exit 1
+            fi
+            if VERSION_PROBE_FILE="$versions_file" RELEASE_VERSION="$RELEASE_VERSION" bun -e '
+              const value = JSON.parse(await Bun.file(process.env.VERSION_PROBE_FILE!).text());
+              const versions = Array.isArray(value) ? value : [value];
+              if (!versions.every(version => typeof version === "string")) {
+                throw new Error("registry versions response must contain only strings");
+              }
+              process.exit(versions.includes(process.env.RELEASE_VERSION!) ? 0 : 3);
+            '; then
+              version_exists=true
+            else
+              probe_status=$?
+              test "$probe_status" -eq 3 || {
+                echo "::error::Invalid registry versions response for ${pkg_name}"
+                exit 1
+              }
+            fi
+            rm -f "$versions_file"
           fi
 
-      # Keep the bootstrap credential out of install, build, lifecycle, and dry-run steps.
-      # It is exposed only to the final npm process in the explicit one-time bootstrap mode.
-      - name: Publish exact tarball
-        if: ${{ inputs.dry-run != true }}
+          tag_line="$(git ls-remote --tags "https://github.com/${REPOSITORY}.git" "refs/tags/${release_tag}" "refs/tags/${release_tag}^{}")"
+          tag_sha="$(printf '%s\n' "$tag_line" | jq -Rrs --arg tag "refs/tags/${release_tag}" '
+            split("\n")
+            | map(select(length > 0) | split("\t"))
+            | (map(select(.[1] == ($tag + "^{}"))) + map(select(.[1] == $tag)))
+            | .[0][0] // ""')"
+          tag_exists=false
+          if [ -n "$tag_sha" ]; then
+            tag_exists=true
+            test "$tag_sha" = "$EXPECTED_SHA" || {
+              echo "::error::Git tag ${release_tag} points to ${tag_sha}, not ${EXPECTED_SHA}"
+              exit 1
+            }
+          fi
+
+          release_file="$(mktemp)"
+          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish >"$release_file" 2>&1; then
+            release_exists=true
+            EXPECTED_SHA="$EXPECTED_SHA" REGISTRY_DIST_TAG="$REGISTRY_DIST_TAG" RELEASE_FILE="$release_file" RELEASE_TAG="$release_tag" bun -e '
+              const release = await Bun.file(process.env.RELEASE_FILE!).json();
+              const preview = process.env.REGISTRY_DIST_TAG === "preview";
+              if (
+                release.tagName !== process.env.RELEASE_TAG
+                || release.targetCommitish?.toLowerCase() !== process.env.EXPECTED_SHA
+                || release.isPrerelease !== preview
+                || release.isDraft !== false
+              ) {
+                throw new Error("existing GitHub Release has a SHA or channel conflict");
+              }
+            '
+            if [ "$REGISTRY_DIST_TAG" = "latest" ]; then
+              latest_release_tag="$(gh api "repos/${REPOSITORY}/releases/latest" --jq '.tag_name')"
+              test "$latest_release_tag" = "$release_tag" || {
+                echo "::error::Existing stable release ${release_tag} is not GitHub Latest"
+                exit 1
+              }
+            fi
+          else
+            release_probe="$(<"$release_file")"
+            case "$release_probe" in
+              *"release not found"*) release_exists=false ;;
+              *)
+                echo "::error::Unable to determine whether GitHub Release ${release_tag} exists"
+                sed 's/^/github: /' "$release_file"
+                exit 1
+                ;;
+            esac
+          fi
+          rm -f "$release_file"
+
+          if [ "$BOOTSTRAP" = "true" ]; then
+            if [ "$package_exists" = "true" ]; then
+              echo "::error::bootstrap is one-time only and is forbidden after ${pkg_name} exists"
+              exit 1
+            fi
+            if [ "$tag_exists" = "true" ] || [ "$release_exists" = "true" ]; then
+              echo "::error::bootstrap requires absent Git tag and GitHub Release metadata"
+              exit 1
+            fi
+          fi
+
+          validate_existing_npm() {
+            local proof_dir metadata_file tags_file registry_tarball attestation_file bundle_file verification_file workflow_commits_file
+            local tarball_url attestation_url metadata_integrity metadata_shasum
+            proof_dir="$(mktemp -d)"
+            metadata_file="$proof_dir/metadata.json"
+            tags_file="$proof_dir/tags.json"
+            registry_tarball="$proof_dir/registry.tgz"
+            attestation_file="$proof_dir/attestations.json"
+            bundle_file="$proof_dir/attestations.jsonl"
+            verification_file="$proof_dir/verified.json"
+            workflow_commits_file="$proof_dir/workflow-commits.txt"
+
+            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json > "$metadata_file"
+            bun pm view "$pkg_name" dist-tags --json > "$tags_file"
+            tarball_url="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' "$metadata_file")"
+            attestation_url="$(jq -er '.dist.attestations.url | select(type == "string" and length > 0)' "$metadata_file")"
+            curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --retry 3 --retry-delay 1 --retry-all-errors \
+              --output "$registry_tarball" "$tarball_url"
+            cmp -s "$TARBALL" "$registry_tarball" || {
+              echo "::error::registry tarball bytes differ from the inspected artifact"
+              return 1
+            }
+            curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --retry 3 --retry-delay 1 --retry-all-errors \
+              --output "$attestation_file" "$attestation_url"
+            jq -c '.. | objects | select(has("dsseEnvelope") and has("verificationMaterial"))' \
+              "$attestation_file" > "$bundle_file"
+            test -s "$bundle_file" || {
+              echo "::error::npm attestation response contains no DSSE bundles"
+              return 1
+            }
+            gh attestation verify "$TARBALL" \
+              --bundle "$bundle_file" \
+              --repo zhsks311/Frogprogsy \
+              --signer-workflow zhsks311/Frogprogsy/.github/workflows/release.yml \
+              --source-ref refs/heads/main \
+              --digest-alg sha512 \
+              --format json > "$verification_file"
+
+            EXPECTED_CHANNEL="$REGISTRY_DIST_TAG" \
+            EXPECTED_INTEGRITY="$LOCAL_TARBALL_INTEGRITY" \
+            EXPECTED_SHA1="$LOCAL_TARBALL_SHA1" \
+            EXPECTED_SHA512_HEX="$LOCAL_TARBALL_SHA512_HEX" \
+            EXPECTED_VERSION="$RELEASE_VERSION" \
+            METADATA_FILE="$metadata_file" \
+            TAGS_FILE="$tags_file" \
+            VERIFICATION_FILE="$verification_file" \
+            WORKFLOW_COMMITS_FILE="$workflow_commits_file" \
+              bun - <<'BUN'
+          const metadata = await Bun.file(process.env.METADATA_FILE!).json();
+          const tags = await Bun.file(process.env.TAGS_FILE!).json();
+          if (
+            metadata.version !== process.env.EXPECTED_VERSION
+            || metadata.dist?.integrity !== process.env.EXPECTED_INTEGRITY
+            || metadata.dist?.shasum !== process.env.EXPECTED_SHA1
+            || tags[process.env.EXPECTED_CHANNEL!] !== process.env.EXPECTED_VERSION
+          ) {
+            throw new Error("existing npm version failed exact digest or channel validation");
+          }
+          const verified = await Bun.file(process.env.VERIFICATION_FILE!).json();
+          const expectedDigest = process.env.EXPECTED_SHA512_HEX!;
+          const expectedRepository = "zhsks311/Frogprogsy";
+          const expectedRef = "refs/heads/main";
+          const expectedSignerUri =
+            "https://github.com/zhsks311/Frogprogsy/.github/workflows/release.yml@refs/heads/main";
+          const workflowCommits: string[] = [];
+          for (const row of Array.isArray(verified) ? verified : []) {
+            const verificationResult = row?.verificationResult;
+            const statement = verificationResult?.statement;
+            if (
+              statement?.predicateType !== "https://slsa.dev/provenance/v1"
+              || statement.subject?.some((subject: { digest?: { sha512?: string } }) =>
+                subject.digest?.sha512 === expectedDigest
+              ) !== true
+            ) continue;
+            const certificate = verificationResult?.signature?.certificate;
+            const workflowSha = certificate?.githubWorkflowSHA;
+            if (
+              certificate?.githubWorkflowRepository !== expectedRepository
+              || certificate.githubWorkflowRef !== expectedRef
+              || certificate.buildSignerURI !== expectedSignerUri
+              || typeof workflowSha !== "string"
+              || !/^[0-9a-f]{40}$/.test(workflowSha)
+              || certificate.buildSignerDigest !== workflowSha
+              || certificate.buildConfigDigest !== workflowSha
+            ) continue;
+            workflowCommits.push(workflowSha);
+          }
+          const uniqueWorkflowCommits = [...new Set(workflowCommits)].sort();
+          if (uniqueWorkflowCommits.length === 0) {
+            throw new Error("verified certificate lacks the trusted release workflow identity");
+          }
+          await Bun.write(process.env.WORKFLOW_COMMITS_FILE!, `${uniqueWorkflowCommits.join("\n")}\n`);
+          BUN
+
+            local provenance_on_main=false workflow_commit comparison
+            while IFS= read -r workflow_commit; do
+              [[ "$workflow_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+              comparison="$(gh api "repos/${REPOSITORY}/compare/${workflow_commit}...main" --jq '.status')" || return 1
+              case "$comparison" in
+                ahead|identical) provenance_on_main=true ;;
+              esac
+            done < "$workflow_commits_file"
+            test "$provenance_on_main" = "true" || {
+              echo "::error::verified release workflow commit is not in current main history"
+              return 1
+            }
+            rm -rf "$proof_dir"
+          }
+
+          if [ "$RECOVERY" != "true" ]; then
+            if [ "$version_exists" = "true" ] || [ "$tag_exists" = "true" ] || [ "$release_exists" = "true" ]; then
+              echo "::error::normal release requires npm version, Git tag, and GitHub Release all absent"
+              exit 1
+            fi
+            echo "publish_required=true" >> "$GITHUB_OUTPUT"
+            echo "tag_required=true" >> "$GITHUB_OUTPUT"
+            echo "release_required=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$version_exists" != "true" ]; then
+            if [ "$tag_exists" = "true" ] || [ "$release_exists" = "true" ]; then
+              echo "::error::npm is absent while immutable Git or GitHub metadata already exists"
+              exit 1
+            fi
+            echo "publish_required=true" >> "$GITHUB_OUTPUT"
+            echo "tag_required=true" >> "$GITHUB_OUTPUT"
+            echo "release_required=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Never republish an existing npm version. Recovery first proves that
+          # provenance, tarball bytes, source SHA, and channel are identical.
+          validate_existing_npm
+          echo "publish_required=false" >> "$GITHUB_OUTPUT"
+          if [ "$tag_exists" = "true" ]; then
+            echo "tag_required=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_required=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$release_exists" = "true" ]; then
+            echo "release_required=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_required=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require unchanged inspected external state
         env:
+          ACTUAL_PUBLISH_REQUIRED: ${{ steps.current_state.outputs.publish_required }}
+          ACTUAL_RELEASE_REQUIRED: ${{ steps.current_state.outputs.release_required }}
+          ACTUAL_TAG_REQUIRED: ${{ steps.current_state.outputs.tag_required }}
+          EXPECTED_PUBLISH_REQUIRED: ${{ needs.inspect.outputs.publish_required }}
+          EXPECTED_RELEASE_REQUIRED: ${{ needs.inspect.outputs.release_required }}
+          EXPECTED_TAG_REQUIRED: ${{ needs.inspect.outputs.tag_required }}
+        run: |
+          set -euo pipefail
+          test "$ACTUAL_PUBLISH_REQUIRED" = "$EXPECTED_PUBLISH_REQUIRED" \
+            && test "$ACTUAL_TAG_REQUIRED" = "$EXPECTED_TAG_REQUIRED" \
+            && test "$ACTUAL_RELEASE_REQUIRED" = "$EXPECTED_RELEASE_REQUIRED" || {
+              echo "::error::Registry, Git tag, or GitHub Release state changed after inspection"
+              exit 1
+            }
+
+      - name: Recheck gates immediately before release mutation
+        env:
+          CI_RUN: ${{ needs.preflight.outputs.ci_run }}
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN: ${{ needs.preflight.outputs.package_run }}
+          PAGES_RUN: ${{ needs.preflight.outputs.pages_run }}
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_BRANCH: ${{ inputs.source-branch }}
+        run: |
+          set -euo pipefail
+
+          latest_run() {
+            local workflow="$1"
+            local branch="$2"
+            gh api "repos/${REPOSITORY}/actions/workflows/${workflow}/runs?head_sha=${EXPECTED_SHA}&event=push&branch=${branch}&per_page=100" |
+              jq -c --arg sha "$EXPECTED_SHA" --arg branch "$branch" '
+                [.workflow_runs[] | select(
+                  (.head_sha | ascii_downcase) == $sha
+                  and .event == "push"
+                  and .head_branch == $branch
+                )]
+                | sort_by(.id, .run_attempt) | last // empty'
+          }
+
+          require_same_successful_attempt() {
+            local workflow="$1"
+            local branch="$2"
+            local display_name="$3"
+            local accepted="$4"
+            local run_record
+            run_record="$(latest_run "$workflow" "$branch")"
+            test -n "$run_record" || {
+              echo "::error::Newest exact-SHA ${display_name} run disappeared before release mutation"
+              exit 1
+            }
+            local actual_id actual_attempt status conclusion
+            actual_id="$(jq -r '.id' <<<"$run_record")"
+            actual_attempt="$(jq -r '.run_attempt' <<<"$run_record")"
+            status="$(jq -r '.status' <<<"$run_record")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run_record")"
+            if [ "${actual_id}:${actual_attempt}" != "$accepted" ]; then
+              echo "::error::Superseded exact-SHA ${display_name} attempt: accepted ${accepted}, newest is ${actual_id}:${actual_attempt}"
+              exit 1
+            fi
+            test "$status" = "completed" || {
+              echo "::error::Newest exact-SHA ${display_name} attempt is ${status}"
+              exit 1
+            }
+            test "$conclusion" = "success" || {
+              echo "::error::Newest exact-SHA ${display_name} attempt concluded ${conclusion:-without a conclusion}"
+              exit 1
+            }
+          }
+
+          require_same_successful_attempt ci.yml "$SOURCE_BRANCH" "Cross-platform CI" "$CI_RUN"
+          require_same_successful_attempt package-lifecycle.yml "$SOURCE_BRANCH" "Package lifecycle" "$PACKAGE_RUN"
+          if [ "$REGISTRY_DIST_TAG" = "latest" ]; then
+            require_same_successful_attempt deploy-docs.yml "$SOURCE_BRANCH" "Pages deployment" "$PAGES_RUN"
+          fi
+
+      # The bootstrap credential exists only in this no-source mutation step.
+      # Normal mode leaves NODE_AUTH_TOKEN empty so npm Trusted Publishing uses OIDC.
+      - name: Publish exact inspected tarball
+        if: ${{ needs.inspect.outputs.publish_required == 'true' }}
+        env:
           BOOTSTRAP: ${{ inputs.bootstrap }}
           NODE_AUTH_TOKEN: ${{ inputs.bootstrap && secrets.NPM_BOOTSTRAP_TOKEN || '' }}
+          REGISTRY_DIST_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           if [ "$BOOTSTRAP" = "true" ] && [ -z "$NODE_AUTH_TOKEN" ]; then
             echo "::error::bootstrap requires the scoped NPM_BOOTSTRAP_TOKEN Actions secret"
             exit 1
           fi
-          npm publish "$TARBALL" --tag "$REGISTRY_DIST_TAG" --access public
+          npm publish "$TARBALL" --tag "$REGISTRY_DIST_TAG" --access public --provenance --ignore-scripts
 
-      # Confirm the registry actually has the new version (real publishes only).
-      - name: Post-publish registry smoke
-        if: ${{ inputs.dry-run != true }}
+      - name: Create only missing immutable metadata
         env:
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY_DIST_TAG: ${{ inputs.tag }}
+          RELEASE_REQUIRED: ${{ needs.inspect.outputs.release_required }}
           RELEASE_VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          TAG_REQUIRED: ${{ needs.inspect.outputs.tag_required }}
         run: |
           set -euo pipefail
-          pkg_name="$(bun -e 'console.log((await Bun.file("package.json").json()).name)')"
+          release_tag="v${RELEASE_VERSION}"
+          if [ "$TAG_REQUIRED" = "true" ]; then
+            tag_probe="$(mktemp)"
+            if gh api "repos/${REPOSITORY}/git/ref/tags/${release_tag}" >"$tag_probe" 2>&1; then
+              echo "::error::Git tag ${release_tag} appeared after recovery preflight"
+              exit 1
+            fi
+            case "$(<"$tag_probe")" in
+              *"404"*|*"Not Found"*) ;;
+              *)
+                echo "::error::Unable to recheck Git tag ${release_tag}"
+                cat "$tag_probe"
+                exit 1
+                ;;
+            esac
+            rm -f "$tag_probe"
+            gh api --method POST "repos/${REPOSITORY}/git/refs"               -f "ref=refs/tags/${release_tag}"               -f "sha=${EXPECTED_SHA}" >/dev/null
+          fi
+
+          if [ "$RELEASE_REQUIRED" = "true" ]; then
+            release_probe="$(mktemp)"
+            if gh release view "$release_tag" >"$release_probe" 2>&1; then
+              echo "::error::GitHub Release ${release_tag} appeared after recovery preflight"
+              exit 1
+            fi
+            case "$(<"$release_probe")" in
+              *"release not found"*) ;;
+              *)
+                echo "::error::Unable to recheck GitHub Release ${release_tag}"
+                cat "$release_probe"
+                exit 1
+                ;;
+            esac
+            rm -f "$release_probe"
+            notes_file="$(mktemp)"
+            printf 'Published `frogprogsy@%s` from immutable commit `%s` with dist-tag `%s`.\n'               "$RELEASE_VERSION" "$EXPECTED_SHA" "$REGISTRY_DIST_TAG" > "$notes_file"
+            release_flags=(--prerelease=false --latest)
+            if [ "$REGISTRY_DIST_TAG" = "preview" ]; then
+              release_flags=(--prerelease --latest=false)
+            fi
+            gh release create "$release_tag" --target "$EXPECTED_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"
+            rm -f "$notes_file"
+          fi
+
+      - name: Registry smoke and verified provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOCAL_TARBALL_INTEGRITY: ${{ needs.inspect.outputs.integrity }}
+          LOCAL_TARBALL_SHA1: ${{ needs.inspect.outputs.sha1 }}
+          LOCAL_TARBALL_SHA512_HEX: ${{ needs.inspect.outputs.sha512_hex }}
+          REGISTRY_DIST_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pkg_name="$PACKAGE_NAME"
+          validate_existing_npm() {
+            local proof_dir metadata_file tags_file registry_tarball attestation_file bundle_file verification_file workflow_commits_file
+            local tarball_url attestation_url metadata_integrity metadata_shasum
+            proof_dir="$(mktemp -d)"
+            metadata_file="$proof_dir/metadata.json"
+            tags_file="$proof_dir/tags.json"
+            registry_tarball="$proof_dir/registry.tgz"
+            attestation_file="$proof_dir/attestations.json"
+            bundle_file="$proof_dir/attestations.jsonl"
+            verification_file="$proof_dir/verified.json"
+            workflow_commits_file="$proof_dir/workflow-commits.txt"
+
+            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json > "$metadata_file"
+            bun pm view "$pkg_name" dist-tags --json > "$tags_file"
+            tarball_url="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' "$metadata_file")"
+            attestation_url="$(jq -er '.dist.attestations.url | select(type == "string" and length > 0)' "$metadata_file")"
+            curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --retry 3 --retry-delay 1 --retry-all-errors \
+              --output "$registry_tarball" "$tarball_url"
+            cmp -s "$TARBALL" "$registry_tarball" || {
+              echo "::error::registry tarball bytes differ from the inspected artifact"
+              return 1
+            }
+            curl --fail-with-body --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --retry 3 --retry-delay 1 --retry-all-errors \
+              --output "$attestation_file" "$attestation_url"
+            jq -c '.. | objects | select(has("dsseEnvelope") and has("verificationMaterial"))' \
+              "$attestation_file" > "$bundle_file"
+            test -s "$bundle_file" || {
+              echo "::error::npm attestation response contains no DSSE bundles"
+              return 1
+            }
+            gh attestation verify "$TARBALL" \
+              --bundle "$bundle_file" \
+              --repo zhsks311/Frogprogsy \
+              --signer-workflow zhsks311/Frogprogsy/.github/workflows/release.yml \
+              --source-ref refs/heads/main \
+              --digest-alg sha512 \
+              --format json > "$verification_file"
+
+            EXPECTED_CHANNEL="$REGISTRY_DIST_TAG" \
+            EXPECTED_INTEGRITY="$LOCAL_TARBALL_INTEGRITY" \
+            EXPECTED_SHA1="$LOCAL_TARBALL_SHA1" \
+            EXPECTED_SHA512_HEX="$LOCAL_TARBALL_SHA512_HEX" \
+            EXPECTED_VERSION="$RELEASE_VERSION" \
+            METADATA_FILE="$metadata_file" \
+            TAGS_FILE="$tags_file" \
+            VERIFICATION_FILE="$verification_file" \
+            WORKFLOW_COMMITS_FILE="$workflow_commits_file" \
+              bun - <<'BUN'
+          const metadata = await Bun.file(process.env.METADATA_FILE!).json();
+          const tags = await Bun.file(process.env.TAGS_FILE!).json();
+          if (
+            metadata.version !== process.env.EXPECTED_VERSION
+            || metadata.dist?.integrity !== process.env.EXPECTED_INTEGRITY
+            || metadata.dist?.shasum !== process.env.EXPECTED_SHA1
+            || tags[process.env.EXPECTED_CHANNEL!] !== process.env.EXPECTED_VERSION
+          ) {
+            throw new Error("existing npm version failed exact digest or channel validation");
+          }
+          const verified = await Bun.file(process.env.VERIFICATION_FILE!).json();
+          const expectedDigest = process.env.EXPECTED_SHA512_HEX!;
+          const expectedRepository = "zhsks311/Frogprogsy";
+          const expectedRef = "refs/heads/main";
+          const expectedSignerUri =
+            "https://github.com/zhsks311/Frogprogsy/.github/workflows/release.yml@refs/heads/main";
+          const workflowCommits: string[] = [];
+          for (const row of Array.isArray(verified) ? verified : []) {
+            const verificationResult = row?.verificationResult;
+            const statement = verificationResult?.statement;
+            if (
+              statement?.predicateType !== "https://slsa.dev/provenance/v1"
+              || statement.subject?.some((subject: { digest?: { sha512?: string } }) =>
+                subject.digest?.sha512 === expectedDigest
+              ) !== true
+            ) continue;
+            const certificate = verificationResult?.signature?.certificate;
+            const workflowSha = certificate?.githubWorkflowSHA;
+            if (
+              certificate?.githubWorkflowRepository !== expectedRepository
+              || certificate.githubWorkflowRef !== expectedRef
+              || certificate.buildSignerURI !== expectedSignerUri
+              || typeof workflowSha !== "string"
+              || !/^[0-9a-f]{40}$/.test(workflowSha)
+              || certificate.buildSignerDigest !== workflowSha
+              || certificate.buildConfigDigest !== workflowSha
+            ) continue;
+            workflowCommits.push(workflowSha);
+          }
+          const uniqueWorkflowCommits = [...new Set(workflowCommits)].sort();
+          if (uniqueWorkflowCommits.length === 0) {
+            throw new Error("verified certificate lacks the trusted release workflow identity");
+          }
+          await Bun.write(process.env.WORKFLOW_COMMITS_FILE!, `${uniqueWorkflowCommits.join("\n")}\n`);
+          BUN
+
+            local provenance_on_main=false workflow_commit comparison
+            while IFS= read -r workflow_commit; do
+              [[ "$workflow_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+              comparison="$(gh api "repos/${REPOSITORY}/compare/${workflow_commit}...main" --jq '.status')" || return 1
+              case "$comparison" in
+                ahead|identical) provenance_on_main=true ;;
+              esac
+            done < "$workflow_commits_file"
+            test "$provenance_on_main" = "true" || {
+              echo "::error::verified release workflow commit is not in current main history"
+              return 1
+            }
+            rm -rf "$proof_dir"
+          }
+
           for attempt in $(seq 1 30); do
-            if VERSION=$(bun pm view "${pkg_name}@${RELEASE_VERSION}" version 2>/dev/null); then
-              echo "registry version=$VERSION"
-              test "$VERSION" = "$RELEASE_VERSION"
-              bun pm view "$pkg_name" dist-tags
+            if validate_existing_npm; then
+              echo "Registry bytes, exact digest, verified provenance, and ${REGISTRY_DIST_TAG} dist-tag are verified"
               exit 0
             fi
-            echo "::notice::${pkg_name}@${RELEASE_VERSION} not visible in the registry yet (attempt $attempt/30)"
+            echo "::notice::Registry provenance has not converged for ${pkg_name}@${RELEASE_VERSION} (${attempt}/30)"
             sleep 10
           done
-          echo "::error::package registry smoke failed after 30 attempts"
+          echo "::error::Registry smoke, provenance, or dist-tag verification failed"
           bun pm view "$pkg_name" versions dist-tags || true
           exit 1
 
-      - name: Create GitHub release
-        if: ${{ inputs.dry-run != true }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.version }}
-          REGISTRY_DIST_TAG: ${{ inputs.tag }}
+      - name: Report stable dist-tags and manual preview cleanup
+        if: ${{ inputs.tag == 'latest' }}
         run: |
           set -euo pipefail
-
-          release_tag="v${RELEASE_VERSION}"
-          notes_file="$(mktemp)"
-          release_flags=(--prerelease=false --latest)
-          if [ "$REGISTRY_DIST_TAG" = "preview" ]; then
-            release_flags=(--prerelease --latest=false)
-          fi
-
-          git fetch --force --tags origin
-
-          existing_tag_sha="$(git rev-parse -q --verify "refs/tags/${release_tag}^{commit}" || true)"
-          if [ -n "$existing_tag_sha" ] && [ "$existing_tag_sha" != "$GITHUB_SHA" ]; then
-            echo "::error::${release_tag} already points at ${existing_tag_sha}, not ${GITHUB_SHA}"
-            exit 1
-          fi
-
-          previous_tag="$(
-            git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname |
-              grep -vx "$release_tag" |
-              head -n 1 || true
-          )"
-
-          {
-            echo "Published to the package registry as \`frogprogsy@${RELEASE_VERSION}\` with dist-tag \`${REGISTRY_DIST_TAG}\`."
-            echo
-            echo "## Commit log"
-            echo
-            if [ -n "$previous_tag" ]; then
-              echo "Changes since \`${previous_tag}\`:"
-              echo
-              git log --reverse --no-merges --pretty=format:'- %s (%h)' "${previous_tag}..HEAD" |
-                grep -vE '^- release: v[0-9]+\.[0-9]+\.[0-9]+' || true
-              echo
-              echo
-              echo "[Full diff](https://github.com/${GITHUB_REPOSITORY}/compare/${previous_tag}...${release_tag})"
-            else
-              echo "Initial release commits:"
-              echo
-              git log --reverse --no-merges --pretty=format:'- %s (%h)' HEAD |
-                grep -vE '^- release: v[0-9]+\.[0-9]+\.[0-9]+' || true
-            fi
-          } > "$notes_file"
-
-          if ! grep -q '^- ' "$notes_file"; then
-            printf '\n- Release version bump only.\n' >> "$notes_file"
-          fi
-
-          if [ -z "$existing_tag_sha" ]; then
-            git tag "$release_tag" "$GITHUB_SHA"
-            git push origin "refs/tags/${release_tag}"
-          fi
-
-          if gh release view "$release_tag" >/dev/null 2>&1; then
-            gh release edit "$release_tag" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"
-          else
-            gh release create "$release_tag" --target "$GITHUB_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"
+          dist_tags="$(npm view "$PACKAGE_NAME" dist-tags --json)"
+          echo "Current npm dist-tags:"
+          printf '%s\n' "$dist_tags"
+          if DIST_TAGS="$dist_tags" node -e '
+            const tags = JSON.parse(process.env.DIST_TAGS);
+            process.exit(typeof tags.preview === "string" && tags.preview.length > 0 ? 0 : 1);
+          '; then
+            echo "Preview still exists. A maintainer may remove it manually with:"
+            echo "npm dist-tag rm frogprogsy preview"
           fi

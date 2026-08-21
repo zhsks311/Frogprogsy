@@ -25,6 +25,10 @@ bun add -g frogprogsy@preview
 
 `frogp update` 始终把 Bun 管理的安装切换到稳定版 `latest`。要继续使用预览版，请用 Bun 重新安装 `frogprogsy@preview`。
 
+预览版是公开且不可变的候选版本，稳定性可能不如正式版。`preview` tag 会指向更新的候选版本；
+如需固定某个候选版本，请安装其确切版本号。维护者请遵循
+[基于标签的发布流程](structure/06_docs-and-release.md#release-strategy)。
+
 frogprogsy 需要 [Bun](https://bun.sh) 1.1 或更新版本。如果找不到 `frogp` 命令，请确认 Bun 已加入 `PATH`。
 
 <details>

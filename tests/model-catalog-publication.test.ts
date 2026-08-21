@@ -70,35 +70,32 @@ describe("model catalog publication workflows", () => {
     expect(pkg.scripts?.prepublishOnly?.indexOf("bun run generate:model-catalog:git")).toBe(0);
   });
 
-  test("release accepts only latest successful gates and matching extracted Pages/package catalogs", async () => {
+  test("release accepts only exact successful gates and matching inspected Pages/package catalogs", async () => {
     const workflow = await read(".github/workflows/release.yml");
 
     expect(workflow).toContain("require_latest_success() {");
     expect(workflow).toContain("require_latest_success ci.yml");
     expect(workflow).toContain("require_latest_success package-lifecycle.yml");
-    expect(workflow).toContain("require_latest_success deploy-docs.yml");
-    expect(workflow).toContain('--commit "$GITHUB_SHA"');
+    expect(workflow).toContain("wait_for_latest_success deploy-docs.yml");
+    expect(workflow).toContain("head_sha=${EXPECTED_SHA}");
+    expect(workflow).toContain('.event == "push"');
+    expect(workflow).toContain(".head_branch == $branch");
+    expect(workflow).toContain("sort_by(.id, .run_attempt) | last");
     expect(workflow).not.toContain("--status success");
-    expect(workflow).toContain("databaseId,conclusion,headSha,status,url,workflowName");
-    expect(workflow).toContain('test "$gate_status" = "completed"');
-    expect(workflow).toContain('test "$gate_conclusion" = "success"');
 
-    const extractIndex = workflow.indexOf('tar -xzf "$TARBALL"');
-    const catalogGateIndex = workflow.indexOf("Verify packaged catalog matches deployed Pages catalog");
-    const dryRunIndex = workflow.indexOf('if [ "$DRY_RUN" = "true" ]');
+    const inspectIndex = workflow.indexOf("Inspect exact artifact bytes and package identity");
+    const catalogGateIndex = workflow.indexOf("packageCatalog.catalogRevision !== pagesCatalog.catalogRevision");
+    const mutationIndex = workflow.indexOf("if: ${{ inputs.dry-run != true }}");
     const publishIndex = workflow.indexOf('npm publish "$TARBALL"');
-    expect(extractIndex).toBeGreaterThan(-1);
-    expect(catalogGateIndex).toBeGreaterThan(extractIndex);
-    expect(catalogGateIndex).toBeLessThan(dryRunIndex);
+    expect(inspectIndex).toBeGreaterThan(-1);
+    expect(catalogGateIndex).toBeGreaterThan(inspectIndex);
+    expect(catalogGateIndex).toBeLessThan(mutationIndex);
     expect(catalogGateIndex).toBeLessThan(publishIndex);
     expect(workflow).toContain("package/src/generated/model-catalog-v1.json");
-    expect(workflow).toContain("modelCatalogDocumentV1Schema.parse");
-    expect(workflow).toContain("catalogDataDigest");
-    expect(workflow).toContain("packageCatalog.sourceCommit !== expectedSha");
-    expect(workflow).toContain("pagesCatalog.sourceCommit !== expectedSha");
+    expect(workflow).toContain("catalog.sourceCommit !== process.env.EXPECTED_SHA");
+    expect(workflow).toContain("pagesCatalog.sourceCommit !== process.env.EXPECTED_SHA");
     expect(workflow).toContain("packageCatalog.catalogRevision !== pagesCatalog.catalogRevision");
     expect(workflow).toContain("packageCatalog.catalogDigest !== pagesCatalog.catalogDigest");
-    expect(workflow).toContain('catalog_url="${PAGES_CATALOG_URL}?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
     expect(workflow).toContain("Cache-Control: no-cache");
     expect(workflow).toContain("Pragma: no-cache");
     expect(workflow).toContain("--retry 3");
