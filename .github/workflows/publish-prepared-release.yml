@@ -3,7 +3,7 @@ run-name: "Publish prepared release [${{ inputs.dispatch-id }}]"
 
 on:
   push:
-    branches: [develop, main]
+    branches: [main]
   workflow_dispatch:
     inputs:
       expected-sha:
