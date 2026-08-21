@@ -201,6 +201,9 @@ describe("trusted release preparation workflow", () => {
     const workflow = await readWorkflow(".github/workflows/prepare-release.yml");
     const snapshot = workflow.jobs.snapshot;
     const mutate = workflow.jobs.mutate;
+    const pushStep = mutate.steps?.find(
+      step => step.name === "Create verified bot commits and update one ref fast-forward",
+    );
 
     expect(workflow.permissions).toEqual({});
     expect(snapshot.permissions).toEqual({
@@ -212,6 +215,9 @@ describe("trusted release preparation workflow", () => {
       contents: "write",
       "pull-requests": "write",
       statuses: "write",
+    });
+    expect(pushStep?.env).toEqual({
+      RELEASE_PUSH_DEPLOY_KEY: "${{ secrets.RELEASE_PUSH_DEPLOY_KEY }}",
     });
     expect(workflow.jobs["failure-state"].permissions).toEqual({
       contents: "read",
@@ -295,20 +301,36 @@ describe("trusted release preparation workflow", () => {
     expect(snapshotText).not.toContain("NODE_AUTH_TOKEN");
   });
 
-  test("revalidates exact live state before one fast-forward ref update and exact-head readiness", async () => {
+  test("revalidates exact live state before one compare-and-swap fast-forward ref update and readiness", async () => {
     const workflow = await readWorkflow(".github/workflows/prepare-release.yml");
     const mutationText = workflow.jobs.mutate.steps
       ?.map(step => `${step.name ?? ""}\n${step.run ?? ""}`)
       .join("\n") ?? "";
+    const gitPushStart = mutationText.indexOf('git -C "$TRUSTED_GIT" push');
+    const gitPushEnd = mutationText.indexOf("\nelse\n", gitPushStart);
+    const gitPushCommand = mutationText.slice(gitPushStart, gitPushEnd);
 
     expect(mutationText).toContain("cmp --silent release-plan/snapshot.json release-plan/live-snapshot.json");
     expect(mutationText).toContain("gh auth setup-git");
     expect(mutationText).toContain("bash release-plan/collect-live.sh");
     expect(mutationText).toContain("This comparison is unconditional");
     expect(mutationText.match(/(?:^|\n)\s*release-plan\/collect-live\.sh/g)).toBeNull();
-    expect(mutationText).toContain('git/refs/heads/${RESULT_BRANCH}');
-    expect(mutationText).toContain("{sha:$sha,force:false}");
-    expect(mutationText).not.toContain("git push origin");
+    expect(mutationText).toContain(
+      "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+    );
+    expect(mutationText).toContain("GIT_SSH_COMMAND");
+    expect(mutationText).toContain(
+      'git -C "$TRUSTED_GIT" merge-base --is-ancestor "$ORIGINAL_HEAD" "$RESULT_SHA"',
+    );
+    expect(mutationText).toContain(
+      '"--force-with-lease=refs/heads/${RESULT_BRANCH}:${ORIGINAL_HEAD}"',
+    );
+    expect(mutationText).toContain('release-push "$RESULT_SHA:refs/heads/${RESULT_BRANCH}"');
+    expect(gitPushStart).toBeGreaterThanOrEqual(0);
+    expect(gitPushEnd).toBeGreaterThan(gitPushStart);
+    expect(gitPushCommand).not.toMatch(/(?:^|\s)--force(?:\s|$)/);
+    expect(mutationText).not.toContain('+$RESULT_SHA:refs/heads/${RESULT_BRANCH}');
+    expect(mutationText).not.toContain('git/refs/heads/${RESULT_BRANCH}');
     expect(mutationText).not.toContain("force:true");
     expect(mutationText).toContain("gh workflow run ci.yml");
     expect(mutationText).toContain("gh workflow run package-lifecycle.yml");
@@ -327,7 +349,7 @@ describe("trusted release preparation workflow", () => {
     expect(mutationText).toContain("RESULT_SHA");
     expect(mutationText).toContain("release:ready");
     expect(mutationText.indexOf("This comparison is unconditional"))
-      .toBeLessThan(mutationText.indexOf('git/refs/heads/${RESULT_BRANCH}'));
+      .toBeLessThan(mutationText.indexOf('git -C "$TRUSTED_GIT" merge-base --is-ancestor'));
     expect(mutationText.lastIndexOf("revalidate_ready_state"))
       .toBeLessThan(mutationText.lastIndexOf('--add-label release:ready'));
   });
