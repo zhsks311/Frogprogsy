@@ -103,10 +103,13 @@ describe("develop to main branch promotion policy", () => {
     }
 
     const ci = await readWorkflow(".github/workflows/ci.yml");
-    const keychainSmoke = ci.jobs.test?.steps?.find(step => step.name === "macOS Keychain lifecycle smoke");
-    const keychainCleanup = ci.jobs.test?.steps?.find(step => step.name === "macOS Keychain smoke cleanup");
-    expect(keychainSmoke?.if).toBe("runner.os == 'macOS'");
-    expect(keychainCleanup?.if).toBe("always() && runner.os == 'macOS'");
+    const keychainJob = ci.jobs["keychain-smoke"];
+    expect(keychainJob?.name).toBe("macOS Keychain lifecycle");
+    expect(keychainJob?.["runs-on"]).toBe("macos-latest");
+    const keychainSmoke = keychainJob?.steps?.find(step => step.name === "macOS Keychain lifecycle smoke");
+    const keychainCleanup = keychainJob?.steps?.find(step => step.name === "macOS Keychain smoke cleanup");
+    expect(keychainSmoke?.if).toBeUndefined();
+    expect(keychainCleanup?.if).toBe("always()");
   });
 
   test("CI accepts only this repository's develop branch for main promotions", async () => {
