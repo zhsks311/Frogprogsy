@@ -18,14 +18,16 @@ on:
       - ".github/workflows/ci.yml"
       - ".github/workflows/package-lifecycle.yml"
       - ".github/workflows/release.yml"
+      - ".github/workflows/prepare-release.yml"
+      - ".github/workflows/publish-prepared-release.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: cross-platform-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: cross-platform-ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   promotion-guard:

@@ -25,6 +25,10 @@ bun add -g frogprogsy@preview
 
 `frogp update` always moves a Bun-managed install to stable `latest`. To stay on the prerelease channel, reinstall `frogprogsy@preview` with Bun.
 
+Preview versions are public, immutable candidates and may be less stable. Because the `preview` tag moves
+to newer candidates, install an exact version to keep one. Maintainers should follow the
+[label-driven release procedure](structure/06_docs-and-release.md#release-strategy).
+
 frogprogsy runs on [Bun](https://bun.sh) 1.1 or newer. If `frogp` is not found, make sure Bun is on your `PATH`.
 
 <details>

@@ -25,6 +25,10 @@ bun add -g frogprogsy@preview
 
 `frogp update`는 Bun으로 설치한 패키지를 항상 안정판 `latest`로 옮깁니다. 시험판을 계속 쓰려면 Bun으로 `frogprogsy@preview`를 다시 설치하세요.
 
+시험판은 공개된 변경 불가 후보이므로 안정판보다 불안정할 수 있습니다. `preview` 태그는 새 후보로
+이동하므로 특정 후보를 유지하려면 버전을 정확히 지정해 설치하세요. 유지관리자는
+[라벨 기반 릴리스 절차](structure/06_docs-and-release.md#release-strategy)를 따르세요.
+
 frogprogsy는 [Bun](https://bun.sh) 1.1 이상에서 실행됩니다. `frogp` 명령을 찾지 못하면 Bun이 `PATH`에 있는지 확인하세요.
 
 <details>
