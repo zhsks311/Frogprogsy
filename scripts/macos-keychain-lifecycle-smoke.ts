@@ -18,7 +18,7 @@
  * Fail-closed safety invariants:
  *  - Touches the real Keychain ONLY when `process.platform === "darwin"` AND `CI === "true"` AND the
  *    explicit opt-in `FROGP_KEYCHAIN_SMOKE === "1"` is set. Anywhere else it skips WITHOUT invoking
- *    `security`. The workflow additionally gates on `runner.environment == 'github-hosted'`.
+ *    `security`. The workflow additionally gates on a dedicated GitHub-hosted macOS job.
  *  - `FROGPROGSY_HOME` is forced to a throwaway temp dir for the run and restored in `finally`, so the
  *    real `~/.frogprogsy`, native Claude homes, grants, and credentials are never read or written.
  *  - Only a UNIQUE scoped grant service (`Claude Code-credentials-<hash>`) and a dummy credential are

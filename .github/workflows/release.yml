@@ -55,7 +55,7 @@ concurrency:
 
 jobs:
   preflight:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-4-8
     timeout-minutes: 50
     permissions:
       actions: read
@@ -342,7 +342,7 @@ jobs:
           fi
   build:
     needs: preflight
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-4-8
     timeout-minutes: 45
     permissions:
       actions: read
@@ -399,7 +399,7 @@ jobs:
           compression-level: 0
   inspect:
     needs: [preflight, build]
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-4-8
     timeout-minutes: 45
     env:
       PACKAGE_NAME: frogprogsy
@@ -812,7 +812,7 @@ jobs:
   mutate:
     if: ${{ inputs.dry-run != true }}
     needs: [preflight, inspect]
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x86-4-8
     timeout-minutes: 45
     env:
       PACKAGE_NAME: frogprogsy
