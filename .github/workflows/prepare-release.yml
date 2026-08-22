@@ -777,6 +777,8 @@ jobs:
 
       - name: Create verified bot commits and update one ref fast-forward
         id: push
+        env:
+          RELEASE_PUSH_DEPLOY_KEY: ${{ secrets.RELEASE_PUSH_DEPLOY_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -866,10 +868,28 @@ jobs:
 
           if [ "$PUSH_REQUIRED" = "true" ]; then
             test "$operation_count" -gt 0
+            test -n "$RELEASE_PUSH_DEPLOY_KEY" || {
+              echo "::error::RELEASE_PUSH_DEPLOY_KEY is required for protected branch updates"
+              exit 1
+            }
+            ssh_dir="$RUNNER_TEMP/release-push-ssh"
+            install -d -m 700 "$ssh_dir"
+            printf '%s\n' "$RELEASE_PUSH_DEPLOY_KEY" > "$ssh_dir/id_ed25519"
+            chmod 600 "$ssh_dir/id_ed25519"
+            printf '%s\n' \
+              'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' \
+              > "$ssh_dir/known_hosts"
+            chmod 600 "$ssh_dir/known_hosts"
+            trap 'rm -rf "$ssh_dir"' EXIT
+            git -C "$TRUSTED_GIT" remote add release-push "git@github.com:${REPOSITORY}.git"
             bash release-plan/collect-live.sh release-plan/live-snapshot.json
             cmp --silent release-plan/before-push-snapshot.json release-plan/live-snapshot.json
-            jq -n --arg sha "$RESULT_SHA" '{sha:$sha,force:false}' |
-              gh api --method PATCH "repos/${REPOSITORY}/git/refs/heads/${RESULT_BRANCH}" --input - >/dev/null
+            git -C "$TRUSTED_GIT" fetch --force --no-tags origin "$RESULT_SHA"
+            git -C "$TRUSTED_GIT" merge-base --is-ancestor "$ORIGINAL_HEAD" "$RESULT_SHA"
+            GIT_SSH_COMMAND="ssh -i $ssh_dir/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes" \
+              git -C "$TRUSTED_GIT" push \
+                "--force-with-lease=refs/heads/${RESULT_BRANCH}:${ORIGINAL_HEAD}" \
+                release-push "$RESULT_SHA:refs/heads/${RESULT_BRANCH}"
           else
             test "$RESULT_SHA" = "$ORIGINAL_HEAD"
           fi
