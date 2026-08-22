@@ -164,7 +164,11 @@ describe("trusted release preparation workflow", () => {
       "/^[0-9a-f]{40}$/.test(workflowSha)",
       "uniqueWorkflowShas.length === 0",
       'merge-base --is-ancestor "$workflow_sha" "$main_sha"',
-      "snapshot.npmLatestProof?.sourceSha !== snapshot.mainSha",
+      'collect_registry_proof "$npm_latest" ""',
+      'merge-base --is-ancestor "$npm_latest_source_sha" "$main_sha"',
+      "const stableSourceSha = snapshot.npmLatestProof?.sourceSha",
+      "stableTag.sha !== stableSourceSha",
+      "stableRelease.sourceSha.toLowerCase() !== stableSourceSha",
       "snapshot.npmPreviewProof?.sourceSha !== promotionSourceSha",
       "previewRelease.draft",
       "!previewRelease.prerelease",
@@ -177,6 +181,8 @@ describe("trusted release preparation workflow", () => {
     expect(snapshotText).not.toContain("bun run");
     expect(snapshotText).not.toContain("resolvedDependencies");
     expect(snapshotText).not.toContain("externalParameters");
+    expect(snapshotText).not.toContain('collect_registry_proof "$npm_latest" "$main_sha"');
+    expect(snapshotText).not.toContain("snapshot.npmLatestProof?.sourceSha !== snapshot.mainSha");
   });
 
   test("reuses the verified promotion source when reconciling its prepared head", async () => {
