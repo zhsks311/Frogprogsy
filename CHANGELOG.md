@@ -11,6 +11,10 @@
 
 - Normal npm releases now use tokenless Trusted Publishing. A short-lived bootstrap token remains limited to the first package publish, and optional `preview` dist-tag removal remains a manual maintainer action.
 
+### Fixed
+
+- Release preparation can now push GitHub-verified version commits with a repository Deploy Key while retaining exact-head and fast-forward race protection.
+
 ## 0.0.3
 
 ### Added
