@@ -157,6 +157,7 @@ jobs:
               message:.commit.message,
               parents:[.parents[].sha | ascii_downcase],
               verified:(.commit.verification.verified == true),
+              authorLogin:(.author.login // ""),
               committerLogin:(.committer.login // ""),
               changedPaths:([.files[].filename] | sort)
             }' <<<"$commit_json")"
@@ -196,13 +197,15 @@ jobs:
           const snapshot = await Bun.file(process.env.CANDIDATE_PATH!).json();
           const ownedCommits = snapshot.sourceSideCommitsOldestFirst.filter((commit: {
             verified: boolean;
+            authorLogin: string;
             committerLogin: string;
             parents: string[];
             changedPaths: string[];
           }) => {
             if (
               !commit.verified
-              || commit.committerLogin !== "github-actions[bot]"
+              || commit.authorLogin !== "github-actions[bot]"
+              || commit.committerLogin !== "web-flow"
               || commit.parents.length !== 1
               || commit.changedPaths.length !== 1
               || commit.changedPaths[0] !== "package.json"
