@@ -256,7 +256,7 @@ describe("trusted release preparation workflow", () => {
       .toBe("${{ github.event.repository.default_branch }}");
   });
 
-  test("content-addresses new preparation and cancellation plans with package-only commits", async () => {
+  test("creates GitHub-signed package-only commits on an ephemeral ref", async () => {
     const workflow = await readWorkflow(".github/workflows/prepare-release.yml");
     const snapshot = workflow.jobs.snapshot;
     const mutate = workflow.jobs.mutate;
@@ -285,8 +285,15 @@ describe("trusted release preparation workflow", () => {
     expect(snapshotText).toContain("restoreVersion");
     expect(snapshotText).toContain("Cancel release preparation");
     expect(snapshotText).toContain("Prepare ${targetVersion}");
-    expect(mutationText).toContain('gh api --method POST "repos/${REPOSITORY}/git/commits"');
-    expect(mutationText).toContain("message:$message,tree:$tree,parents:[$parent]");
+    expect(mutationText).toContain('TEMP_BRANCH="release-preparation/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
+    expect(mutationText).toContain('gh api --method POST "repos/${REPOSITORY}/git/refs"');
+    expect(mutationText).toContain('{ref:$ref,sha:$sha}');
+    expect(mutationText).toContain('gh api --method PUT "repos/${REPOSITORY}/contents/package.json"');
+    expect(mutationText).toContain("message:$message,content:$content,sha:$sha,branch:$branch");
+    expect(mutationText).toContain('gh api --method DELETE "repos/${REPOSITORY}/git/refs/heads/${TEMP_BRANCH}"');
+    expect(mutationText).not.toContain('gh api --method POST "repos/${REPOSITORY}/git/blobs"');
+    expect(mutationText).not.toContain('gh api --method POST "repos/${REPOSITORY}/git/trees"');
+    expect(mutationText).not.toContain('gh api --method POST "repos/${REPOSITORY}/git/commits"');
     expect(mutationText).not.toContain("author:$author");
     expect(mutationText).not.toContain("committer:$committer");
     expect(mutationText).not.toContain("signature:$signature");
