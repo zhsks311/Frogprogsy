@@ -194,7 +194,7 @@ jobs:
           for commit_sha in "${source_shas[@]}"; do
             commit_pages="$RUNNER_TEMP/commit-${commit_sha}.json"
             gh api --paginate "repos/${REPOSITORY}/commits/${commit_sha}?per_page=100" --slurp > "$commit_pages"
-            record="$(jq -c '.[0] as $commit | {sha:($commit.sha | ascii_downcase),message:$commit.commit.message,parents:[$commit.parents[].sha | ascii_downcase],verified:($commit.commit.verification.verified == true),committerLogin:($commit.committer.login // ""),changedPaths:([.[].files[].filename] | sort)}' "$commit_pages")"
+            record="$(jq -c '.[0] as $commit | {sha:($commit.sha | ascii_downcase),message:$commit.commit.message,parents:[$commit.parents[].sha | ascii_downcase],verified:($commit.commit.verification.verified == true),authorLogin:($commit.author.login // ""),committerLogin:($commit.committer.login // ""),changedPaths:([.[].files[].filename] | sort)}' "$commit_pages")"
             source_commits="$(jq -cn --argjson values "$source_commits" --argjson record "$record" '$values + [$record]')"
           done
           candidate="$RUNNER_TEMP/release-evidence.json"
@@ -218,9 +218,10 @@ jobs:
           );
           const snapshot = await Bun.file(process.env.CANDIDATE_PATH!).json();
           const ownedCommits = snapshot.sourceSideCommitsOldestFirst.filter((commit: {
-            verified: boolean; committerLogin: string; parents: string[]; changedPaths: string[];
+            verified: boolean; authorLogin: string; committerLogin: string; parents: string[]; changedPaths: string[];
           }) => commit.verified
-            && commit.committerLogin === "github-actions[bot]"
+            && commit.authorLogin === "github-actions[bot]"
+            && commit.committerLogin === "web-flow"
             && commit.parents.length === 1
             && commit.changedPaths.length === 1
             && commit.changedPaths[0] === "package.json"

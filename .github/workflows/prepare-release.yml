@@ -331,6 +331,7 @@ jobs:
               message:.commit.message,
               parents:[.parents[].sha | ascii_downcase],
               verified:(.commit.verification.verified == true),
+              authorLogin:(.author.login // ""),
               committerLogin:(.committer.login // ""),
               changedPaths:([.files[].filename] | sort)
             }' <<<"$commit_json")"
@@ -440,6 +441,7 @@ jobs:
           const ownedCommitShas = snapshot.commits
             .filter((commit: {
               verified: boolean;
+              authorLogin: string;
               committerLogin: string;
               parents: string[];
               changedPaths: string[];
@@ -447,7 +449,8 @@ jobs:
               const record = parseReleaseRecord(commit);
               return record !== null
                 && commit.verified
-                && commit.committerLogin === "github-actions[bot]"
+                && commit.authorLogin === "github-actions[bot]"
+                && commit.committerLogin === "web-flow"
                 && commit.parents.length === 1
                 && commit.changedPaths.length === 1
                 && commit.changedPaths[0] === "package.json";
@@ -871,7 +874,8 @@ jobs:
             commit_json="$(gh api "repos/${REPOSITORY}/commits/${commit_sha}")"
             jq -e --arg parent "$parent_sha" --arg message "$message" '
               .commit.verification.verified == true
-              and .committer.login == "github-actions[bot]"
+              and .author.login == "github-actions[bot]"
+              and .committer.login == "web-flow"
               and ([.parents[].sha] == [$parent])
               and ([.files[].filename] == ["package.json"])
               and .commit.message == $message' <<<"$commit_json" >/dev/null
@@ -896,6 +900,7 @@ jobs:
               message:.commit.message,
               parents:[.parents[].sha | ascii_downcase],
               verified:(.commit.verification.verified == true),
+              authorLogin:(.author.login // ""),
               committerLogin:(.committer.login // ""),
               changedPaths:([.files[].filename] | sort)
             }' <<<"$commit_json")"
