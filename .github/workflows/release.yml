@@ -185,7 +185,7 @@ jobs:
           pull_request="$(jq -r '.[0].number' <<<"$matching_prs")"
           compare_file="$RUNNER_TEMP/source-side-compare.json"
           gh api --paginate "repos/${REPOSITORY}/compare/${merge_parents[0]}...${merge_parents[1]}?per_page=100" --slurp > "$compare_file"
-          mapfile -t source_shas < <(jq -r '[.[].commits[].sha | ascii_downcase] | reduce .[] as $sha ([]; if index($sha) == null then . + [$sha] else . end)[]' "$compare_file")
+          mapfile -t source_shas < <(jq -r '[.[].commits[].sha | ascii_downcase] | (reduce .[] as $sha ([]; if index($sha) == null then . + [$sha] else . end))[]' "$compare_file")
           test "${#source_shas[@]}" -gt 0 || {
             echo "::error::Prepared merge has no source-side commits"
             exit 1
