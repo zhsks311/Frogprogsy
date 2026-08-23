@@ -85,6 +85,25 @@ describe("routeModel deterministic matching", () => {
     expect(route.routeKind).toBe("qualified");
   });
 
+  test("OpenCode Zen preview id routes by explicit namespace without catalog membership", () => {
+    const config = mkConfig(
+      {
+        "opencode-zen": {
+          adapter: "openai-chat",
+          baseUrl: "https://opencode.ai/zen/v1",
+        },
+      },
+      "opencode-zen",
+    );
+
+    const route = routeModel(config, "opencode-zen/x-preview-f-free");
+    expect(route).toMatchObject({
+      providerName: "opencode-zen",
+      modelId: "x-preview-f-free",
+      routeKind: "qualified",
+    });
+  });
+
   // AC5 — a configured (deterministic) model alias resolves first.
   test("AC5: configured alias wins", () => {
     const config = mkConfig(
