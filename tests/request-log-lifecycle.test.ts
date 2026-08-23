@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { __requestLogTest } from "../src/server";
 import { bridgeToMessagesSSE } from "../src/messages/bridge";
 import type { AdapterEvent } from "../src/types";
@@ -115,6 +115,46 @@ describe("privacy-safe request logs", () => {
       && phase.status === "error"
       && phase.code === "provider_stream_error"
     )).toBe(true);
+  });
+
+  test("synthesized stream stalls finalize as bridge errors", async () => {
+    jest.useFakeTimers();
+    try {
+      __requestLogTest.clear();
+      const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const blocked = Promise.withResolvers<void>();
+      const waiting = Promise.withResolvers<void>();
+      async function* stalledEvents(): AsyncGenerator<AdapterEvent> {
+        yield { type: "text_delta", text: "partial" };
+        waiting.resolve();
+        await blocked.promise;
+      }
+
+      const bridged = bridgeToMessagesSSE(
+        stalledEvents(),
+        "gpt-5.6-sol",
+        () => blocked.resolve(),
+        10,
+        {
+          stallTimeoutSec: 1,
+          onTerminalError: code => {
+            ctx.entry.error = { kind: "upstream", code };
+          },
+        },
+      );
+      const collecting = new Response(__requestLogTest.observeLoggedStream(bridged, ctx)).text();
+      await waiting.promise;
+      jest.advanceTimersByTime(1_010);
+      const body = await collecting;
+
+      expect(body).toContain("event: error");
+      const [entry] = __requestLogTest.requestLogSnapshot();
+      expect(entry.lifecycle).toBe("bridge_error");
+      expect(entry.status).toBe(502);
+      expect(entry.error).toEqual({ kind: "upstream", code: "upstream_stall_timeout" });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("stream cancellation finalizes client_cancel once", async () => {
@@ -298,7 +338,7 @@ describe("privacy-safe request logs", () => {
       expect(await response.json()).toMatchObject({
         type: "error",
         error: {
-          type: "server_error",
+          type: "api_error",
           message: "Upstream completed without assistant output",
         },
       });

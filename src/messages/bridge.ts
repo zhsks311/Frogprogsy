@@ -46,6 +46,54 @@ interface MessageBuildOptions {
   hideThinkingSummary?: boolean;
 }
 
+type MessageStreamErrorCode =
+  | "provider_stream_error"
+  | "upstream_stall_timeout"
+  | "adapter_eof"
+  | "bridge_parse_error";
+
+interface MessageStreamOptions extends MessageBuildOptions {
+  stallTimeoutSec?: number;
+  onTerminalError?: (code: MessageStreamErrorCode) => void;
+}
+
+type AnthropicErrorType =
+  | "api_error"
+  | "overloaded_error"
+  | "rate_limit_error"
+  | "invalid_request_error"
+  | "authentication_error"
+  | "billing_error"
+  | "permission_error"
+  | "not_found_error"
+  | "request_too_large";
+
+function anthropicError(status: number, type: string, message: string): { type: AnthropicErrorType; message: string } {
+  const classified = classifyError(status, type, message);
+  let errorType: AnthropicErrorType;
+  if (classified.code === "server_is_overloaded") {
+    errorType = "overloaded_error";
+  } else if (classified.code === "insufficient_quota") {
+    errorType = "billing_error";
+  } else {
+    switch (classified.type) {
+      case "rate_limit_error":
+      case "invalid_request_error":
+      case "authentication_error":
+      case "billing_error":
+      case "permission_error":
+      case "not_found_error":
+      case "request_too_large":
+        errorType = classified.type;
+        break;
+      default:
+        errorType = "api_error";
+        break;
+    }
+  }
+  return { type: errorType, message: classified.message };
+}
+
 export function buildMessageJSON(
   events: AdapterEvent[],
   modelId: string,
@@ -158,24 +206,40 @@ export function bridgeToMessagesSSE(
   modelId: string,
   onCancel?: () => void,
   heartbeatMs = 2_000,
-  options?: MessageBuildOptions,
+  options?: MessageStreamOptions,
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const messageId = uuid();
   let closed = false;
-  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let upstreamCancelled = false;
+  let heartbeat: Timer | undefined;
   let activity = false;
+
+  const cancelUpstream = () => {
+    if (upstreamCancelled) return;
+    upstreamCancelled = true;
+    onCancel?.();
+  };
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const emit = (name: string, data: Record<string, unknown>) => {
         if (closed) return;
-        activity = true;
         try {
           controller.enqueue(encoder.encode(sseEvent(name, data)));
         } catch {
           closed = true;
+          cancelUpstream();
         }
+      };
+      const closeController = () => {
+        if (closed) return;
+        try {
+          controller.close();
+        } catch {
+          // The client may have cancelled between the terminal enqueue and close.
+        }
+        closed = true;
       };
 
       emit("message_start", {
@@ -191,18 +255,13 @@ export function bridgeToMessagesSSE(
         },
       });
 
-      heartbeat = setInterval(() => {
-        if (closed) return;
-        if (activity) { activity = false; return; }
-        try { controller.enqueue(encoder.encode(": frogprogsy keepalive\n\n")); } catch { closed = true; }
-      }, heartbeatMs);
-
       let index = 0;
       let current: "text" | "thinking" | "tool" | null = null;
       let currentTool: { id: string; name: string; args: string; index: number } | null = null;
       let stopReason: AdapterStopReason = "end_turn";
       let providerStopReason: AdapterStopReason | undefined;
       let usage: FrogUsage | undefined;
+      let terminated = false;
 
       const closeCurrent = () => {
         if (current === null) return;
@@ -236,10 +295,50 @@ export function bridgeToMessagesSSE(
           content_block: { type: "tool_use", id: currentTool.id, name, input: {} },
         });
       };
+      const emitTerminalError = (
+        status: number,
+        type: string,
+        message: string,
+        abort: boolean,
+        code: MessageStreamErrorCode,
+      ) => {
+        if (terminated || closed) return;
+        closeCurrent();
+        emit("error", { error: anthropicError(status, type, message) });
+        terminated = true;
+        clearInterval(heartbeat);
+        options?.onTerminalError?.(code);
+        if (abort) cancelUpstream();
+        closeController();
+      };
+
+      const stallSec = Math.max(1, options?.stallTimeoutSec ?? 90);
+      const maxStallTicks = Math.ceil((stallSec * 1000) / heartbeatMs);
+      let stallTicks = 0;
+      heartbeat = setInterval(() => {
+        if (closed || terminated) return;
+        if (activity) {
+          activity = false;
+          stallTicks = 0;
+          return;
+        }
+        if (++stallTicks >= maxStallTicks) {
+          emitTerminalError(502, "upstream_error", "upstream stream stalled", true, "upstream_stall_timeout");
+          return;
+        }
+        try {
+          controller.enqueue(encoder.encode(": frogprogsy keepalive\n\n"));
+        } catch {
+          closed = true;
+          cancelUpstream();
+        }
+      }, heartbeatMs);
 
       try {
         for await (const event of events) {
           if (closed) break;
+          activity = true;
+          stallTicks = 0;
           switch (event.type) {
             case "text_delta":
               startText();
@@ -270,49 +369,53 @@ export function bridgeToMessagesSSE(
             case "done":
               usage = event.usage;
               if (event.stopReason) providerStopReason = event.stopReason;
+              terminated = true;
               break;
             case "error":
-              closeCurrent();
-              emit("error", { error: { type: "api_error", message: event.message } });
-              controller.close();
-              closed = true;
+              emitTerminalError(502, "upstream_error", event.message, true, "provider_stream_error");
               break;
           }
+          if (terminated || closed) break;
         }
-        if (!closed) {
+
+        if (!closed && terminated) {
           closeCurrent();
           emit("message_delta", {
             delta: { stop_reason: applyStopReason(stopReason, { stopReason: providerStopReason }), stop_sequence: null },
             usage: usageFromAdapter(usage),
           });
           emit("message_stop", {});
-          controller.close();
-          closed = true;
+          closeController();
+        } else if (!closed) {
+          emitTerminalError(502, "upstream_error", "upstream stream ended without a terminal event", false, "adapter_eof");
         }
       } catch (err) {
         if (!closed) {
           const message = err instanceof Error ? err.message : String(err);
-          emit("error", { error: { type: "api_error", message } });
-          controller.close();
-          closed = true;
+          emitTerminalError(500, "proxy_error", message, true, "bridge_parse_error");
         }
       } finally {
-        if (heartbeat) clearInterval(heartbeat);
+        clearInterval(heartbeat);
       }
     },
-    cancel(reason) {
+    cancel() {
       closed = true;
-      if (heartbeat) clearInterval(heartbeat);
-      onCancel?.();
+      clearInterval(heartbeat);
+      cancelUpstream();
     },
   });
 }
 
-export function formatAnthropicErrorResponse(status: number, type: string, message: string): Response {
-  const classified = classifyError(status, type, message);
-  const errorType = classified.code === "server_is_overloaded" ? "overloaded_error" : classified.type;
-  return new Response(JSON.stringify({ type: "error", error: { type: errorType, message: classified.message } }), {
+export function formatAnthropicErrorResponse(
+  status: number,
+  type: string,
+  message: string,
+  headers?: HeadersInit,
+): Response {
+  const responseHeaders = new Headers(headers);
+  responseHeaders.set("Content-Type", "application/json");
+  return new Response(JSON.stringify({ type: "error", error: anthropicError(status, type, message) }), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: responseHeaders,
   });
 }

@@ -361,7 +361,7 @@ export interface FrogConfig {
   disabledModels?: string[];
   /** Bind hostname. Default "127.0.0.1" (loopback only). Set "0.0.0.0" to expose on all interfaces. */
   hostname?: string;
-  /** Upstream stall timeout (seconds). After this many seconds of no upstream data, emits response.incomplete. Default 90. Min 1. */
+  /** Upstream inter-event stall timeout in seconds. The Messages bridge emits an error and cancels upstream. Default 90. Min 1. */
   stallTimeoutSec?: number;
   /** Connect timeout (ms) for upstream fetch — covers DNS, TCP, TLS, and response header. Default 30000. */
   connectTimeoutMs?: number;
