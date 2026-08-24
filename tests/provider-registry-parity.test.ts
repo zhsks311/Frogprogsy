@@ -60,6 +60,17 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text", "image"]);
   });
 
+  test("OpenCode Zen keeps a generic key-auth Chat route without managed model claims", () => {
+    expect(PROVIDER_REGISTRY.find(entry => entry.id === "opencode-zen")).toMatchObject({
+      label: "opencode zen",
+      adapter: "openai-chat",
+      baseUrl: "https://opencode.ai/zen/v1",
+      authKind: "key",
+    });
+    expect(KEY_LOGIN_PROVIDERS["opencode-zen"].defaultModel).toBeUndefined();
+    expect(KEY_LOGIN_PROVIDERS["opencode-zen"].models).toBeUndefined();
+  });
+
   test("curated provider fallbacks match current provider catalogs", () => {
     const xai = PROVIDER_REGISTRY.find(entry => entry.id === "xai");
     expect(xai).toMatchObject({

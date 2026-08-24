@@ -185,7 +185,7 @@ jobs:
           pull_request="$(jq -r '.[0].number' <<<"$matching_prs")"
           compare_file="$RUNNER_TEMP/source-side-compare.json"
           gh api --paginate "repos/${REPOSITORY}/compare/${merge_parents[0]}...${merge_parents[1]}?per_page=100" --slurp > "$compare_file"
-          mapfile -t source_shas < <(jq -r '[.[].commits[].sha | ascii_downcase] | reduce .[] as $sha ([]; if index($sha) == null then . + [$sha] else . end)[]' "$compare_file")
+          mapfile -t source_shas < <(jq -r '[.[].commits[].sha | ascii_downcase] | (reduce .[] as $sha ([]; if index($sha) == null then . + [$sha] else . end))[]' "$compare_file")
           test "${#source_shas[@]}" -gt 0 || {
             echo "::error::Prepared merge has no source-side commits"
             exit 1
@@ -552,13 +552,16 @@ jobs:
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
           RELEASE_VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+          REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
         run: |
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
           release_tag="v${RELEASE_VERSION}"
+          mkdir -p "$REGISTRY_CWD"
+          printf '%s\n' '{"name":"release-registry-probe","version":"0.0.0","private":true}' > "$REGISTRY_CWD/package.json"
 
           package_probe_file="$(mktemp)"
-          if bun pm view "$pkg_name" name >"$package_probe_file" 2>&1; then
+          if bun pm view "$pkg_name" name --cwd "$REGISTRY_CWD" >"$package_probe_file" 2>&1; then
             package_exists=true
           else
             package_probe="$(<"$package_probe_file")"
@@ -576,7 +579,7 @@ jobs:
           version_exists=false
           if [ "$package_exists" = "true" ]; then
             versions_file="$(mktemp)"
-            if ! bun pm view "$pkg_name" versions --json >"$versions_file" 2>&1; then
+            if ! bun pm view "$pkg_name" versions --json --cwd "$REGISTRY_CWD" >"$versions_file" 2>&1; then
               echo "::error::Unable to list registry versions for ${pkg_name}"
               sed 's/^/registry: /' "$versions_file"
               exit 1
@@ -616,7 +619,7 @@ jobs:
           fi
 
           release_file="$(mktemp)"
-          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish >"$release_file" 2>&1; then
+          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish --repo "$REPOSITORY" >"$release_file" 2>&1; then
             release_exists=true
             EXPECTED_SHA="$EXPECTED_SHA" REGISTRY_DIST_TAG="$REGISTRY_DIST_TAG" RELEASE_FILE="$release_file" RELEASE_TAG="$release_tag" bun -e '
               const release = await Bun.file(process.env.RELEASE_FILE!).json();
@@ -673,8 +676,8 @@ jobs:
             verification_file="$proof_dir/verified.json"
             workflow_commits_file="$proof_dir/workflow-commits.txt"
 
-            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json > "$metadata_file"
-            bun pm view "$pkg_name" dist-tags --json > "$tags_file"
+            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json --cwd "$REGISTRY_CWD" > "$metadata_file"
+            bun pm view "$pkg_name" dist-tags --json --cwd "$REGISTRY_CWD" > "$tags_file"
             tarball_url="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' "$metadata_file")"
             attestation_url="$(jq -er '.dist.attestations.url | select(type == "string" and length > 0)' "$metadata_file")"
             curl --fail-with-body --silent --show-error --location \
@@ -860,7 +863,7 @@ jobs:
             echo "::error::Mutation artifact must contain exactly one tarball"
             exit 1
           }
-          TARBALL="${tarballs[0]}"
+          TARBALL="$(realpath "${tarballs[0]}")"
           test "$(basename "$TARBALL")" = "$EXPECTED_TARBALL_NAME" || {
             echo "::error::Mutation tarball name differs from inspected artifact"
             exit 1
@@ -925,13 +928,16 @@ jobs:
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
           RELEASE_VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+          REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
         run: |
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
           release_tag="v${RELEASE_VERSION}"
+          mkdir -p "$REGISTRY_CWD"
+          printf '%s\n' '{"name":"release-registry-probe","version":"0.0.0","private":true}' > "$REGISTRY_CWD/package.json"
 
           package_probe_file="$(mktemp)"
-          if bun pm view "$pkg_name" name >"$package_probe_file" 2>&1; then
+          if bun pm view "$pkg_name" name --cwd "$REGISTRY_CWD" >"$package_probe_file" 2>&1; then
             package_exists=true
           else
             package_probe="$(<"$package_probe_file")"
@@ -949,7 +955,7 @@ jobs:
           version_exists=false
           if [ "$package_exists" = "true" ]; then
             versions_file="$(mktemp)"
-            if ! bun pm view "$pkg_name" versions --json >"$versions_file" 2>&1; then
+            if ! bun pm view "$pkg_name" versions --json --cwd "$REGISTRY_CWD" >"$versions_file" 2>&1; then
               echo "::error::Unable to list registry versions for ${pkg_name}"
               sed 's/^/registry: /' "$versions_file"
               exit 1
@@ -989,7 +995,7 @@ jobs:
           fi
 
           release_file="$(mktemp)"
-          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish >"$release_file" 2>&1; then
+          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish --repo "$REPOSITORY" >"$release_file" 2>&1; then
             release_exists=true
             EXPECTED_SHA="$EXPECTED_SHA" REGISTRY_DIST_TAG="$REGISTRY_DIST_TAG" RELEASE_FILE="$release_file" RELEASE_TAG="$release_tag" bun -e '
               const release = await Bun.file(process.env.RELEASE_FILE!).json();
@@ -1046,8 +1052,8 @@ jobs:
             verification_file="$proof_dir/verified.json"
             workflow_commits_file="$proof_dir/workflow-commits.txt"
 
-            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json > "$metadata_file"
-            bun pm view "$pkg_name" dist-tags --json > "$tags_file"
+            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json --cwd "$REGISTRY_CWD" > "$metadata_file"
+            bun pm view "$pkg_name" dist-tags --json --cwd "$REGISTRY_CWD" > "$tags_file"
             tarball_url="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' "$metadata_file")"
             attestation_url="$(jq -er '.dist.attestations.url | select(type == "string" and length > 0)' "$metadata_file")"
             curl --fail-with-body --silent --show-error --location \
@@ -1311,7 +1317,7 @@ jobs:
 
           if [ "$RELEASE_REQUIRED" = "true" ]; then
             release_probe="$(mktemp)"
-            if gh release view "$release_tag" >"$release_probe" 2>&1; then
+            if gh release view "$release_tag" --repo "$REPOSITORY" >"$release_probe" 2>&1; then
               echo "::error::GitHub Release ${release_tag} appeared after recovery preflight"
               exit 1
             fi
@@ -1330,7 +1336,7 @@ jobs:
             if [ "$REGISTRY_DIST_TAG" = "preview" ]; then
               release_flags=(--prerelease --latest=false)
             fi
-            gh release create "$release_tag" --target "$EXPECTED_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"
+            gh release create "$release_tag" --target "$EXPECTED_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}" --repo "$REPOSITORY"
             rm -f "$notes_file"
           fi
 
@@ -1343,9 +1349,12 @@ jobs:
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
           RELEASE_VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+          REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
         run: |
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
+          mkdir -p "$REGISTRY_CWD"
+          printf '%s\n' '{"name":"release-registry-probe","version":"0.0.0","private":true}' > "$REGISTRY_CWD/package.json"
           validate_existing_npm() {
             local proof_dir metadata_file tags_file registry_tarball attestation_file bundle_file verification_file workflow_commits_file
             local tarball_url attestation_url metadata_integrity metadata_shasum
@@ -1358,8 +1367,8 @@ jobs:
             verification_file="$proof_dir/verified.json"
             workflow_commits_file="$proof_dir/workflow-commits.txt"
 
-            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json > "$metadata_file"
-            bun pm view "$pkg_name" dist-tags --json > "$tags_file"
+            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json --cwd "$REGISTRY_CWD" > "$metadata_file"
+            bun pm view "$pkg_name" dist-tags --json --cwd "$REGISTRY_CWD" > "$tags_file"
             tarball_url="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' "$metadata_file")"
             attestation_url="$(jq -er '.dist.attestations.url | select(type == "string" and length > 0)' "$metadata_file")"
             curl --fail-with-body --silent --show-error --location \
@@ -1468,7 +1477,7 @@ jobs:
             sleep 10
           done
           echo "::error::Registry smoke, provenance, or dist-tag verification failed"
-          bun pm view "$pkg_name" versions dist-tags || true
+          bun pm view "$pkg_name" versions dist-tags --cwd "$REGISTRY_CWD" || true
           exit 1
 
       - name: Report stable dist-tags and manual preview cleanup

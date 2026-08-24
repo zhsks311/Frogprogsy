@@ -15,6 +15,7 @@ import {
   modelCatalogDocumentV1Schema,
   type ModelCatalogDocumentV1,
 } from "../src/model-catalog-schema";
+import { clearModelCache } from "../src/model-cache";
 import { createRuntimeConfigState } from "../src/runtime-config-state";
 import { startServer } from "../src/server";
 import type { FrogConfig } from "../src/types";
@@ -43,6 +44,8 @@ const bundled = modelCatalogDocumentV1Schema.parse(JSON.parse(readFileSync(
 const bundledAnthropic = bundled.providers.find(provider => provider.id === "anthropic");
 if (!bundledAnthropic?.models[0]) throw new Error("bundled anthropic catalog fixture is empty");
 const bundledModelId = bundledAnthropic.models[0].id;
+const bundledZen = bundled.providers.find(provider => provider.id === "opencode-zen");
+if (!bundledZen) throw new Error("bundled OpenCode Zen provider fixture is missing");
 
 function tempHome(): string {
   const home = mkdtempSync(join(tmpdir(), "frogprogsy-catalog-e2e-"));
@@ -166,6 +169,7 @@ function claudeDisplayNames(payload: { data?: Array<{ display_name?: unknown }> 
 }
 
 interface PublicModelRow {
+  provider?: string;
   id: string;
   namespaced: string;
   disabled?: boolean;
@@ -205,6 +209,7 @@ async function assertMatchingModelSurfaces(
 afterEach(() => {
   for (const server of activeServers) server.stop(true);
   activeServers.clear();
+  clearModelCache("opencode-zen");
   if (originalHome === undefined) delete process.env.FROGPROGSY_HOME;
   else process.env.FROGPROGSY_HOME = originalHome;
   if (originalClaudeHome === undefined) delete process.env.CLAUDE_HOME;
@@ -213,6 +218,131 @@ afterEach(() => {
 });
 
 describe("remote model catalog end to end", () => {
+  test("discovers and explicitly routes OpenCode Zen Ox Alpha without managed-model promotion", async () => {
+    const oxModel = "x-preview-f-free";
+    expect(bundledZen.models).toEqual([]);
+    expect(bundledZen.defaultModel).toBeUndefined();
+
+    const observedZenModels: unknown[] = [];
+    let observedZenBearer = true;
+    let zenChatRequests = 0;
+    let defaultChatRequests = 0;
+    const zenServer = trackServer(Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/catalog.json") return Response.json(bundled);
+        if (path === "/v1/models") {
+          return Response.json({
+            object: "list",
+            data: [{ id: oxModel, object: "model", owned_by: "opencode" }],
+          });
+        }
+        if (path === "/v1/chat/completions") {
+          zenChatRequests++;
+          observedZenBearer = observedZenBearer
+            && req.headers.get("authorization") === "Bearer ox-e2e-dummy-key";
+          const body: unknown = await req.json();
+          if (body && typeof body === "object" && "model" in body) observedZenModels.push(body.model);
+          return Response.json({
+            choices: [{ message: { content: "ox-ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 3, completion_tokens: 1 },
+          });
+        }
+        if (path === "/default/v1/chat/completions") {
+          defaultChatRequests++;
+          return Response.json({
+            choices: [{ message: { content: "default-ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 3, completion_tokens: 1 },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    }));
+    const home = tempHome();
+    const zenBase = zenServer.url.toString().replace(/\/$/, "");
+    writeConfig(home, {
+      port: 0,
+      hostname: "127.0.0.1",
+      modelCatalogConfigVersion: 1,
+      modelCacheTtlMs: 0,
+      defaultProvider: "default-test",
+      providers: {
+        "default-test": {
+          adapter: "openai-chat",
+          baseUrl: `${zenBase}/default/v1`,
+          apiKey: "default-e2e-dummy-key",
+          defaultModel: "default-model",
+          models: ["default-model"],
+          liveModels: false,
+        },
+        "opencode-zen": {
+          adapter: "openai-chat",
+          baseUrl: `${zenBase}/v1`,
+          authMode: "key",
+          apiKey: "ox-e2e-dummy-key",
+          catalogProviderId: "opencode-zen",
+          liveModels: true,
+        },
+      },
+      subagentModels: [],
+    });
+    const proxy = await startProxy(home, new URL("/catalog.json", zenServer.url).toString());
+
+    const postMessage = async (model: string) => {
+      const response = await fetch(new URL("/v1/messages", proxy.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model,
+          max_tokens: 32,
+          stream: false,
+          messages: [{ role: "user", content: "return a short synthetic response" }],
+        }),
+      });
+      expect(response.status).toBe(200);
+      return response.json() as Promise<{ model: string; content: Array<{ type: string; text: string }> }>;
+    };
+
+    try {
+      const models = await apiJson<PublicModelRow[]>(proxy, "/api/models");
+      expect(models).toContainEqual(expect.objectContaining({
+        provider: "opencode-zen",
+        id: oxModel,
+        namespaced: `opencode-zen/${oxModel}`,
+        disabled: false,
+        authReady: true,
+        supportStatus: "discovered",
+      }));
+
+      const claudeModels = await apiJson<{
+        data: Array<{ id: string; display_name: string }>;
+      }>(proxy, "/v1/models");
+      const alias = claudeModels.data.find(model => model.display_name === `opencode-zen/${oxModel}`)?.id;
+      expect(alias).toBeString();
+      if (!alias) throw new Error("Ox Claude alias was not generated");
+
+      const aliasResponse = await postMessage(alias);
+      expect(aliasResponse).toMatchObject({
+        model: alias,
+        content: [{ type: "text", text: "ox-ok" }],
+      });
+      const qualifiedResponse = await postMessage(`opencode-zen/${oxModel}`);
+      expect(qualifiedResponse.content).toEqual([{ type: "text", text: "ox-ok" }]);
+
+      const bareResponse = await postMessage(oxModel);
+      expect(bareResponse.content).toEqual([{ type: "text", text: "default-ok" }]);
+      expect(zenChatRequests).toBe(2);
+      expect(defaultChatRequests).toBe(1);
+      expect(observedZenBearer).toBe(true);
+      expect(observedZenModels).toEqual([oxModel, oxModel]);
+    } finally {
+      stopServer(proxy);
+      stopServer(zenServer);
+    }
+  }, 30_000);
+
   test("activates remote data only on restart, then uses cache and bundled fallback across public model surfaces", async () => {
     const remoteV1Id = "catalog-e2e-remote-v1";
     const remoteV2Id = "catalog-e2e-remote-v2";

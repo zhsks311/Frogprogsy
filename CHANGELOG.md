@@ -10,6 +10,7 @@
 ### Changed
 
 - Normal npm releases now use tokenless Trusted Publishing. A short-lived bootstrap token remains limited to the first package publish, and optional `preview` dist-tag removal remains a manual maintainer action.
+- A fake-upstream end-to-end test now locks OpenCode Zen's provider-discovered `x-preview-f-free` route as Discovered rather than Validated; real-provider validation still requires PR #55 and a dedicated bounded-spend Zen credential.
 
 ### Fixed
 

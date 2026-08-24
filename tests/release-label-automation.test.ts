@@ -775,6 +775,7 @@ describe("immutable channel release workflow", () => {
     });
     expect(evidenceScript).toContain('repos/${REPOSITORY}/commits/${EXPECTED_SHA}');
     expect(evidenceScript).toContain('compare/${merge_parents[0]}...${merge_parents[1]}');
+    expect(evidenceScript).toContain("(reduce .[] as $sha ([]; if index($sha) == null then . + [$sha] else . end))[]");
     expect(evidenceScript).toContain('.commit.verification.verified == true');
     expect(evidenceScript).toContain('commit.authorLogin === "github-actions[bot]"');
     expect(evidenceScript).toContain('commit.committerLogin === "web-flow"');
@@ -847,6 +848,7 @@ describe("immutable channel release workflow", () => {
     expect(verify?.run).toContain('actual_sha512_hex="$(sha512sum "$TARBALL"');
     expect(verify?.run).toContain('test "sha512-${actual_sha512_base64}" = "$EXPECTED_INTEGRITY"');
     expect(verify?.run).toContain("catalog.catalogDigest !== digest");
+    expect(verify?.run).toContain('TARBALL="$(realpath "${tarballs[0]}")"');
     expect(mutationText).toContain('npm publish "$TARBALL" --tag "$REGISTRY_DIST_TAG" --access public --provenance --ignore-scripts');
     expect(publish?.env?.NODE_AUTH_TOKEN).toBe("${{ inputs.bootstrap && secrets.NPM_BOOTSTRAP_TOKEN || '' }}");
   });
