@@ -863,7 +863,7 @@ jobs:
             echo "::error::Mutation artifact must contain exactly one tarball"
             exit 1
           }
-          TARBALL="${tarballs[0]}"
+          TARBALL="$(realpath "${tarballs[0]}")"
           test "$(basename "$TARBALL")" = "$EXPECTED_TARBALL_NAME" || {
             echo "::error::Mutation tarball name differs from inspected artifact"
             exit 1
