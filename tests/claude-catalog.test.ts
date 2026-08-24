@@ -70,6 +70,7 @@ describe("Claude Code catalog routed normalization", () => {
     expect(entry).not.toHaveProperty("default_service_tier");
     expect(entry).not.toHaveProperty("web_search_tool_type");
     expect(entry).not.toHaveProperty("supports_search_tool");
+    expect(entry.supports_parallel_tool_calls).toBe(true);
   });
 
   test("buildCatalogEntries strips routed entries cloned from native templates", () => {

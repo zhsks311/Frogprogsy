@@ -122,6 +122,67 @@ describe("provider fallback chain", () => {
     }
   });
 
+  test("direct upstream errors preserve Retry-After and filter unsafe headers", async () => {
+    const cfg = baseConfig();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      error: { type: "rate_limit_error", message: "rate limit reached" },
+    }), {
+      status: 429,
+      headers: {
+        "content-type": "application/json",
+        "retry-after": "7",
+        "set-cookie": "provider-secret=leak",
+      },
+    })) as typeof fetch;
+
+    try {
+      const response = await invokeMessages(cfg);
+      expect(response.status).toBe(429);
+      expect(response.headers.get("retry-after")).toBe("7");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      await expect(response.json()).resolves.toMatchObject({
+        type: "error",
+        error: { type: "rate_limit_error" },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("HTTP 200 inline adapter errors preserve safe headers and never become empty success", async () => {
+    const cfg = baseConfig();
+    cfg.providers.primary = {
+      adapter: "openai-chat",
+      baseUrl: "https://primary.test/v1",
+      apiKey: "sk-primary-secret",
+      defaultModel: "primary-model",
+      models: ["primary-model"],
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json({
+      error: { message: "provider rejected request" },
+    }, {
+      headers: {
+        "retry-after": "11",
+        "set-cookie": "provider-secret=leak",
+      },
+    })) as typeof fetch;
+
+    try {
+      const response = await invokeMessages(cfg);
+      expect(response.status).toBe(502);
+      expect(response.headers.get("retry-after")).toBe("11");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      await expect(response.json()).resolves.toEqual({
+        type: "error",
+        error: { type: "api_error", message: "provider rejected request" },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("uses only the first valid fallback provider and its defaultModel", async () => {
     const cfg = baseConfig();
     cfg.fallbackProviders = ["missing", "fallback", "later"];
@@ -476,6 +537,44 @@ describe("provider fallback chain", () => {
         "https://primary.test/v1/messages",
         "https://fallback.test/v1/messages",
       ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("exhausted continuity preserves the last upstream safe headers after an auth skip", async () => {
+    const cfg = baseConfig();
+    cfg.providers.missingKey = {
+      adapter: "anthropic",
+      baseUrl: "https://missing-key.test",
+      defaultModel: "missing-key-model",
+      models: ["missing-key-model"],
+    };
+    cfg.modelContinuity = {
+      "primary/primary-model": {
+        fallbacks: ["missingKey/missing-key-model"],
+        automatic: "transient",
+      },
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      error: { type: "server_error", message: "primary down" },
+    }), {
+      status: 503,
+      headers: {
+        "content-type": "application/json",
+        "retry-after": "13",
+        "set-cookie": "provider-secret=leak",
+      },
+    })) as typeof fetch;
+
+    try {
+      const response = await invokeMessages(cfg, messagesBody(), {
+        continuityCircuit: new ContinuityCircuit(),
+      });
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("13");
+      expect(response.headers.get("set-cookie")).toBeNull();
     } finally {
       globalThis.fetch = originalFetch;
     }

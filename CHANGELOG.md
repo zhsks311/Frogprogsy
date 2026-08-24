@@ -12,6 +12,10 @@
 - Normal npm releases now use tokenless Trusted Publishing. A short-lived bootstrap token remains limited to the first package publish, and optional `preview` dist-tag removal remains a manual maintainer action.
 - A fake-upstream end-to-end test now locks OpenCode Zen's provider-discovered `x-preview-f-free` route as Discovered rather than Validated; real-provider validation still requires PR #55 and a dedicated bounded-spend Zen credential.
 
+### Fixed
+
+- OpenAI Chat routes now fail closed on truncated or stalled streams, preserve max-token and retry metadata, and keep parallel tool calls and failed tool results distinct in Claude Messages. Codex Responses streams now count lifecycle and keepalive frames as activity and preserve terminal frames without a trailing newline.
+
 ## 0.0.3
 
 ### Added

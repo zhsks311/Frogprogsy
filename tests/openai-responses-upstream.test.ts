@@ -108,6 +108,87 @@ describe("OpenAI Responses upstream body sanitization", () => {
       { type: "done", usage: { inputTokens: 2, outputTokens: 1 } },
     ]);
   });
+  test("surfaces Responses lifecycle and comment keepalives as activity", async () => {
+    const adapter = createResponsesAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "oauth",
+      apiKey: "token",
+    });
+    const response = new Response([
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}",
+      "",
+      ": upstream keepalive",
+      "",
+      "event: response.in_progress",
+      "data: {\"type\":\"response.in_progress\",\"response\":{\"status\":\"in_progress\"}}",
+      "",
+      "event: response.output_text.delta",
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}",
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}",
+      "",
+    ].join("\n"));
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+
+    expect(events).toEqual([
+      { type: "activity" },
+      { type: "activity" },
+      { type: "activity" },
+      { type: "text_delta", text: "OK" },
+      { type: "done", usage: { inputTokens: 2, outputTokens: 1 } },
+    ]);
+  });
+
+  test("flushes a final-only completed frame without a trailing newline", async () => {
+    const adapter = createResponsesAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "oauth",
+      apiKey: "token",
+    });
+    const response = new Response([
+      "event: response.in_progress",
+      "data: {\"type\":\"response.in_progress\",\"response\":{\"status\":\"in_progress\"}}",
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Recovered\"}]}],\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}",
+    ].join("\n"));
+
+    await expect(adapter.parseResponse!(response)).resolves.toEqual([
+      { type: "text_delta", text: "Recovered" },
+      { type: "done", usage: { inputTokens: 2, outputTokens: 1 } },
+    ]);
+  });
+
+  test("does not synthesize a terminal event on bare Responses EOF", async () => {
+    const adapter = createResponsesAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "oauth",
+      apiKey: "token",
+    });
+    const body = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}",
+      "",
+      "event: response.output_text.delta",
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}",
+      "",
+    ].join("\n");
+    const events = [];
+    for await (const event of adapter.parseStream(new Response(body))) events.push(event);
+
+    expect(events).toEqual([
+      { type: "activity" },
+      { type: "text_delta", text: "partial" },
+    ]);
+    await expect(adapter.parseResponse!(new Response(body))).rejects.toThrow("stream ended without a terminal event");
+  });
+
   test("recovers output from a final-only completed response", async () => {
     const adapter = createResponsesAdapter({
       adapter: "openai-responses",

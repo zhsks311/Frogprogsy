@@ -1,14 +1,25 @@
 import type { ProviderAdapter } from "./base";
 import { debugDroppedFrame } from "../debug";
-import type { AdapterEvent, FrogAssistantMessage, FrogContentPart, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTextContent, FrogThinkingContent, FrogToolCall, FrogUsage } from "../types";
+import type { AdapterEvent, AdapterStopReason, FrogAssistantMessage, FrogContentPart, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTextContent, FrogThinkingContent, FrogToolCall, FrogUsage } from "../types";
 import { modelInList, namespacedToolName } from "../types";
 import { mapReasoningEffort } from "../reasoning-effort";
 import { contentPartsToText } from "./image";
 
 function messagesToChatFormat(parsed: FrogParsedRequest, provider: FrogProviderConfig): unknown[] {
   const out: unknown[] = [];
-  const { context, options } = parsed;
-  let pendingToolCallIds = new Set<string>();
+  const { context } = parsed;
+  const pendingToolCallIds = new Set<string>();
+
+  const flushMissingToolResults = () => {
+    for (const toolCallId of pendingToolCallIds) {
+      out.push({
+        role: "tool",
+        tool_call_id: toolCallId,
+        content: "[frogprogsy: missing tool_result for this tool_call in Claude Code history]",
+      });
+    }
+    pendingToolCallIds.clear();
+  };
 
   if (context.systemPrompt && context.systemPrompt.length > 0) {
     // Claude Code sends its GPT-5 identity prompt for EVERY model (the per-model catalog
@@ -25,6 +36,7 @@ function messagesToChatFormat(parsed: FrogParsedRequest, provider: FrogProviderC
     switch (msg.role) {
       case "user":
       case "developer": {
+        flushMissingToolResults();
         const role = msg.role === "developer" ? "system" : "user";
         if (typeof msg.content === "string") {
           out.push({ role, content: msg.content });
@@ -41,10 +53,10 @@ function messagesToChatFormat(parsed: FrogParsedRequest, provider: FrogProviderC
             out.push({ role: "user", content: chatParts });
           }
         }
-        pendingToolCallIds = new Set();
         break;
       }
       case "assistant": {
+        flushMissingToolResults();
         const aMsg = msg as FrogAssistantMessage;
         const textParts = aMsg.content.filter(p => p.type === "text") as FrogTextContent[];
         const thinkingParts = aMsg.content.filter(p => p.type === "thinking") as FrogThinkingContent[];
@@ -72,13 +84,16 @@ function messagesToChatFormat(parsed: FrogParsedRequest, provider: FrogProviderC
         // with neither content, tool calls, nor a provider-supported reasoning_content field.
         if (chatMsg.content === undefined && chatMsg.tool_calls === undefined && chatMsg.reasoning_content === undefined) break;
         out.push(chatMsg);
-        pendingToolCallIds = new Set(toolCalls.map(tc => tc.id).filter(Boolean));
+        for (const toolCall of toolCalls) {
+          if (toolCall.id) pendingToolCallIds.add(toolCall.id);
+        }
         break;
       }
       case "toolResult": {
         let toolCallId = msg.toolCallId;
         if (!toolCallId) toolCallId = `call_orphan_${out.length}`;
         if (!pendingToolCallIds.has(toolCallId)) {
+          flushMissingToolResults();
           // WS turns can arrive with only tool outputs; chat-completions providers reject a bare
           // role:"tool" message unless an assistant tool_call with the same id immediately precedes it.
           const name = safeToolName(msg.toolName);
@@ -91,12 +106,15 @@ function messagesToChatFormat(parsed: FrogParsedRequest, provider: FrogProviderC
               function: { name, arguments: "{}" },
             }],
           });
-          pendingToolCallIds = new Set([toolCallId]);
+          pendingToolCallIds.add(toolCallId);
         }
+        const content = contentPartsToText(msg.content);
         out.push({
           role: "tool",
           tool_call_id: toolCallId,
-          content: contentPartsToText(msg.content),
+          content: msg.isError
+            ? `[frogprogsy: tool_result is_error=true]\n${content}`
+            : content,
         });
         pendingToolCallIds.delete(toolCallId);
         break;
@@ -104,6 +122,7 @@ function messagesToChatFormat(parsed: FrogParsedRequest, provider: FrogProviderC
     }
   }
 
+  flushMissingToolResults();
   return out;
 }
 
@@ -145,6 +164,30 @@ function usageFromOpenAIChat(usage: Record<string, unknown> | undefined): FrogUs
   };
 }
 
+function stopReasonFromOpenAIChat(value: unknown): AdapterStopReason | undefined {
+  switch (value) {
+    case "length":
+      return "max_tokens";
+    case "tool_calls":
+    case "function_call":
+      return "tool_use";
+    case "stop":
+      return "end_turn";
+    default:
+      return undefined;
+  }
+}
+
+function inlineErrorMessage(value: unknown): string {
+  let message = "upstream error";
+  if (typeof value === "string") {
+    message = value;
+  } else if (value && typeof value === "object" && "message" in value && typeof value.message === "string") {
+    message = value.message;
+  }
+  return message.replace(/\s+/g, " ").trim().slice(0, 1000) || "upstream error";
+}
+
 export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderAdapter {
   return {
     name: "openai-chat",
@@ -182,14 +225,13 @@ export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderA
         body.frequency_penalty = parsed.options.frequencyPenalty;
       }
 
-      if (tools) body.parallel_tool_calls = false;
       if (parsed.stream) {
         body.stream_options = { include_usage: true };
       }
 
       const url = `${provider.baseUrl}/chat/completions`;
       const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (provider.apiKey) headers["Authorization"] = `Bearer ${provider.apiKey}`;
+      if (provider.apiKey) headers.Authorization = `Bearer ${provider.apiKey}`;
       if (provider.headers) Object.assign(headers, provider.headers);
 
       return { url, method: "POST", headers, body: JSON.stringify(body) };
@@ -201,12 +243,146 @@ export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderA
         return;
       }
 
+      interface BufferedToolCall {
+        id: string;
+        name: string;
+        argumentFragments: string[];
+      }
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      const bufferedToolCalls = new Map<number, BufferedToolCall>();
       let buffer = "";
-      let currentToolCallId = "";
-      let currentToolCallName = "";
       let pendingUsage: FrogUsage | undefined;
+      let pendingStopReason: AdapterStopReason | undefined;
+
+      const flushToolCalls = function* (): Generator<AdapterEvent> {
+        const ordered = [...bufferedToolCalls.entries()].sort(([left], [right]) => left - right);
+        bufferedToolCalls.clear();
+        for (const [index, toolCall] of ordered) {
+          yield {
+            type: "tool_call_start",
+            id: toolCall.id,
+            name: toolCall.name || `tool_${index}`,
+          };
+          for (const fragment of toolCall.argumentFragments) {
+            yield { type: "tool_call_delta", arguments: fragment };
+          }
+          yield { type: "tool_call_end" };
+        }
+      };
+
+      const parseLine = function* (line: string): Generator<AdapterEvent, boolean> {
+        if (!line.startsWith("data:")) return false;
+        let payload = line.slice(5);
+        if (payload.startsWith(" ")) payload = payload.slice(1);
+        payload = payload.trim();
+        if (!payload) return false;
+
+        if (payload === "[DONE]") {
+          yield* flushToolCalls();
+          yield {
+            type: "done",
+            usage: pendingUsage,
+            ...(pendingStopReason ? { stopReason: pendingStopReason } : {}),
+          };
+          return true;
+        }
+
+        let parsedChunk: unknown;
+        try {
+          parsedChunk = JSON.parse(payload);
+        } catch {
+          debugDroppedFrame("openai-chat", payload);
+          return false;
+        }
+        if (!parsedChunk || typeof parsedChunk !== "object" || Array.isArray(parsedChunk)) {
+          debugDroppedFrame("openai-chat", payload);
+          return false;
+        }
+        const chunk = parsedChunk as Record<string, unknown>;
+
+        if (chunk.error) {
+          yield { type: "error", message: inlineErrorMessage(chunk.error) };
+          return true;
+        }
+
+        if (chunk.usage && typeof chunk.usage === "object" && !Array.isArray(chunk.usage)) {
+          // Some providers combine usage with a final content delta; keep parsing this frame.
+          pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>);
+        }
+
+        const choices = Array.isArray(chunk.choices)
+          ? chunk.choices as Array<Record<string, unknown>>
+          : [];
+        const choice = choices[0];
+        if (!choice) return false;
+
+        const delta = choice.delta && typeof choice.delta === "object" && !Array.isArray(choice.delta)
+          ? choice.delta as Record<string, unknown>
+          : undefined;
+        if (delta) {
+          if (typeof delta.content === "string" && delta.content.length > 0) {
+            yield { type: "text_delta", text: delta.content };
+          }
+
+          if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+            yield { type: "reasoning_raw_delta", text: delta.reasoning_content };
+          }
+
+          const toolCalls = Array.isArray(delta.tool_calls)
+            ? delta.tool_calls as Array<Record<string, unknown>>
+            : [];
+          for (const rawToolCall of toolCalls) {
+            const rawId = typeof rawToolCall.id === "string" ? rawToolCall.id : "";
+            let toolIndex = typeof rawToolCall.index === "number" && Number.isInteger(rawToolCall.index)
+              ? rawToolCall.index
+              : undefined;
+            if (toolIndex === undefined && rawId) {
+              for (const [candidateIndex, candidate] of bufferedToolCalls) {
+                if (candidate.id === rawId) {
+                  toolIndex = candidateIndex;
+                  break;
+                }
+              }
+            }
+            if (toolIndex === undefined && !rawId && bufferedToolCalls.size === 1) {
+              toolIndex = bufferedToolCalls.keys().next().value;
+            }
+            if (toolIndex === undefined && rawId) {
+              toolIndex = 0;
+              while (bufferedToolCalls.has(toolIndex)) toolIndex++;
+            }
+            if (toolIndex === undefined) {
+              yield { type: "error", message: "upstream tool call delta has no recoverable identity" };
+              return true;
+            }
+
+            let toolCall = bufferedToolCalls.get(toolIndex);
+            if (!toolCall) {
+              toolCall = { id: "", name: "", argumentFragments: [] };
+              bufferedToolCalls.set(toolIndex, toolCall);
+            }
+            if (rawId && !toolCall.id) toolCall.id = rawId;
+            const fn = rawToolCall.function && typeof rawToolCall.function === "object" && !Array.isArray(rawToolCall.function)
+              ? rawToolCall.function as Record<string, unknown>
+              : undefined;
+            if (typeof fn?.name === "string" && fn.name.length > 0 && !toolCall.name) {
+              toolCall.name = fn.name;
+            }
+            if (typeof fn?.arguments === "string" && fn.arguments.length > 0) {
+              toolCall.argumentFragments.push(fn.arguments);
+            }
+          }
+        }
+
+        const mappedStopReason = stopReasonFromOpenAIChat(choice.finish_reason);
+        if (mappedStopReason) pendingStopReason = mappedStopReason;
+        if (choice.finish_reason === "tool_calls") {
+          yield* flushToolCalls();
+        }
+        return false;
+      };
 
       try {
         while (true) {
@@ -216,116 +392,74 @@ export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderA
 
           const lines = buffer.split("\n");
           buffer = lines.pop() ?? "";
-
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const payload = line.slice(6).trim();
-            if (payload === "[DONE]") {
-              if (currentToolCallId) {
-                yield { type: "tool_call_end" };
-                currentToolCallId = "";
-              }
-              yield { type: "done", usage: pendingUsage };
-              return;
-            }
-
-            let chunk: Record<string, unknown>;
-            try {
-              chunk = JSON.parse(payload) as Record<string, unknown>;
-            } catch {
-              debugDroppedFrame("openai-chat", payload);
-              continue;
-            }
-
-            // A 200/OK chat-completions stream may carry an inline provider error envelope
-            // instead of a clean [DONE]. Surface it as a terminal error so the bridge emits a
-            // classified response.failed (bridge case "error") — never a truncated completion.
-            if (chunk.error) {
-              const err = chunk.error as { message?: string } | undefined;
-              if (currentToolCallId) yield { type: "tool_call_end" };
-              yield { type: "error", message: err?.message ?? "upstream error" };
-              return;
-            }
-
-            if (chunk.usage) {
-              // Record usage but keep parsing: some providers send usage and the final content
-              // delta in the SAME chunk; a `continue` here would drop that content. The choices
-              // guard below no-ops a usage-only chunk.
-              pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>);
-            }
-
-            const choices = chunk.choices as { delta?: Record<string, unknown>; finish_reason?: string }[] | undefined;
-            if (!choices || choices.length === 0) continue;
-            const delta = choices[0].delta;
-            if (!delta) continue;
-
-            if (typeof delta.content === "string" && delta.content.length > 0) {
-              yield { type: "text_delta", text: delta.content };
-            }
-
-            if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
-              yield { type: "reasoning_raw_delta", text: delta.reasoning_content };
-            }
-
-            const toolCalls = delta.tool_calls as { index: number; id?: string; function?: { name?: string; arguments?: string } }[] | undefined;
-            if (toolCalls) {
-              for (const tc of toolCalls) {
-                if (tc.id && tc.id !== currentToolCallId) {
-                  if (currentToolCallId) yield { type: "tool_call_end" };
-                  currentToolCallId = tc.id;
-                  currentToolCallName = tc.function?.name ?? "";
-                  yield { type: "tool_call_start", id: tc.id, name: currentToolCallName };
-                }
-                if (tc.function?.arguments) {
-                  yield { type: "tool_call_delta", arguments: tc.function.arguments };
-                }
-              }
-            }
-
-            if (choices[0].finish_reason === "tool_calls" && currentToolCallId) {
-              yield { type: "tool_call_end" };
-              currentToolCallId = "";
-            }
+            const terminal = yield* parseLine(line);
+            if (terminal) return;
           }
         }
 
-        if (currentToolCallId) {
-          yield { type: "tool_call_end" };
+        buffer += decoder.decode();
+        if (buffer) {
+          const terminal = yield* parseLine(buffer);
+          if (terminal) return;
         }
-        // EOF without a [DONE] sentinel: still surface any usage accumulated mid-stream.
-        yield { type: "done", usage: pendingUsage };
+        yield { type: "error", message: "upstream stream ended before [DONE]" };
       } finally {
         reader.releaseLock();
       }
     },
 
     async parseResponse(response: Response): Promise<AdapterEvent[]> {
-      const json = await response.json() as Record<string, unknown>;
-      const events: AdapterEvent[] = [];
-      const choices = json.choices as { message?: Record<string, unknown> }[] | undefined;
-      if (choices && choices.length > 0) {
-        const msg = choices[0].message;
-        if (msg) {
-          if (typeof msg.content === "string") {
-            events.push({ type: "text_delta", text: msg.content });
-          }
-          if (typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0) {
-            events.push({ type: "reasoning_raw_delta", text: msg.reasoning_content });
-          }
-          const toolCalls = msg.tool_calls as { id: string; function: { name: string; arguments: string } }[] | undefined;
-          if (toolCalls) {
-            for (const tc of toolCalls) {
-              events.push({ type: "tool_call_start", id: tc.id, name: tc.function.name });
-              events.push({ type: "tool_call_delta", arguments: tc.function.arguments });
-              events.push({ type: "tool_call_end" });
-            }
-          }
+      const parsedJson: unknown = await response.json();
+      if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
+        return [{ type: "error", message: "invalid upstream response" }];
+      }
+      const json = parsedJson as Record<string, unknown>;
+      const choices = Array.isArray(json.choices)
+        ? json.choices as Array<Record<string, unknown>>
+        : [];
+      if (json.error) {
+        const errorMessage = inlineErrorMessage(json.error);
+        if (choices.length === 0 || errorMessage !== "upstream error") {
+          return [{ type: "error", message: errorMessage }];
         }
       }
-      const usage = json.usage as Record<string, unknown> | undefined;
+
+      const events: AdapterEvent[] = [];
+      const choice = choices[0];
+      const msg = choice?.message && typeof choice.message === "object" && !Array.isArray(choice.message)
+        ? choice.message as Record<string, unknown>
+        : undefined;
+      if (msg) {
+        if (typeof msg.content === "string") {
+          events.push({ type: "text_delta", text: msg.content });
+        }
+        if (typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0) {
+          events.push({ type: "reasoning_raw_delta", text: msg.reasoning_content });
+        }
+        const toolCalls = Array.isArray(msg.tool_calls)
+          ? msg.tool_calls as Array<Record<string, unknown>>
+          : [];
+        for (const rawToolCall of toolCalls) {
+          const fn = rawToolCall.function && typeof rawToolCall.function === "object" && !Array.isArray(rawToolCall.function)
+            ? rawToolCall.function as Record<string, unknown>
+            : undefined;
+          const id = typeof rawToolCall.id === "string" ? rawToolCall.id : "";
+          const name = typeof fn?.name === "string" ? fn.name : "tool";
+          const args = typeof fn?.arguments === "string" ? fn.arguments : "";
+          events.push({ type: "tool_call_start", id, name });
+          events.push({ type: "tool_call_delta", arguments: args });
+          events.push({ type: "tool_call_end" });
+        }
+      }
+      const usage = json.usage && typeof json.usage === "object" && !Array.isArray(json.usage)
+        ? json.usage as Record<string, unknown>
+        : undefined;
+      const stopReason = stopReasonFromOpenAIChat(choice?.finish_reason);
       events.push({
         type: "done",
         usage: usageFromOpenAIChat(usage),
+        ...(stopReason ? { stopReason } : {}),
       });
       return events;
     },

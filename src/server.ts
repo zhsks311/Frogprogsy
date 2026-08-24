@@ -814,15 +814,17 @@ async function handleMessages(
       }
     }
 
+    const mixingAbort = new AbortController();
+    linkAbortSignal(mixingAbort, options.abortSignal);
     const mixedEvents = await runWithMixing({
       config,
       parsed,
       incomingHeaders: req.headers,
-      abortSignal: options.abortSignal,
+      abortSignal: mixingAbort.signal,
       dispatchBuffered: (target, messages, maxTokens, timeoutMs, tools) =>
-        runMixTurn(config, target, parsed, { messages, stream: false, maxTokens, tools }, req.headers, timeoutMs ?? mixTimeoutMs, options.abortSignal) as Promise<AdapterEvent[]>,
+        runMixTurn(config, target, parsed, { messages, stream: false, maxTokens, tools }, req.headers, timeoutMs ?? mixTimeoutMs, mixingAbort.signal) as Promise<AdapterEvent[]>,
       dispatchFinalStream: (target, systemAppend) =>
-        runMixTurn(config, target, parsed, { systemAppend, stream: true }, req.headers, mixTimeoutMs, options.abortSignal) as Promise<AsyncGenerator<AdapterEvent>>,
+        runMixTurn(config, target, parsed, { systemAppend, stream: true }, req.headers, mixTimeoutMs, mixingAbort.signal) as Promise<AsyncGenerator<AdapterEvent>>,
     });
 
     if (parsed.stream) {
@@ -830,9 +832,13 @@ async function handleMessages(
       const sseStream = bridgeToMessagesSSE(
         eventStream,
         responseModelId,
-        () => {/* client abort is propagated to in-flight mix stage fetches via linkAbortSignal */},
+        () => mixingAbort.abort("upstream stream terminated"),
         2_000,
-        { hideThinkingSummary: mixHideThinking },
+        {
+          hideThinkingSummary: mixHideThinking,
+          stallTimeoutSec: config.stallTimeoutSec,
+          onTerminalError: code => recordMessagesStreamError(logCtx, code),
+        },
       );
       return new Response(observeLoggedStream(sseStream, logCtx), {
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" },
@@ -961,7 +967,7 @@ async function handleMessages(
   }
 
   const connectMs = config.connectTimeoutMs ?? 30_000;
-  let lastUpstreamFailure: { status: number; details: UpstreamErrorDetails } | undefined;
+  let lastUpstreamFailure: { status: number; details: UpstreamErrorDetails; headers: Record<string, string> } | undefined;
   for (let attemptIndex = 0; attemptIndex < attempts.length;) {
     const attempt = attempts[attemptIndex]!;
     const attemptParsed = cloneParsedForAttempt(parsed, attempt);
@@ -1131,8 +1137,9 @@ async function handleMessages(
 
     if (!upstreamResponse.ok) {
       const err = await providerErrorDetails(upstreamResponse);
+      const safeHeaders = safeResponseHeaders(upstreamResponse.headers);
       recordAttemptLog(logCtx, attempt, "error", err.code ?? "provider_non_2xx", upstreamResponse.status);
-      lastUpstreamFailure = { status: upstreamResponse.status, details: err };
+      lastUpstreamFailure = { status: upstreamResponse.status, details: err, headers: safeHeaders };
       const useContinuityPolicy = continuityPolicyActive
         && (attempt.source === "primary" || attempt.source === "continuity");
       const continuityReason = useContinuityPolicy
@@ -1163,7 +1170,7 @@ async function handleMessages(
         continue;
       }
       finalizeRequestLog(logCtx, "provider_non_2xx", upstreamResponse.status, { kind: "upstream", code: "provider_non_2xx", upstreamStatus: upstreamResponse.status });
-      return formatAnthropicErrorResponse(upstreamResponse.status, err.type, err.message);
+      return formatAnthropicErrorResponse(upstreamResponse.status, err.type, err.message, safeHeaders);
     }
 
     if (attempt.source === "primary") continuityCircuit.succeed(primaryTarget);
@@ -1175,7 +1182,11 @@ async function handleMessages(
         responseModelId,
         () => upstream.abort(),
         2_000,
-        { hideThinkingSummary: attemptParsed.options.hideThinkingSummary },
+        {
+          hideThinkingSummary: attemptParsed.options.hideThinkingSummary,
+          stallTimeoutSec: config.stallTimeoutSec,
+          onTerminalError: code => recordMessagesStreamError(logCtx, code),
+        },
       );
       return new Response(observeLoggedStream(sseStream, logCtx), {
         headers: responseHeadersFromUpstream(upstreamResponse, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" }),
@@ -1192,7 +1203,7 @@ async function handleMessages(
         recordAttemptLog(logCtx, attempt, "error", "provider_response_error", upstreamResponse.status);
         recordLogPhase(logCtx, "nonstream_bridge", "error", "provider_response_error");
         finalizeRequestLog(logCtx, "bridge_error", 502, { kind: "upstream", code: "provider_response_error" });
-        return formatAnthropicErrorResponse(502, "upstream_error", adapterError);
+        return formatAnthropicErrorResponse(502, "upstream_error", adapterError, safeResponseHeaders(upstreamResponse.headers));
       }
       const json = buildMessageJSON(events, responseModelId, { hideThinkingSummary: attemptParsed.options.hideThinkingSummary });
       recordLogPhase(logCtx, "nonstream_bridge", "ok");
@@ -1214,6 +1225,7 @@ async function handleMessages(
       lastUpstreamFailure.status,
       lastUpstreamFailure.details.type,
       lastUpstreamFailure.details.message,
+      lastUpstreamFailure.headers,
     );
   }
   finalizeRequestLog(logCtx, "internal_error", 502, { kind: "upstream", code: "provider_attempts_exhausted" });
@@ -2003,6 +2015,14 @@ function firstAdapterError(events: AdapterEvent[]): string | undefined {
   return error?.message;
 }
 
+function recordMessagesStreamError(ctx: RequestLogContext, code: string): void {
+  if (ctx.entry.error) return;
+  ctx.entry.error = {
+    kind: code === "bridge_parse_error" ? "bridge" : "upstream",
+    code,
+  };
+}
+
 async function* observeUsageEvents(events: AsyncGenerator<AdapterEvent>, ctx: RequestLogContext): AsyncGenerator<AdapterEvent> {
   for await (const event of events) {
     if (event.type === "done") recordLogUsage(ctx, event.usage);
@@ -2215,7 +2235,7 @@ function observeLoggedStream(body: ReadableStream<Uint8Array>, ctx: RequestLogCo
       try {
         const { done, value } = await reader.read();
         if (done) {
-          const streamError = ctx.entry.error?.code === "provider_stream_error" ? ctx.entry.error : undefined;
+          const streamError = ctx.entry.error;
           recordLogPhase(ctx, "stream_bridge", streamError ? "error" : "ok", streamError?.code);
           finalizeRequestLog(ctx, streamError ? "bridge_error" : "completed", streamError ? 502 : successStatus, streamError);
           controller.close();
