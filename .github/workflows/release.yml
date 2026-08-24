@@ -404,7 +404,6 @@ jobs:
     timeout-minutes: 45
     env:
       PACKAGE_NAME: frogprogsy
-      REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
     permissions:
       actions: read
       contents: read
@@ -553,6 +552,7 @@ jobs:
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
           RELEASE_VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+          REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
         run: |
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
@@ -820,7 +820,6 @@ jobs:
     timeout-minutes: 45
     env:
       PACKAGE_NAME: frogprogsy
-      REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
     permissions:
       actions: read
       contents: write
@@ -929,6 +928,7 @@ jobs:
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
           RELEASE_VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+          REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
         run: |
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
@@ -1349,9 +1349,12 @@ jobs:
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
           RELEASE_VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+          REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
         run: |
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
+          mkdir -p "$REGISTRY_CWD"
+          printf '%s\n' '{"name":"release-registry-probe","version":"0.0.0","private":true}' > "$REGISTRY_CWD/package.json"
           validate_existing_npm() {
             local proof_dir metadata_file tags_file registry_tarball attestation_file bundle_file verification_file workflow_commits_file
             local tarball_url attestation_url metadata_integrity metadata_shasum

@@ -803,10 +803,7 @@ describe("immutable channel release workflow", () => {
     expect(buildText).toContain("actions/checkout@");
     expect(buildText).toContain("bun install --frozen-lockfile --ignore-scripts");
     expect(buildText).toContain("bun run prepublishOnly");
-    expect(inspect.env).toEqual({
-      PACKAGE_NAME: "frogprogsy",
-      REGISTRY_CWD: "${{ runner.temp }}/release-registry-probe",
-    });
+    expect(inspect.env).toEqual({ PACKAGE_NAME: "frogprogsy" });
     expect(buildText).toContain("bun scripts/dev-package.ts build --skip-gates");
     expect(buildText).not.toContain("GITHUB_OUTPUT");
     expect(buildText).not.toContain("secrets.NPM_BOOTSTRAP_TOKEN");
@@ -839,10 +836,7 @@ describe("immutable channel release workflow", () => {
       contents: "write",
       "id-token": "write",
     });
-    expect(mutate.env).toEqual({
-      PACKAGE_NAME: "frogprogsy",
-      REGISTRY_CWD: "${{ runner.temp }}/release-registry-probe",
-    });
+    expect(mutate.env).toEqual({ PACKAGE_NAME: "frogprogsy" });
     expect(verify?.env?.EXPECTED_PACKAGE_NAME).toBe("${{ env.PACKAGE_NAME }}");
     expect(mutationText).not.toContain("actions/checkout@");
     expect(mutationText).not.toContain("bun install");
