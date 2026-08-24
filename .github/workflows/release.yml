@@ -404,7 +404,6 @@ jobs:
     timeout-minutes: 45
     env:
       PACKAGE_NAME: frogprogsy
-      REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
     permissions:
       actions: read
       contents: read
@@ -553,6 +552,7 @@ jobs:
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
           RELEASE_VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+          REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
         run: |
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
@@ -619,7 +619,7 @@ jobs:
           fi
 
           release_file="$(mktemp)"
-          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish >"$release_file" 2>&1; then
+          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish --repo "$REPOSITORY" >"$release_file" 2>&1; then
             release_exists=true
             EXPECTED_SHA="$EXPECTED_SHA" REGISTRY_DIST_TAG="$REGISTRY_DIST_TAG" RELEASE_FILE="$release_file" RELEASE_TAG="$release_tag" bun -e '
               const release = await Bun.file(process.env.RELEASE_FILE!).json();
@@ -820,7 +820,6 @@ jobs:
     timeout-minutes: 45
     env:
       PACKAGE_NAME: frogprogsy
-      REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
     permissions:
       actions: read
       contents: write
@@ -929,6 +928,7 @@ jobs:
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
           RELEASE_VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+          REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
         run: |
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
@@ -995,7 +995,7 @@ jobs:
           fi
 
           release_file="$(mktemp)"
-          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish >"$release_file" 2>&1; then
+          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish --repo "$REPOSITORY" >"$release_file" 2>&1; then
             release_exists=true
             EXPECTED_SHA="$EXPECTED_SHA" REGISTRY_DIST_TAG="$REGISTRY_DIST_TAG" RELEASE_FILE="$release_file" RELEASE_TAG="$release_tag" bun -e '
               const release = await Bun.file(process.env.RELEASE_FILE!).json();
@@ -1317,7 +1317,7 @@ jobs:
 
           if [ "$RELEASE_REQUIRED" = "true" ]; then
             release_probe="$(mktemp)"
-            if gh release view "$release_tag" >"$release_probe" 2>&1; then
+            if gh release view "$release_tag" --repo "$REPOSITORY" >"$release_probe" 2>&1; then
               echo "::error::GitHub Release ${release_tag} appeared after recovery preflight"
               exit 1
             fi
@@ -1336,7 +1336,7 @@ jobs:
             if [ "$REGISTRY_DIST_TAG" = "preview" ]; then
               release_flags=(--prerelease --latest=false)
             fi
-            gh release create "$release_tag" --target "$EXPECTED_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"
+            gh release create "$release_tag" --target "$EXPECTED_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}" --repo "$REPOSITORY"
             rm -f "$notes_file"
           fi
 
@@ -1349,9 +1349,12 @@ jobs:
           REGISTRY_DIST_TAG: ${{ inputs.tag }}
           RELEASE_VERSION: ${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
+          REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
         run: |
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
+          mkdir -p "$REGISTRY_CWD"
+          printf '%s\n' '{"name":"release-registry-probe","version":"0.0.0","private":true}' > "$REGISTRY_CWD/package.json"
           validate_existing_npm() {
             local proof_dir metadata_file tags_file registry_tarball attestation_file bundle_file verification_file workflow_commits_file
             local tarball_url attestation_url metadata_integrity metadata_shasum
