@@ -90,6 +90,7 @@ describe("adapter reasoning and usage details", () => {
     expect(body).not.toHaveProperty("presence_penalty");
     expect(body).not.toHaveProperty("frequency_penalty");
     expect(body.tool_choice).toBe("auto");
+    expect(body).not.toHaveProperty("parallel_tool_calls");
   });
 
   test("OpenAI-compatible non-streaming maps reasoning_content and usage details", async () => {
@@ -193,7 +194,7 @@ describe("usage and content retention (F2)", () => {
     expect(events.at(-1)).toEqual({ type: "done", usage: { inputTokens: 3, outputTokens: 2 } });
   });
 
-  test("openai-chat retains usage on EOF without [DONE]", async () => {
+  test("openai-chat treats EOF without [DONE] as an error", async () => {
     const adapter = createOpenAIChatAdapter(provider);
     const response = new Response([
       'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
@@ -201,7 +202,121 @@ describe("usage and content retention (F2)", () => {
     ].join(""));
     const events = [];
     for await (const event of adapter.parseStream(response)) events.push(event);
-    expect(events.at(-1)).toEqual({ type: "done", usage: { inputTokens: 5, outputTokens: 1 } });
+    expect(events).toContainEqual({ type: "text_delta", text: "hi" });
+    expect(events.at(-1)).toEqual({ type: "error", message: "upstream stream ended before [DONE]" });
+    expect(events.some(event => event.type === "done")).toBe(false);
+  });
+
+  test("openai-chat accepts a final [DONE] field without optional space or trailing newline", async () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const events = [];
+    for await (const event of adapter.parseStream(new Response("data:[DONE]"))) events.push(event);
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
+  test("openai-chat parses a final content field before reporting missing [DONE]", async () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const events = [];
+    for await (const event of adapter.parseStream(new Response(
+      'data: {"choices":[{"delta":{"content":"final fragment"}}]}',
+    ))) events.push(event);
+    expect(events).toEqual([
+      { type: "text_delta", text: "final fragment" },
+      { type: "error", message: "upstream stream ended before [DONE]" },
+    ]);
+  });
+
+  test("openai-chat maps streaming and non-streaming length termination to max_tokens", async () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const streamEvents = [];
+    for await (const event of adapter.parseStream(new Response([
+      'data: {"choices":[{"delta":{"content":"cut"},"finish_reason":"length"}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join("")))) streamEvents.push(event);
+    expect(streamEvents.at(-1)).toMatchObject({ type: "done", stopReason: "max_tokens" });
+
+    const responseEvents = await adapter.parseResponse?.(Response.json({
+      choices: [{ message: { content: "cut" }, finish_reason: "length" }],
+    }));
+    expect(responseEvents?.at(-1)).toMatchObject({ type: "done", stopReason: "max_tokens" });
+  });
+
+  test("openai-chat preserves indexed interleaved tool argument fragments", async () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const response = new Response([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"alpha","arguments":"{\\"a\\":"}},{"index":1,"id":"call_b","function":{"name":"beta","arguments":"{\\"b\\":\\""}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"two\\"}"}},{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""));
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+    expect(events.filter(event => event.type === "activity")).toEqual([
+      { type: "activity" },
+      { type: "activity" },
+    ]);
+    const toolEvents = events.filter(event => event.type.startsWith("tool_call_"));
+    expect(toolEvents).toEqual([
+      { type: "tool_call_start", id: "call_a", name: "alpha" },
+      { type: "tool_call_delta", arguments: '{"a":' },
+      { type: "tool_call_delta", arguments: "1}" },
+      { type: "tool_call_end" },
+      { type: "tool_call_start", id: "call_b", name: "beta" },
+      { type: "tool_call_delta", arguments: '{"b":"' },
+      { type: "tool_call_delta", arguments: 'two"}' },
+      { type: "tool_call_end" },
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "tool_use" });
+  });
+
+  test("openai-chat recovers omitted indexes and ignores repeated full tool names", async () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const response = new Response([
+      'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"name":"alpha","arguments":"{\\"a\\":"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"alpha","arguments":"1}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""));
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+    expect(events.filter(event => event.type.startsWith("tool_call_"))).toEqual([
+      { type: "tool_call_start", id: "call_a", name: "alpha" },
+      { type: "tool_call_delta", arguments: '{"a":' },
+      { type: "tool_call_delta", arguments: "1}" },
+      { type: "tool_call_end" },
+    ]);
+  });
+
+  test("openai-chat surfaces a non-stream inline error without done", async () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const events = await adapter.parseResponse?.(Response.json({
+      error: { message: "provider rejected request" },
+    }));
+    expect(events).toEqual([{ type: "error", message: "provider rejected request" }]);
+  });
+
+  test("openai-chat ignores an empty error placeholder when choices are valid", async () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const events = await adapter.parseResponse?.(Response.json({
+      error: {},
+      choices: [{ message: { content: "answer" }, finish_reason: "stop" }],
+    }));
+    expect(events).toEqual([
+      { type: "text_delta", text: "answer" },
+      { type: "done", usage: undefined, stopReason: "end_turn" },
+    ]);
+  });
+
+  test("openai-chat ignores an empty streaming error placeholder when choices are valid", async () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const response = new Response([
+      'data: {"error":{},"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""));
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+    expect(events).toEqual([
+      { type: "text_delta", text: "answer" },
+      { type: "done", usage: undefined, stopReason: "end_turn" },
+    ]);
   });
 
   test("google emits exactly one done carrying usage", async () => {
@@ -295,6 +410,106 @@ describe("openai-chat tool history repair", () => {
       }],
     });
     expect(body.messages[1]).toMatchObject({ role: "tool", tool_call_id: "call_1" });
+  });
+
+  test("backfills missing sibling results from a parallel tool batch", () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const request = adapter.buildRequest({
+      modelId: "deepseek-v4",
+      context: {
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "toolCall", id: "call_a", name: "alpha", arguments: {} },
+              { type: "toolCall", id: "call_b", name: "beta", arguments: {} },
+            ],
+            model: "deepseek-v4",
+            timestamp: 0,
+          },
+          { role: "toolResult", toolCallId: "call_a", toolName: "alpha", content: "ok", isError: false, timestamp: 0 },
+          { role: "user", content: "continue", timestamp: 0 },
+        ],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { messages: Array<Record<string, unknown>> };
+
+    expect(body.messages.map(message => message.role)).toEqual(["assistant", "tool", "tool", "user"]);
+    expect(body.messages[1]).toMatchObject({ role: "tool", tool_call_id: "call_a", content: "ok" });
+    expect(body.messages[2]).toMatchObject({
+      role: "tool",
+      tool_call_id: "call_b",
+      content: "[frogprogsy: missing tool_result for this tool_call in Claude Code history]",
+    });
+  });
+
+  test("marks failed tool results without changing successful result content", () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const request = adapter.buildRequest({
+      modelId: "deepseek-v4",
+      context: {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: {} }],
+            model: "deepseek-v4",
+            timestamp: 0,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "read_file",
+            content: "permission denied",
+            isError: true,
+            timestamp: 0,
+          },
+        ],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { messages: Array<Record<string, unknown>> };
+
+    expect(body.messages[1]).toMatchObject({
+      role: "tool",
+      tool_call_id: "call_1",
+      content: "[frogprogsy: tool_result is_error=true]\npermission denied",
+    });
+  });
+
+  test("repairs pending siblings before inserting an orphan tool result pair", () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const request = adapter.buildRequest({
+      modelId: "deepseek-v4",
+      context: {
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "toolCall", id: "call_a", name: "alpha", arguments: {} },
+              { type: "toolCall", id: "call_b", name: "beta", arguments: {} },
+            ],
+            model: "deepseek-v4",
+            timestamp: 0,
+          },
+          { role: "toolResult", toolCallId: "call_c", toolName: "gamma", content: "orphan", isError: false, timestamp: 0 },
+        ],
+      },
+      stream: true,
+      options: {},
+    });
+    const body = JSON.parse(request.body) as { messages: Array<Record<string, unknown>> };
+
+    expect(body.messages.map(message => message.role)).toEqual(["assistant", "tool", "tool", "assistant", "tool"]);
+    expect(body.messages[1]).toMatchObject({ role: "tool", tool_call_id: "call_a" });
+    expect(body.messages[2]).toMatchObject({ role: "tool", tool_call_id: "call_b" });
+    expect(body.messages[3]).toMatchObject({
+      role: "assistant",
+      tool_calls: [{ id: "call_c" }],
+    });
+    expect(body.messages[4]).toMatchObject({ role: "tool", tool_call_id: "call_c", content: "orphan" });
   });
 });
 

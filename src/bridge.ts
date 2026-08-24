@@ -333,6 +333,9 @@ export function bridgeToResponsesSSE(
               closeCurrentToolCall();
               break;
             }
+            case "activity":
+            case "diagnostic":
+              break;
             case "done": {
               if (currentMsg) closeCurrentMessage();
               if (currentReasoning) closeCurrentReasoning();
@@ -527,6 +530,9 @@ export function buildResponseJSON(
         break;
       case "tool_call_end":
         flushToolCall();
+        break;
+      case "activity":
+      case "diagnostic":
         break;
       case "error":
         errorMessage = e.message;
