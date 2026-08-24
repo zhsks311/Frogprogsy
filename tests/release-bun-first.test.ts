@@ -214,6 +214,10 @@ describe("Bun-first release and installation contract", () => {
     expect(workflow).toContain("release_flags=(--prerelease --latest=false)");
     expect(workflow).not.toContain("gh release edit");
     expect(workflow).toContain('gh release create "$release_tag" --target "$EXPECTED_SHA"');
+    const githubReleaseCommands = workflow
+      .split(/\r?\n/)
+      .filter((line) => line.includes("gh release "));
+    expect(githubReleaseCommands.every((line) => line.includes('--repo "$REPOSITORY"'))).toBe(true);
   });
 
   test("package lifecycle workflow builds the shared tarball once and installs it across three OSes", async () => {
