@@ -404,6 +404,7 @@ jobs:
     timeout-minutes: 45
     env:
       PACKAGE_NAME: frogprogsy
+      REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
     permissions:
       actions: read
       contents: read
@@ -556,9 +557,11 @@ jobs:
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
           release_tag="v${RELEASE_VERSION}"
+          mkdir -p "$REGISTRY_CWD"
+          printf '%s\n' '{"name":"release-registry-probe","version":"0.0.0","private":true}' > "$REGISTRY_CWD/package.json"
 
           package_probe_file="$(mktemp)"
-          if bun pm view "$pkg_name" name >"$package_probe_file" 2>&1; then
+          if bun pm view "$pkg_name" name --cwd "$REGISTRY_CWD" >"$package_probe_file" 2>&1; then
             package_exists=true
           else
             package_probe="$(<"$package_probe_file")"
@@ -576,7 +579,7 @@ jobs:
           version_exists=false
           if [ "$package_exists" = "true" ]; then
             versions_file="$(mktemp)"
-            if ! bun pm view "$pkg_name" versions --json >"$versions_file" 2>&1; then
+            if ! bun pm view "$pkg_name" versions --json --cwd "$REGISTRY_CWD" >"$versions_file" 2>&1; then
               echo "::error::Unable to list registry versions for ${pkg_name}"
               sed 's/^/registry: /' "$versions_file"
               exit 1
@@ -673,8 +676,8 @@ jobs:
             verification_file="$proof_dir/verified.json"
             workflow_commits_file="$proof_dir/workflow-commits.txt"
 
-            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json > "$metadata_file"
-            bun pm view "$pkg_name" dist-tags --json > "$tags_file"
+            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json --cwd "$REGISTRY_CWD" > "$metadata_file"
+            bun pm view "$pkg_name" dist-tags --json --cwd "$REGISTRY_CWD" > "$tags_file"
             tarball_url="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' "$metadata_file")"
             attestation_url="$(jq -er '.dist.attestations.url | select(type == "string" and length > 0)' "$metadata_file")"
             curl --fail-with-body --silent --show-error --location \
@@ -817,6 +820,7 @@ jobs:
     timeout-minutes: 45
     env:
       PACKAGE_NAME: frogprogsy
+      REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe
     permissions:
       actions: read
       contents: write
@@ -929,9 +933,11 @@ jobs:
           set -euo pipefail
           pkg_name="$PACKAGE_NAME"
           release_tag="v${RELEASE_VERSION}"
+          mkdir -p "$REGISTRY_CWD"
+          printf '%s\n' '{"name":"release-registry-probe","version":"0.0.0","private":true}' > "$REGISTRY_CWD/package.json"
 
           package_probe_file="$(mktemp)"
-          if bun pm view "$pkg_name" name >"$package_probe_file" 2>&1; then
+          if bun pm view "$pkg_name" name --cwd "$REGISTRY_CWD" >"$package_probe_file" 2>&1; then
             package_exists=true
           else
             package_probe="$(<"$package_probe_file")"
@@ -949,7 +955,7 @@ jobs:
           version_exists=false
           if [ "$package_exists" = "true" ]; then
             versions_file="$(mktemp)"
-            if ! bun pm view "$pkg_name" versions --json >"$versions_file" 2>&1; then
+            if ! bun pm view "$pkg_name" versions --json --cwd "$REGISTRY_CWD" >"$versions_file" 2>&1; then
               echo "::error::Unable to list registry versions for ${pkg_name}"
               sed 's/^/registry: /' "$versions_file"
               exit 1
@@ -1046,8 +1052,8 @@ jobs:
             verification_file="$proof_dir/verified.json"
             workflow_commits_file="$proof_dir/workflow-commits.txt"
 
-            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json > "$metadata_file"
-            bun pm view "$pkg_name" dist-tags --json > "$tags_file"
+            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json --cwd "$REGISTRY_CWD" > "$metadata_file"
+            bun pm view "$pkg_name" dist-tags --json --cwd "$REGISTRY_CWD" > "$tags_file"
             tarball_url="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' "$metadata_file")"
             attestation_url="$(jq -er '.dist.attestations.url | select(type == "string" and length > 0)' "$metadata_file")"
             curl --fail-with-body --silent --show-error --location \
@@ -1358,8 +1364,8 @@ jobs:
             verification_file="$proof_dir/verified.json"
             workflow_commits_file="$proof_dir/workflow-commits.txt"
 
-            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json > "$metadata_file"
-            bun pm view "$pkg_name" dist-tags --json > "$tags_file"
+            bun pm view "${pkg_name}@${RELEASE_VERSION}" --json --cwd "$REGISTRY_CWD" > "$metadata_file"
+            bun pm view "$pkg_name" dist-tags --json --cwd "$REGISTRY_CWD" > "$tags_file"
             tarball_url="$(jq -er '.dist.tarball | select(type == "string" and length > 0)' "$metadata_file")"
             attestation_url="$(jq -er '.dist.attestations.url | select(type == "string" and length > 0)' "$metadata_file")"
             curl --fail-with-body --silent --show-error --location \
@@ -1468,7 +1474,7 @@ jobs:
             sleep 10
           done
           echo "::error::Registry smoke, provenance, or dist-tag verification failed"
-          bun pm view "$pkg_name" versions dist-tags || true
+          bun pm view "$pkg_name" versions dist-tags --cwd "$REGISTRY_CWD" || true
           exit 1
 
       - name: Report stable dist-tags and manual preview cleanup

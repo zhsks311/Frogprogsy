@@ -156,6 +156,12 @@ describe("Bun-first release and installation contract", () => {
     const workflow = await read(".github/workflows/release.yml");
     expect(workflow).toContain("bun install");
     expect(workflow).toContain("bun pm view");
+    const registryQueries = workflow
+      .split(/\r?\n/)
+      .filter((line) => line.includes("bun pm view"));
+    expect(registryQueries.every((line) => line.includes('--cwd "$REGISTRY_CWD"'))).toBe(true);
+    expect(workflow.split('REGISTRY_CWD: ${{ runner.temp }}/release-registry-probe')).toHaveLength(3);
+    expect(workflow.split('mkdir -p "$REGISTRY_CWD"')).toHaveLength(3);
     expect(workflow).toContain("bun run prepublishOnly");
     expect(workflow).toContain("bun scripts/dev-package.ts build --skip-gates");
     expect(workflow).not.toContain("bun publish");
