@@ -301,6 +301,20 @@ describe("usage and content retention (F2)", () => {
     ]);
   });
 
+  test("openai-chat ignores an empty streaming error placeholder when choices are valid", async () => {
+    const adapter = createOpenAIChatAdapter(provider);
+    const response = new Response([
+      'data: {"error":{},"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""));
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+    expect(events).toEqual([
+      { type: "text_delta", text: "answer" },
+      { type: "done", usage: undefined, stopReason: "end_turn" },
+    ]);
+  });
+
   test("google emits exactly one done carrying usage", async () => {
     const adapter = createGoogleAdapter({ ...provider, adapter: "google" });
     const response = new Response(
