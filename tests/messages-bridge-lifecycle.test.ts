@@ -162,6 +162,42 @@ describe("Anthropic Messages bridge lifecycle", () => {
     }
   });
 
+  test("non-visible adapter activity resets the stall deadline", async () => {
+    jest.useFakeTimers();
+    try {
+      const releaseActivity = Promise.withResolvers<void>();
+      const activityConsumed = Promise.withResolvers<void>();
+      const releaseDone = Promise.withResolvers<void>();
+      async function* activityEvents(): AsyncGenerator<AdapterEvent> {
+        await releaseActivity.promise;
+        yield { type: "activity" };
+        activityConsumed.resolve();
+        await releaseDone.promise;
+        yield { type: "done" };
+      }
+
+      const collecting = collectText(bridgeToMessagesSSE(
+        activityEvents(),
+        "model-a",
+        undefined,
+        10,
+        { stallTimeoutSec: 1 },
+      ));
+      jest.advanceTimersByTime(900);
+      releaseActivity.resolve();
+      await activityConsumed.promise;
+      jest.advanceTimersByTime(200);
+      releaseDone.resolve();
+      const text = await collecting;
+
+      expect(text).toContain("event: message_stop");
+      expect(text).not.toContain("event: error");
+      expect(text).not.toContain("activity");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test("terminal done without content still emits message_delta and message_stop", async () => {
     const text = await collectText(bridgeToMessagesSSE(replay([
       { type: "done", usage: { inputTokens: 1, outputTokens: 0 } },

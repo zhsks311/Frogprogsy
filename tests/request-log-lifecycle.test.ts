@@ -295,6 +295,132 @@ describe("privacy-safe request logs", () => {
       globalThis.fetch = originalFetch;
     }
   });
+  test("Codex stream flushes an unterminated terminal frame through /v1/messages", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    let aborted = 0;
+    globalThis.fetch = (async (_url, init) => {
+      init?.signal?.addEventListener("abort", () => {
+        aborted++;
+      });
+      return new Response([
+        "event: response.created",
+        "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}",
+        "",
+        ": upstream keepalive",
+        "",
+        "event: response.in_progress",
+        "data: {\"type\":\"response.in_progress\",\"response\":{\"status\":\"in_progress\"}}",
+        "",
+        "event: response.completed",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Recovered\"}]}],\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}",
+      ].join("\n"), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const response = await __requestLogTest.handleMessages(
+        new Request("http://127.0.0.1/v1/messages", {
+          method: "POST",
+          body: JSON.stringify({
+            model: "gpt-5.5",
+            max_tokens: 10,
+            messages: [{ role: "user", content: "hello" }],
+            stream: true,
+          }),
+        }),
+        {
+          port: 10100,
+          defaultProvider: "codex",
+          providers: {
+            codex: {
+              adapter: "openai-responses",
+              baseUrl: "https://chatgpt.com/backend-api/codex",
+              defaultModel: "gpt-5.5",
+              apiKey: "test-key",
+            },
+          },
+        },
+        ctx,
+      );
+      const body = await response.text();
+
+      expect(body).toContain("Recovered");
+      expect(body).toContain("event: message_stop");
+      expect(body).not.toContain("event: error");
+      expect(aborted).toBe(0);
+      const [entry] = __requestLogTest.requestLogSnapshot();
+      expect(entry.lifecycle).toBe("completed");
+      expect(entry.error).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("Codex bare stream EOF fails closed once without synthesizing success", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    let aborted = 0;
+    globalThis.fetch = (async (_url, init) => {
+      init?.signal?.addEventListener("abort", () => {
+        aborted++;
+      });
+      return new Response([
+        "event: response.created",
+        "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}",
+        "",
+        "event: response.output_text.delta",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}",
+        "",
+      ].join("\n"), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const response = await __requestLogTest.handleMessages(
+        new Request("http://127.0.0.1/v1/messages", {
+          method: "POST",
+          body: JSON.stringify({
+            model: "gpt-5.5",
+            max_tokens: 10,
+            messages: [{ role: "user", content: "hello" }],
+            stream: true,
+          }),
+        }),
+        {
+          port: 10100,
+          defaultProvider: "codex",
+          providers: {
+            codex: {
+              adapter: "openai-responses",
+              baseUrl: "https://chatgpt.com/backend-api/codex",
+              defaultModel: "gpt-5.5",
+              apiKey: "test-key",
+            },
+          },
+        },
+        ctx,
+      );
+      const body = await response.text();
+
+      expect((body.match(/event: error/g) ?? [])).toHaveLength(1);
+      expect(body).toContain("upstream stream ended without a terminal event");
+      expect(body).not.toContain("event: message_stop");
+      expect(aborted).toBe(0);
+      const [entry] = __requestLogTest.requestLogSnapshot();
+      expect(entry.lifecycle).toBe("bridge_error");
+      expect(entry.error).toEqual({ kind: "upstream", code: "adapter_eof" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("Codex empty non-stream completions return a visible upstream error", async () => {
     __requestLogTest.clear();
     const originalFetch = globalThis.fetch;

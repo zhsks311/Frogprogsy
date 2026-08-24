@@ -158,6 +158,8 @@ export function buildMessageJSON(
       case "tool_call_end":
         flushTool();
         break;
+      case "activity":
+        break;
       case "diagnostic":
         // Request-log-safe adapter diagnostics are recorded by the server observer, never bridged.
         break;
@@ -362,6 +364,8 @@ export function bridgeToMessagesSSE(
               break;
             case "tool_call_end":
               closeCurrent();
+              break;
+            case "activity":
               break;
             case "diagnostic":
               // Request-log-safe adapter diagnostics are recorded by the server observer, never bridged.
