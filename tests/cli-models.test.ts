@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -522,6 +522,7 @@ describe("frogp models", () => {
         hostname: "127.0.0.1",
         modelCatalogConfigVersion: 1,
         defaultProvider: "work",
+        watchdog: { enabled: false },
         providers: {
           work: {
             adapter: "openai-chat",
@@ -558,6 +559,7 @@ describe("frogp models", () => {
       ]) {
         const result = await runCliAsync(argv, home);
         expect(result.status).toBe(0);
+        expect(result.stderr).toBe("");
 
         const catalog = JSON.parse(readFileSync(
           join(claudeHome, "frogprogsy-catalog.json"),
@@ -572,9 +574,13 @@ describe("frogp models", () => {
         expect(gateway.models.map(model => model.display_name)).toContain("work/claude-new");
         expect(gateway.models.map(model => model.display_name)).not.toContain("work/claude-old");
       }
+      expect(existsSync(join(home, "watchdog.pid"))).toBe(false);
     } finally {
+      const stopped = await runCliAsync(["stop"], home);
       provider.stop(true);
       rmSync(home, { recursive: true, force: true });
+      expect(stopped.status).toBe(0);
+      expect(stopped.stderr).toBe("");
     }
   }, 30_000);
 
