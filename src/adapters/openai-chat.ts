@@ -302,19 +302,21 @@ export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderA
         }
         const chunk = parsedChunk as Record<string, unknown>;
 
+        const choices = Array.isArray(chunk.choices)
+          ? chunk.choices as Array<Record<string, unknown>>
+          : [];
         if (chunk.error) {
-          yield { type: "error", message: inlineErrorMessage(chunk.error) };
-          return true;
+          const errorMessage = inlineErrorMessage(chunk.error);
+          if (choices.length === 0 || errorMessage !== "upstream error") {
+            yield { type: "error", message: errorMessage };
+            return true;
+          }
         }
 
         if (chunk.usage && typeof chunk.usage === "object" && !Array.isArray(chunk.usage)) {
           // Some providers combine usage with a final content delta; keep parsing this frame.
           pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>);
         }
-
-        const choices = Array.isArray(chunk.choices)
-          ? chunk.choices as Array<Record<string, unknown>>
-          : [];
         const choice = choices[0];
         if (!choice) return false;
 
