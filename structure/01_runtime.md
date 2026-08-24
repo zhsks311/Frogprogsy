@@ -24,10 +24,12 @@ restores native Claude Code for configured homes.
 `FROGP_EXTERNAL_SUPERVISOR=1` means Docker/systemd/Kubernetes already owns restart behavior, so
 frogp skips its watchdog and avoids repeated restore/reinject churn across supervised restarts.
 
-The bridge enforces a heartbeat stall deadline: after 5 minutes (150 ticks at the default 2 s
-interval) of upstream silence with no real events, the stream is closed and the upstream request
-cancelled. If the adapter generator ends without an explicit done/error event, the response is marked
-`incomplete` rather than `completed` so Claude Code can distinguish a clean finish from a truncated stream.
+The active Claude Messages bridge sends keepalive comments during upstream silence and enforces
+`stallTimeoutSec` (default 90 seconds, minimum 1 second) from real adapter activity. At the deadline it
+emits one Anthropic SSE `error`, cancels the upstream request, and never emits a normal `message_stop`.
+An adapter generator that ends without explicit `done` or `error` is likewise an error, not a successful
+completion. The OpenAI Chat adapter accepts `data:` SSE fields with or without one optional space and
+requires an explicit `[DONE]`; a final valid field does not require a trailing newline.
 
 The server exposes `POST /api/stop` which writes shutdown intent, restores every configured Claude Code home,
 and exits the process. The GUI sidebar stop button calls this endpoint.
@@ -83,3 +85,11 @@ Trust is per request, not per network position. `src/local-access.ts` owns relay
 
 Adapter output must stay in internal `AdapterEvent` form until `messages/bridge.ts` converts it back to
 Anthropic Messages SSE for Claude Code.
+
+OpenAI Chat has no portable `is_error` member on `role:"tool"` messages. Failed Claude tool results use
+the fixed wire-visible prefix `[frogprogsy: tool_result is_error=true]\n`; successful result content is
+unchanged. When Claude Code history omits one result from a parallel tool batch, the adapter inserts a
+fixed error tool result for the missing call before forwarding the next turn so strict Chat Completions
+providers do not reject the entire conversation history.
+The adapter accepts indexed parallel tool-call deltas and emits distinct Claude `tool_use` blocks, so routed
+catalog entries retain `supports_parallel_tool_calls` instead of disabling the capability at the proxy boundary.

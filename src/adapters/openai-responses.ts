@@ -266,7 +266,9 @@ function eventsFromCompletedResponse(json: Record<string, unknown>): AdapterEven
 
 async function collectStreamEvents(events: AsyncIterable<AdapterEvent>): Promise<AdapterEvent[]> {
   const out: AdapterEvent[] = [];
-  for await (const event of events) out.push(event);
+  for await (const event of events) {
+    if (event.type !== "activity") out.push(event);
+  }
   return out;
 }
 
@@ -336,6 +338,117 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
       let currentEventType = "";
       const toolArgumentDeltaSeen = new Set<string>();
       let hasStreamOutput = false;
+      const parseLine = function* (line: string): Generator<AdapterEvent, boolean> {
+        if (line.startsWith(":")) {
+          yield { type: "activity" };
+          return false;
+        }
+        if (line.startsWith("event: ")) {
+          currentEventType = line.slice(7).trim();
+          return false;
+        }
+        if (!line.startsWith("data: ")) return false;
+        const payload = line.slice(6).trim();
+        if (!payload || payload === "[DONE]") return false;
+
+        let data: Record<string, unknown>;
+        try {
+          data = JSON.parse(payload) as Record<string, unknown>;
+        } catch {
+          debugDroppedFrame("openai-responses", payload);
+          currentEventType = "";
+          return false;
+        }
+        const eventType = currentEventType || (typeof data.type === "string" ? data.type : "");
+        currentEventType = "";
+        switch (eventType) {
+          case "response.created":
+          case "response.in_progress":
+            yield { type: "activity" };
+            break;
+          case "response.output_text.delta":
+            if (typeof data.delta === "string" && data.delta.length > 0) {
+              hasStreamOutput = true;
+              yield { type: "text_delta", text: data.delta };
+            } else {
+              yield { type: "activity" };
+            }
+            break;
+          case "response.reasoning_summary_text.delta":
+            if (typeof data.delta === "string") yield { type: "thinking_delta", thinking: data.delta };
+            break;
+          case "response.reasoning_text.delta":
+            if (typeof data.delta === "string") yield { type: "reasoning_raw_delta", text: data.delta };
+            break;
+          case "response.output_item.added": {
+            const item = data.item as Record<string, unknown> | undefined;
+            if (item?.type === "function_call" || item?.type === "custom_tool_call" || item?.type === "tool_search_call") {
+              const id = typeof item.call_id === "string" ? item.call_id : typeof item.id === "string" ? item.id : `call_${crypto.randomUUID().slice(0, 8)}`;
+              const name = typeof item.name === "string" ? item.name : item.type === "tool_search_call" ? "tool_search" : "";
+              hasStreamOutput = true;
+              yield { type: "tool_call_start", id, name };
+            } else {
+              yield { type: "activity" };
+            }
+            break;
+          }
+          case "response.function_call_arguments.delta": {
+            const key = typeof data.item_id === "string" ? data.item_id : String(data.output_index ?? "current");
+            if (typeof data.delta === "string") {
+              toolArgumentDeltaSeen.add(key);
+              yield { type: "tool_call_delta", arguments: data.delta };
+            }
+            break;
+          }
+          case "response.output_item.done": {
+            const item = data.item as Record<string, unknown> | undefined;
+            if (item?.type === "function_call" || item?.type === "custom_tool_call" || item?.type === "tool_search_call") {
+              const key = typeof item.id === "string" ? item.id : String(data.output_index ?? "current");
+              if (!toolArgumentDeltaSeen.has(key)) {
+                if (typeof item.arguments === "string") yield { type: "tool_call_delta", arguments: item.arguments };
+                else if (typeof item.input === "string") yield { type: "tool_call_delta", arguments: JSON.stringify({ input: item.input }) };
+              }
+              yield { type: "tool_call_end" };
+            } else {
+              yield { type: "activity" };
+            }
+            break;
+          }
+          case "response.completed": {
+            const responseObj = data.response as Record<string, unknown> | undefined;
+            if (!responseObj) {
+              yield { type: "error", message: "Upstream completed without response metadata" };
+              return true;
+            }
+            const terminalError = responseTerminalError(responseObj);
+            if (terminalError) {
+              yield { type: "error", message: terminalError };
+              return true;
+            }
+            if (!hasStreamOutput) {
+              const completedEvents = eventsFromCompletedResponse(responseObj);
+              for (const event of completedEvents) yield event;
+              return true;
+            }
+            yield { type: "done", usage: usageFromResponses(responseObj.usage as Record<string, unknown> | undefined) };
+            return true;
+          }
+          case "response.failed":
+          case "response.incomplete": {
+            const responseObj = data.response as Record<string, unknown> | undefined;
+            const err = responseObj?.error as Record<string, unknown> | undefined;
+            yield { type: "error", message: typeof err?.message === "string" ? err.message : eventType };
+            return true;
+          }
+          case "error": {
+            const err = data.error as Record<string, unknown> | undefined;
+            yield { type: "error", message: typeof err?.message === "string" ? err.message : "upstream error" };
+            return true;
+          }
+        }
+        return false;
+      };
+
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -344,99 +457,15 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
           const lines = buffer.split("\n");
           buffer = lines.pop() ?? "";
           for (const line of lines) {
-            if (line.startsWith("event: ")) {
-              currentEventType = line.slice(7).trim();
-              continue;
-            }
-            if (!line.startsWith("data: ")) continue;
-            const payload = line.slice(6).trim();
-            if (!payload || payload === "[DONE]") continue;
-            let data: Record<string, unknown>;
-            try {
-              data = JSON.parse(payload) as Record<string, unknown>;
-            } catch {
-              debugDroppedFrame("openai-responses", payload);
-              currentEventType = "";
-              continue;
-            }
-            const eventType = currentEventType || (typeof data.type === "string" ? data.type : "");
-            currentEventType = "";
-            switch (eventType) {
-              case "response.output_text.delta":
-                if (typeof data.delta === "string" && data.delta.length > 0) {
-                  hasStreamOutput = true;
-                  yield { type: "text_delta", text: data.delta };
-                }
-                break;
-              case "response.reasoning_summary_text.delta":
-                if (typeof data.delta === "string") yield { type: "thinking_delta", thinking: data.delta };
-                break;
-              case "response.reasoning_text.delta":
-                if (typeof data.delta === "string") yield { type: "reasoning_raw_delta", text: data.delta };
-                break;
-              case "response.output_item.added": {
-                const item = data.item as Record<string, unknown> | undefined;
-                if (item?.type === "function_call" || item?.type === "custom_tool_call" || item?.type === "tool_search_call") {
-                  const id = typeof item.call_id === "string" ? item.call_id : typeof item.id === "string" ? item.id : `call_${crypto.randomUUID().slice(0, 8)}`;
-                  const name = typeof item.name === "string" ? item.name : item.type === "tool_search_call" ? "tool_search" : "";
-                  hasStreamOutput = true;
-                  yield { type: "tool_call_start", id, name };
-                }
-                break;
-              }
-              case "response.function_call_arguments.delta": {
-                const key = typeof data.item_id === "string" ? data.item_id : String(data.output_index ?? "current");
-                if (typeof data.delta === "string") {
-                  toolArgumentDeltaSeen.add(key);
-                  yield { type: "tool_call_delta", arguments: data.delta };
-                }
-                break;
-              }
-              case "response.output_item.done": {
-                const item = data.item as Record<string, unknown> | undefined;
-                if (item?.type === "function_call" || item?.type === "custom_tool_call" || item?.type === "tool_search_call") {
-                  const key = typeof item.id === "string" ? item.id : String(data.output_index ?? "current");
-                  if (!toolArgumentDeltaSeen.has(key)) {
-                    if (typeof item.arguments === "string") yield { type: "tool_call_delta", arguments: item.arguments };
-                    else if (typeof item.input === "string") yield { type: "tool_call_delta", arguments: JSON.stringify({ input: item.input }) };
-                  }
-                  yield { type: "tool_call_end" };
-                }
-                break;
-              }
-              case "response.completed": {
-                const responseObj = data.response as Record<string, unknown> | undefined;
-                if (!responseObj) {
-                  yield { type: "error", message: "Upstream completed without response metadata" };
-                  return;
-                }
-                const terminalError = responseTerminalError(responseObj);
-                if (terminalError) {
-                  yield { type: "error", message: terminalError };
-                  return;
-                }
-                if (!hasStreamOutput) {
-                  const completedEvents = eventsFromCompletedResponse(responseObj);
-                  for (const event of completedEvents) yield event;
-                  return;
-                }
-                yield { type: "done", usage: usageFromResponses(responseObj.usage as Record<string, unknown> | undefined) };
-                return;
-              }
-              case "response.failed":
-              case "response.incomplete": {
-                const responseObj = data.response as Record<string, unknown> | undefined;
-                const err = responseObj?.error as Record<string, unknown> | undefined;
-                yield { type: "error", message: typeof err?.message === "string" ? err.message : eventType };
-                return;
-              }
-              case "error": {
-                const err = data.error as Record<string, unknown> | undefined;
-                yield { type: "error", message: typeof err?.message === "string" ? err.message : "upstream error" };
-                return;
-              }
-            }
+            const terminal = yield* parseLine(line);
+            if (terminal) return;
           }
+        }
+
+        buffer += decoder.decode();
+        if (buffer) {
+          const terminal = yield* parseLine(buffer);
+          if (terminal) return;
         }
       } finally {
         reader.releaseLock();

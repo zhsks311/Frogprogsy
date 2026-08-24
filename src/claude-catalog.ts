@@ -229,7 +229,6 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry): RawEntry {
   delete entry.default_service_tier;
   delete entry.web_search_tool_type;
   delete entry.supports_search_tool;
-  entry.supports_parallel_tool_calls = false;
   return ensureStrictCatalogFields(entry);
 }
 
