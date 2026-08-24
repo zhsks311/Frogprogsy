@@ -199,6 +199,27 @@ GUI model management and `frogp models` expose two separate facts:
 
 A discovered model remains selectable. Frogprogsy applies only protocol-wide behavior and metadata the provider actually returned. It must not guess image support, reasoning levels, context size, or model-specific request transformations.
 
+### OpenCode Zen temporary model boundary
+
+As of 2026-08-24, OpenCode's provider-owned [Zen documentation](https://opencode.ai/docs/zen/)
+lists Ox Alpha Free as `x-preview-f-free` on the Zen Chat Completions endpoint, and the provider's
+[`/models` response](https://opencode.ai/zen/v1/models) includes that exact ID. Frogprogsy's bundled
+`opencode-zen` managed provider record intentionally has an empty model set. An authenticated live
+discovery therefore exposes this ID as `discovered`, never `validated`, and explicit qualified routing
+strips only the `opencode-zen/` prefix before sending the exact ID through the installed `openai-chat`
+adapter.
+
+This is not a default, fallback, managed-catalog promotion, or Ox-specific adapter branch. The same Zen
+catalog contains models assigned by OpenCode to Responses, Messages, Google, and Chat endpoints; the Ox
+evidence verifies only the provider-documented Chat route for `x-preview-f-free`. Model identity, pricing
+duration, context limits, modalities, tool quality, usage accuracy, and end-to-end Claude Code compatibility
+remain unknown until a bounded live smoke records them. Frogprogsy's supported client surface remains
+Claude Code through the local Messages gateway, not the OpenCode CLI or TUI.
+Live inference validation remains blocked until [PR #55](https://github.com/zhsks311/Frogprogsy/pull/55)
+is available in the test build and a dedicated Zen credential is provisioned outside the repository with
+auto-reload disabled and a bounded spend limit. Neither the local fake-upstream test nor the public
+`/models` observation authorizes promotion from `discovered` to `validated`.
+
 The same surfaces report the catalog source:
 
 - `remote`: fetched successfully during this start;
