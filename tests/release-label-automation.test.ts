@@ -775,6 +775,7 @@ describe("immutable channel release workflow", () => {
     });
     expect(evidenceScript).toContain('repos/${REPOSITORY}/commits/${EXPECTED_SHA}');
     expect(evidenceScript).toContain('compare/${merge_parents[0]}...${merge_parents[1]}');
+    expect(evidenceScript).toContain("(reduce .[] as $sha ([]; if index($sha) == null then . + [$sha] else . end))[]");
     expect(evidenceScript).toContain('.commit.verification.verified == true');
     expect(evidenceScript).toContain('commit.authorLogin === "github-actions[bot]"');
     expect(evidenceScript).toContain('commit.committerLogin === "web-flow"');
