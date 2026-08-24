@@ -250,6 +250,10 @@ describe("usage and content retention (F2)", () => {
     ].join(""));
     const events = [];
     for await (const event of adapter.parseStream(response)) events.push(event);
+    expect(events.filter(event => event.type === "activity")).toEqual([
+      { type: "activity" },
+      { type: "activity" },
+    ]);
     const toolEvents = events.filter(event => event.type.startsWith("tool_call_"));
     expect(toolEvents).toEqual([
       { type: "tool_call_start", id: "call_a", name: "alpha" },

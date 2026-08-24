@@ -376,6 +376,7 @@ export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderA
               toolCall.argumentFragments.push(fn.arguments);
             }
           }
+          if (toolCalls.length > 0) yield { type: "activity" };
         }
 
         const mappedStopReason = stopReasonFromOpenAIChat(choice.finish_reason);
