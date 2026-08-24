@@ -619,7 +619,7 @@ jobs:
           fi
 
           release_file="$(mktemp)"
-          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish >"$release_file" 2>&1; then
+          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish --repo "$REPOSITORY" >"$release_file" 2>&1; then
             release_exists=true
             EXPECTED_SHA="$EXPECTED_SHA" REGISTRY_DIST_TAG="$REGISTRY_DIST_TAG" RELEASE_FILE="$release_file" RELEASE_TAG="$release_tag" bun -e '
               const release = await Bun.file(process.env.RELEASE_FILE!).json();
@@ -995,7 +995,7 @@ jobs:
           fi
 
           release_file="$(mktemp)"
-          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish >"$release_file" 2>&1; then
+          if gh release view "$release_tag" --json tagName,isDraft,isPrerelease,targetCommitish --repo "$REPOSITORY" >"$release_file" 2>&1; then
             release_exists=true
             EXPECTED_SHA="$EXPECTED_SHA" REGISTRY_DIST_TAG="$REGISTRY_DIST_TAG" RELEASE_FILE="$release_file" RELEASE_TAG="$release_tag" bun -e '
               const release = await Bun.file(process.env.RELEASE_FILE!).json();
@@ -1317,7 +1317,7 @@ jobs:
 
           if [ "$RELEASE_REQUIRED" = "true" ]; then
             release_probe="$(mktemp)"
-            if gh release view "$release_tag" >"$release_probe" 2>&1; then
+            if gh release view "$release_tag" --repo "$REPOSITORY" >"$release_probe" 2>&1; then
               echo "::error::GitHub Release ${release_tag} appeared after recovery preflight"
               exit 1
             fi
@@ -1336,7 +1336,7 @@ jobs:
             if [ "$REGISTRY_DIST_TAG" = "preview" ]; then
               release_flags=(--prerelease --latest=false)
             fi
-            gh release create "$release_tag" --target "$EXPECTED_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}"
+            gh release create "$release_tag" --target "$EXPECTED_SHA" --title "$release_tag" --notes-file "$notes_file" "${release_flags[@]}" --repo "$REPOSITORY"
             rm -f "$notes_file"
           fi
 
