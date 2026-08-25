@@ -342,6 +342,8 @@ export interface FrogConfig {
     monthlyDisplayBudget?: number;
   };
   localAccess?: { enabled?: boolean; keys?: LocalAccessKeyConfig[] };
+  /** Stable npm release metadata checks. Absent means enabled; `false` disables automatic checks only. */
+  updateChecks?: { enabled?: boolean };
   shadowCompare?: {
     enabled?: boolean;
     secondary?: { provider: string; model: string };

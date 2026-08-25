@@ -516,7 +516,7 @@ describe("model catalog revision and cache trust", () => {
     expect(result.status.catalogDigest).toBe(bundled.catalogDigest);
   });
 
-  test("flushes a mode-0600 temp file before rename", async () => {
+  test("flushes a mode-0600 temp file and parent directory around rename", async () => {
     const remote = makeDocument();
     const events: string[] = [];
     const handle: ModelCatalogFileHandle = {
@@ -540,7 +540,9 @@ describe("model catalog revision and cache trust", () => {
     const result = await refreshModelCatalog(deps);
 
     expect(result.status.source).toBe("remote");
-    expect(events).toEqual(["mkdir", "open:wx:600", "write", "sync", "close", "rename"]);
+    expect(events).toEqual([
+      "mkdir", "open:wx:600", "write", "sync", "close", "rename", "open:r:undefined", "sync", "close",
+    ]);
   });
 
   test("an interrupted rename leaves the existing cache intact", async () => {

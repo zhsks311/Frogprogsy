@@ -174,6 +174,14 @@ describe("relay enforcement", () => {
       expect(anonymousBody.type).toBeUndefined();
       expect(anonymousBody.error?.message).toContain(LOCAL_ACCESS_HEADER);
 
+      const anonymousUpdate = await fetch(new URL("/api/update-status", server.url));
+      expect(anonymousUpdate.status).toBe(401);
+      const authenticatedUpdate = await fetch(new URL("/api/update-status", server.url), {
+        headers: { [LOCAL_ACCESS_HEADER]: SECRET, Origin: LOOPBACK_ORIGIN },
+      });
+      expect(authenticatedUpdate.status).toBe(200);
+      expect(await authenticatedUpdate.json()).toMatchObject({ installKind: "source", status: "source" });
+
       const wrongKey = await fetch(new URL("/api/settings", server.url), { headers: { [LOCAL_ACCESS_HEADER]: "frogp_wrong" } });
       expect(wrongKey.status).toBe(401);
 

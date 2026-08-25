@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 import {
   BIN_NAME,
@@ -19,9 +19,12 @@ import {
   runCleanup,
   runPackageLifecycleSmoke,
   sentinelSettingsBytes,
-  type CommandRunner,
-  type DetachedSpawner,
-  type PackageSmokeDeps,
+} from "../scripts/package-lifecycle-smoke";
+import type {
+  CommandRunner,
+  DetachedSpawner,
+  PackageSmokeDeps,
+  TempLayout,
 } from "../scripts/package-lifecycle-smoke";
 
 function tempDir(prefix: string): string {
@@ -337,7 +340,7 @@ describe("package lifecycle smoke — watchdog-before-proxy cleanup ordering", (
 
 interface FullHarness {
   deps: Partial<PackageSmokeDeps>;
-  layout: ReturnType<typeof planTempLayout>;
+  layout: TempLayout;
   timeline: string[];
 }
 
@@ -358,6 +361,26 @@ function makeFullHarness(
     null,
     2,
   )}\n`;
+  const updateSnapshot = () => ({
+    enabled: true,
+    installKind: "bun" as const,
+    installedVersion: "0.0.1",
+    status: "available" as const,
+    latestVersion: "999999.0.0",
+    checkedAt: "2026-08-25T00:00:00.000Z",
+    lastAttemptAt: "2026-08-25T00:00:00.000Z",
+    stale: false,
+    nextCheckAt: "2026-08-26T00:00:00.000Z",
+    failure: null,
+  });
+  const requestCount = () => {
+    try {
+      return Number.parseInt(readFileSync(layout.registryRequestCountPath, "utf8").trim(), 10) || 0;
+    } catch {
+      return 0;
+    }
+  };
+  const setRequestCount = (count: number) => writeFileSync(layout.registryRequestCountPath, `${count}\n`);
 
   const run: CommandRunner = (file, args) => {
     const sub = args[0];
@@ -365,13 +388,29 @@ function makeFullHarness(
       timeline.push("install");
       if ((opts.installStatus ?? 0) !== 0) return { status: opts.installStatus!, stdout: "", stderr: "" };
       mkdirSync(layout.binDir, { recursive: true });
+      mkdirSync(dirname(layout.installedCliPath), { recursive: true });
       writeFileSync(layout.binPath, "#!/usr/bin/env bun\n");
+      writeFileSync(layout.installedCliPath, "// installed package CLI\n");
       return { status: 0, stdout: "", stderr: "" };
     }
     if (file === "bun" && sub === "remove") {
       timeline.push("remove-package");
       rmSync(layout.binPath, { force: true }); // drops ONLY the package bin, never the frog config
       return { status: 0, stdout: "", stderr: "" };
+    }
+    if (file === layout.binPath && sub === "local-key") {
+      writeFileSync(layout.configPath, JSON.stringify({ port: 3764, providers: {}, localAccess: { enabled: true } }));
+      return { status: 0, stdout: "key generated but never logged", stderr: "" };
+    }
+    if (file === layout.binPath && sub === "version") {
+      return { status: 0, stdout: "frogprogsy v0.0.1\n", stderr: "" };
+    }
+    if (file === layout.binPath && sub === "status") {
+      if (args.includes("--refresh-update")) setRequestCount(requestCount() + 1);
+      if (args.includes("--json")) {
+        return { status: 0, stdout: `${JSON.stringify({ update: updateSnapshot() })}\n`, stderr: "" };
+      }
+      return { status: 0, stdout: "frogprogsy 0.0.1 → 999999.0.0\nUpdate with: frogp update\n", stderr: "" };
     }
     if (file === layout.binPath && sub === "restore") {
       timeline.push("restore");
@@ -410,6 +449,10 @@ function makeFullHarness(
     writeFileSync(layout.activePortPath, String(port));
     writeFileSync(layout.configPath, JSON.stringify({ port, providers: {} }, null, 2)); // frog config.json
     writeFileSync(layout.claudeSettingsPath, injectedBytes); // injection makes settings differ from the seed
+    if (requestCount() === 0) setRequestCount(1);
+    mkdirSync(dirname(layout.updateCachePath), { recursive: true });
+    writeFileSync(layout.updateCachePath, JSON.stringify({ schemaVersion: 1 }));
+    writeFileSync(layout.localAccessTokenPath, "frogp_package-lifecycle-runtime-token");
     return { pid: PROXY, unref: () => {} };
   };
 
@@ -422,6 +465,7 @@ function makeFullHarness(
     spawnDetached,
     allocatePort: async () => 45999,
     probeHealth: async () => state.healthy,
+    requestUpdateStatus: async () => state.healthy ? updateSnapshot() : null,
     portBound: async () => state.portOpen,
     killPid: (pid) => {
       alive.delete(pid);
@@ -452,26 +496,35 @@ describe("package lifecycle smoke — full lifecycle (faked, no real install)", 
         "single-tarball",
         "isolated-env",
         "global-install",
+        "local-access-configured",
         "start-health",
         "start-active-port",
         "start-watchdog",
+        "update-available",
+        "update-ordinary-request-count",
+        "update-cli-surfaces",
+        "update-explicit-refresh",
+        "update-notification-no-mutation",
         "restore-byte-equivalent",
         "first-stop",
         "first-stop-port-unbound",
         "restart-health",
         "restart-active-port",
         "restart-watchdog",
+        "update-restart-throttle",
         "second-stop-port-unbound",
         "stop-byte-equivalent",
         "watchdog-before-proxy",
         "port-unbound-final",
         "package-removed",
         "config-preserved",
+        "update-cache-preserved",
       ]) {
         expect(passing).toContain(id);
       }
 
       // Exact lifecycle order the smoke drove.
+      expect(result.cleanup.cachePreserved).toBe(true);
       expect(timeline).toEqual(["install", "start", "restore", "stop", "start", "stop", "remove-package"]);
 
       expect(result.recordedPort).toBe(45999);

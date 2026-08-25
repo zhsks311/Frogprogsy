@@ -25,6 +25,11 @@ bun add -g frogprogsy@preview
 
 `frogp update` always moves a Bun-managed install to stable `latest`. To stay on the prerelease channel, reinstall `frogprogsy@preview` with Bun.
 
+On a normal Bun-global stable install, proxy startup checks npm's stable release metadata in the background
+and shows an available version in the dashboard and `frogp status`. It never installs or restarts
+automatically. Disable automatic checks in **Details**; explicit `frogp status --refresh-update` and
+`frogp update` remain under your control.
+
 Preview versions are public, immutable candidates and may be less stable. Because the `preview` tag moves
 to newer candidates, install an exact version to keep one. Maintainers should follow the
 [label-driven release procedure](structure/06_docs-and-release.md#release-strategy).

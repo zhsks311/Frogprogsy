@@ -17,6 +17,7 @@ Public schema names used by the dashboard and docs are `ProviderConfig` and `Web
 | `~/.frogprogsy/auth.json` | OAuth provider access/refresh token store. |
 | `~/.frogprogsy/claude-profiles/<cp_id>/claude-settings-backup.json` | Per-profile restore backup for FrogProgsy-owned Claude Code settings. |
 | `~/.frogprogsy/model-aliases.json` | Claude Code-visible routed model alias map. |
+| `~/.frogprogsy/cache/update-status-v1.json` | Strict mode-restricted stable-update attempt/success cache; contains no user or machine identifier. |
 
 FrogProgsy writes config and backup files with temp-file + rename. Prefer `${ENV_VAR}` or `$ENV_VAR` references over literal API keys.
 
@@ -31,6 +32,7 @@ The JSON fields map to the runtime `ProviderConfig` objects under `providers.*` 
 | `port` | `number` | `10100` | Local relay listen port. |
 | `hostname` | `string` | `"127.0.0.1"` | Bind hostname. Use `0.0.0.0` only when deliberately exposing the relay on all interfaces. |
 | `localAccess` | object | — | Relay access keys. `{ enabled, keys }`; each key stores `id`, `secretHash` (`sha256:<hex>`), optional `label` and `requestLimit`. See [Relay access keys](#relay-access-keys). |
+| `updateChecks` | object | enabled when absent | Stable npm metadata checks. Set exactly `{ "enabled": false }` to disable ordinary startup checks; explicit refresh and `frogp update` remain available. |
 | `providers` | object | fallback provider | Named provider lanes. Each key becomes a route prefix. |
 | `defaultProvider` | `string` | `"anthropic"` | Routing fallback lane when the requested model id has no provider prefix. |
 | `subagentModels` | `string[]` | default GPT native list | Up to five routed/native model ids shown first in Claude Code's subagent picker. Setting `[]` is respected. |
@@ -45,6 +47,12 @@ The JSON fields map to the runtime `ProviderConfig` objects under `providers.*` 
 | `modelMixing` | object | — | Model mixing behind the `frogp/mix` alias (route/fusion/pipeline). Disabled unless `enabled: true`. See [Model mixing fields](#model-mixing-fields). |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field; the Claude Messages data plane uses HTTP/SSE. |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op; FrogProgsy does not touch Claude Code history. |
+
+
+Only canonical Bun-global stable installs use automatic checks. One persisted attempt suppresses another
+ordinary check for the cache window; explicit refresh may bypass it. The endpoint, deadline, and response
+limit are not configurable. No credential, prompt, provider config, Claude state, or telemetry is sent.
+Cache failure leaves the proxy healthy and limits throttling to the current process.
 
 ## Model continuity
 
@@ -80,7 +88,7 @@ A transient failure opens a 30-second, memory-only circuit for the exact primary
 - Config stores only `sha256:<hex>` of a key. The plaintext is printed once, when `frogp local-key add` creates it, and cannot be recovered afterwards.
 - `requestLimit` is a per-key sliding window enforced in the relay process; an exhausted window answers `429` with `Retry-After`.
 - A presented key is never relayed upstream, so a `forward` lane still forwards only a real caller provider credential.
-- Same-machine tooling does not need the key: the running relay writes a per-start token to `~/.frogprogsy/local-access.token` (mode `0600`), and `frogp models` / `frogp doctor claude` send that instead. It is not stored in config and does not survive a restart.
+- Same-machine tooling does not need the configured key: the running relay writes a per-start token to `~/.frogprogsy/local-access.token` (mode `0600`). The CLI sends that unrestricted token only to a loopback destination; wildcard binds are reached through loopback, while an exact non-loopback `hostname` refuses token-bearing management calls. The token is not stored in config and does not survive a restart.
 - A non-loopback `hostname` requires at least one key. On the first Docker start, set `FROGP_LOCAL_ACCESS_KEY` through the container environment or secret configuration; the entrypoint stores only its hash and never prints the plaintext. A persisted volume with an existing enabled key restarts without the environment value.
 - Per-key `providers`/`models` scopes are not enforced yet; a key that declares them is rejected at startup rather than silently unscoped.
 

@@ -12,6 +12,7 @@ Management endpoints live in `src/server.ts` under `/api/*`:
 | Endpoint area | Responsibility |
 | --- | --- |
 | Config | Read/write `~/.frogprogsy/config.json`; mask secrets on read. |
+| Stable update status | `GET /api/update-status` returns the current disk/memory snapshot and never starts network work. Guarded `POST /api/update-status/refresh` performs one explicit bounded refresh. Guarded `PUT /api/update-settings` accepts exactly `{enabled:boolean}`; absence in config means automatic checks enabled, while explicit refresh remains allowed when disabled. |
 | Providers | Create/update/delete provider configs and enrich registry metadata. The AI Accounts page is the owner for provider rows: API-key providers store proxy credentials, OAuth providers store/refresh proxy-owned OAuth credentials, and Anthropic Claude rows default to `authMode:"forward"` so frogprogsy stores no Claude subscription token. An Anthropic row may instead opt into `authMode:"claude-grant"` with a known isolated `claudeGrantId`; this is accepted only for the official Anthropic API endpoint. Deleting an OAuth provider also removes its stored OAuth credential so it cannot reappear as a dangling login. |
 | Models | Fetch home-aware routed model lists, disabled/allowed visibility, and catalog-facing ids. `fetchProviderModels` resolves key/OAuth/grant auth through `resolveProviderAuth`; a missing grant credential fails closed and leaves configured model metadata visible without attempting unauthenticated discovery. |
 | Model continuity | Return one normalized, problem-first model-reference report and accept exact route-policy or permanent-replacement actions. `structure/11_model-continuity.md` remains authoritative for full runtime behavior. |
@@ -34,6 +35,14 @@ All management mutations are local-origin guarded by method (`GET`/`HEAD`/`OPTIO
 `PUT`, `PATCH`, and `DELETE` require a local origin). The Claude Code Homes page is the dashboard owner for
 home CRUD, per-home model preview, and status/auth-state. Model visibility and featured subagent order live
 on the Models page as global settings.
+
+The Home page polls only the snapshot GET, shows a prominent installed-to-latest notice and the exact
+`frogp update` command only for `available`, and stores dismissal for that advertised version in browser
+local storage. A newer version reappears; dismissal never changes API or CLI truth. Developer Details owns
+the persistent automatic-check toggle and explains that only npm stable release metadata is sent—never
+prompts, provider settings, credentials, Claude homes, or a stable identifier. User-triggered refresh
+failure is recoverable and never replaces the operational proxy status. English keys are authoritative and
+Korean/Simplified Chinese remain compile-time complete.
 
 ### Model Picker page contract
 

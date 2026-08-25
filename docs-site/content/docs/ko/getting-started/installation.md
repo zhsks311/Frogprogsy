@@ -30,6 +30,13 @@ bun add -g frogprogsy@preview
 
 `frogp update`는 Bun으로 설치한 패키지를 항상 안정판 `latest`로 업데이트합니다. 시험판을 계속 쓰려면 Bun으로 `frogprogsy@preview`를 다시 설치하세요.
 
+정상 Bun 전역 안정판 설치에서는 프록시 시작 뒤 npm의 FrogProgsy 안정판 릴리스 정보만
+백그라운드에서 확인합니다. 새 안정판이 있으면 대시보드와 `frogp status`에 설치 버전 → 최신
+버전과 정확한 `frogp update` 명령을 표시합니다. 감지는 설치, 재시작, Claude Code 상태 쓰기를
+하지 않으며 프롬프트, 프로바이더 설정, 자격증명, Claude 홈 데이터, 고정 식별자를 보내지 않습니다.
+대시보드 **자세한 설정**에서 자동 확인을 끌 수 있고, 명시적인
+`frogp status --refresh-update`와 `frogp update`는 계속 사용할 수 있습니다.
+
 레지스트리 패키지 대신 소스 저장소에서 설치하려면 다음 명령을 사용합니다.
 
 ```bash

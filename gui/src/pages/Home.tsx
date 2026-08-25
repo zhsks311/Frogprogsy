@@ -3,6 +3,15 @@ import { IconAlert } from "../icons";
 import { useT } from "../i18n";
 import type { Navigate } from "../navigation";
 import { providerIsReady, providerNeedsEndpointCheck, providerSetupState } from "../provider-display";
+import { Notice } from "../ui";
+import { parseUpdateStatus } from "../../../src/update-status-contract";
+import type { UpdateStatus } from "../../../src/update-status-contract";
+import {
+  dismissUpdateVersion,
+  readDismissedUpdateVersion,
+  shouldShowUpdateNotice,
+  updateStatusLabelKey,
+} from "../update-status";
 
 interface HealthData { status: string; version: string; uptime: number }
 interface ProviderInfo { name: string; adapter: string; baseUrl: string; authMode?: string; hasApiKey: boolean }
@@ -48,6 +57,17 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>({});
   const [error, setError] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updateRefreshing, setUpdateRefreshing] = useState(false);
+  const [updateActionError, setUpdateActionError] = useState(false);
+  const [copiedUpdateCommand, setCopiedUpdateCommand] = useState(false);
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(() => {
+    try {
+      return readDismissedUpdateVersion(window.localStorage);
+    } catch {
+      return null;
+    }
+  });
 
   useEffect(() => {
     const fetchData = async () => {
@@ -59,12 +79,13 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
         setError(true);
       }
 
-      const [providerResult, settingsResult, modelsResult, featuredResult, usageResult] = await Promise.allSettled([
+      const [providerResult, settingsResult, modelsResult, featuredResult, usageResult, updateResult] = await Promise.allSettled([
         fetchJson<ProviderInfo[]>(`${apiBase}/api/providers`),
         fetchJson<SettingsData>(`${apiBase}/api/settings`),
         fetchJson<ModelInfo[]>(`${apiBase}/api/models`),
         fetchJson<FeaturedModelsResponse>(`${apiBase}/api/subagent-models`),
         fetchJson<UsageResponse>(`${apiBase}/api/usage?range=30d`),
+        fetchJson<unknown>(`${apiBase}/api/update-status`),
       ]);
 
       const providerData = providerResult.status === "fulfilled" ? providerResult.value : [];
@@ -73,6 +94,10 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
       setModels(modelsResult.status === "fulfilled" ? modelsResult.value : []);
       setFeatured(featuredResult.status === "fulfilled" ? featuredResult.value : { available: [], chosen: [] });
       setUsage(usageResult.status === "fulfilled" ? usageResult.value : null);
+      if (updateResult.status === "fulfilled") {
+        const parsed = parseUpdateStatus(updateResult.value);
+        if (parsed) setUpdateStatus(parsed);
+      }
 
       const oauthEntries = await Promise.all(providerData
         .filter(provider => provider.authMode === "oauth")
@@ -154,6 +179,46 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
                 ctaKey: "home.refreshModels",
                 action: () => navigate("models", "model-refresh"),
               };
+
+  const refreshUpdate = async () => {
+    if (updateRefreshing) return;
+    setUpdateRefreshing(true);
+    try {
+      const response = await fetch(`${apiBase}/api/update-status/refresh`, { method: "POST" });
+      const payload: unknown = await response.json();
+      const parsed = parseUpdateStatus(payload);
+      if (!response.ok || !parsed) throw new Error("invalid update response");
+      setUpdateStatus(parsed);
+      setUpdateActionError(parsed.failure !== null);
+    } catch {
+      setUpdateActionError(true);
+    } finally {
+      setUpdateRefreshing(false);
+    }
+  };
+
+  const copyUpdateCommand = async () => {
+    try {
+      await navigator.clipboard?.writeText("frogp update");
+      setCopiedUpdateCommand(true);
+      window.setTimeout(() => setCopiedUpdateCommand(false), 1_800);
+    } catch {
+      setCopiedUpdateCommand(false);
+    }
+  };
+
+  const dismissCurrentUpdate = () => {
+    const version = updateStatus?.latestVersion;
+    if (!version) return;
+    try {
+      if (!dismissUpdateVersion(window.localStorage, version)) return;
+      setDismissedUpdateVersion(version);
+    } catch {
+      // Storage can be unavailable; keep the notice visible rather than claiming persistence.
+    }
+  };
+
+  const showUpdateNotice = shouldShowUpdateNotice(updateStatus, dismissedUpdateVersion);
   const setupIncomplete = status.tone !== "ok";
 
   return (
@@ -175,8 +240,36 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
           <span className={`badge ${online ? "badge-green" : "badge-amber"}`}><span className={`dot ${online ? "dot-green" : "dot-red"}`} />{online ? t("home.claudeConnected") : t("home.claudeNeedsCheck")}</span>
           <span className="chip">{settings ? `${settings.hostname}:${settings.port}` : "—"}</span>
           <span className="chip">v{health?.version ?? "—"}</span>
+          <span className="chip">{updateStatus ? t(updateStatusLabelKey(updateStatus.status)) : t("common.loading")}</span>
         </div>
       </section>
+
+      {showUpdateNotice && updateStatus?.latestVersion && (
+        <section className="panel panel-accent home-update-panel home-hero-warn" style={{ marginTop: 16 }}>
+          <div>
+            <div className="eyebrow">{t("update.availableEyebrow")}</div>
+            <h3>{t("update.availableTitle")}</h3>
+            <p>{t("update.availableBody", {
+              installed: updateStatus.installedVersion,
+              latest: updateStatus.latestVersion,
+            })}</p>
+            {updateStatus.stale && <p className="muted">{t("update.stale")}</p>}
+            {updateActionError && <Notice tone="err">{t("update.refreshFailed")}</Notice>}
+          </div>
+          <div className="action-row">
+            <button className="btn btn-primary" type="button" onClick={copyUpdateCommand}>
+              <code>frogp update</code>
+              <span>{copiedUpdateCommand ? t("dash.commandCopied") : t("update.copy")}</span>
+            </button>
+            <button className="btn btn-ghost" type="button" onClick={refreshUpdate} disabled={updateRefreshing}>
+              {updateRefreshing ? t("update.refreshing") : t("update.refresh")}
+            </button>
+            <button className="btn btn-ghost" type="button" onClick={dismissCurrentUpdate}>
+              {t("update.dismiss")}
+            </button>
+          </div>
+        </section>
+      )}
 
       {setupIncomplete && (
         <section className="panel home-onboarding" style={{ marginTop: 16 }}>

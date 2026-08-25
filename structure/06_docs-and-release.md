@@ -400,7 +400,12 @@ the native `Claude Code-credentials` service.
 because `ci.yml` owns those gates, uploads that immutable artifact, and downloads the same bytes in
 all three OS jobs. Each job installs into an isolated Bun global root and uses temporary frogprogsy
 and Claude homes to verify start, health, explicit restore, stop, restart, final byte-equivalent
-restore, watchdog/proxy cleanup, and package-only removal.
+restore, watchdog/proxy cleanup, and package-only removal. A package-smoke-only Bun preload intercepts
+only the fixed official npm dist-tags URL; it is not a product URL override. The installed package must
+show a controlled newer stable release within five seconds, make one ordinary request, make one additional
+explicit request, make zero additional ordinary requests after restart inside 24 hours, and preserve
+proxy PID, installed version/bin hash, Claude settings, config, and update cache. Linux, Windows, and macOS
+must classify the exact installed package as Bun-managed.
 
 The release workflow is publish-focused and receives only immutable inputs classified by the prepared-release
 dispatcher. Before a dry run, recovery, or publication, it requires the channel-specific exact-SHA gates

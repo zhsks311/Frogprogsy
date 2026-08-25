@@ -22,12 +22,17 @@ cd gui && bun dev
 
 | Panel | 用途 |
 | --- | --- |
-| **Dashboard** | Proxy status、version、uptime、provider count、search/image fallback settings、auto-mode classifier model settings |
+| **Dashboard** | Proxy status、已安装/稳定版更新状态、version、uptime、provider count、search/image fallback settings、auto-mode classifier model settings |
 | **Providers** | OAuth login、API-key providers、Anthropic Claude Code 目录行、custom endpoints、opt-in connection tests、default provider switch、removal |
 | **Models** | Dashboard/API model-list reload：查看 routed model visibility、disabled models、Claude Code discovery 状态。它刷新 dashboard 与 `/v1/models` 暴露的列表，不是 Claude Code picker recovery 命令。 |
 | **Claude Code 目录** | 命名 Claude Code 配置目录、pass-through auth state、inject/restore/refresh actions、按目录隔离的 model overlays；这不是模型选择器。Refresh 会准备 Claude Code picker recovery，并显示该 profile 稳定的 `frogp claude reload-models <profile-id>` 命令。 |
 | **Activity** | Safe request phase traces、recent logs、按 day/model/provider 汇总的 local usage accounting |
 | **Stop Proxy** | Graceful shutdown + native Claude Code restore |
+
+有新稳定版时，Home 会显示已安装版本 → 最新版本、准确的 `frogp update` 命令、显式
+refresh，以及针对该版本的忽略操作。更新的版本会再次出现。**详细设置**负责持久化自动检查
+开关，并说明只检查 npm metadata 的隐私边界。Dashboard 不自行比较版本或连接 npm，
+只显示 proxy 的共享 snapshot。
 
 ## Model list refresh 与 Claude Code picker recovery
 
@@ -99,6 +104,9 @@ Claude Code 也可能调用 provider-specific usage endpoint，因此 FrogProgsy
 | --- | --- |
 | `GET /api/provider-state` | non-secret provider/runtime summary |
 | `GET /api/claude-status` | redacted Claude Code injection/Base URL、runtime/watchdog/external-supervisor、last `/v1/messages` status |
+| `GET /api/update-status` | 只读取 disk/memory snapshot，不启动 registry 工作 |
+| `POST /api/update-status/refresh` | 显式、限时的稳定版 refresh；需要普通 local mutation guard |
+| `PUT /api/update-settings` | 只持久化准确的 `{enabled:boolean}`；关闭时仍允许显式 refresh |
 | `GET /api/providers` | configured provider summaries |
 | `POST /api/providers` | 从 catalog/custom input 添加或更新 provider |
 | `POST /api/providers/test` | opt-in single minimal-token provider connection test，返回 enum-only error results |

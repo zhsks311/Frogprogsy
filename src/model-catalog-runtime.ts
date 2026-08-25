@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   mkdir as mkdirFileSystem,
@@ -8,8 +7,9 @@ import {
   unlink as unlinkFileSystem,
 } from "node:fs/promises";
 import * as z from "zod/v4";
-import { dirname } from "node:path";
 import { getModelCatalogCachePath } from "./config";
+import { writeCacheAtomically } from "./atomic-cache-file";
+import { installedPackageVersion } from "./install-identity";
 import { catalogDataDigest } from "./model-catalog-generator";
 import {
   modelCatalogProviderV1Schema,
@@ -18,6 +18,7 @@ import {
   type ModelCatalogModelV1,
   type ModelCatalogProviderV1,
 } from "./model-catalog-schema";
+import { compareSemVer, parseSemVer } from "./semver";
 
 export const MODEL_CATALOG_REMOTE_URL = "https://zhsks311.github.io/Frogprogsy/catalog/v1/model-catalog.json";
 
@@ -88,12 +89,6 @@ interface ValidCandidate {
   skippedRecords: number;
 }
 
-interface ParsedSemVer {
-  major: number;
-  minor: number;
-  patch: number;
-  prerelease: (number | string)[];
-}
 
 const defaultFileSystem: ModelCatalogFileSystem = {
   readFile: (path, encoding) => readFileSystem(path, encoding),
@@ -108,56 +103,12 @@ const defaultBundledCatalog = JSON.parse(readFileSync(
   "utf8",
 )) as ModelCatalogDocumentV1;
 
-const defaultRuntimeVersion = (() => {
-  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: unknown };
-  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
-    throw new Error("package.json must contain a non-empty version");
-  }
-  return packageJson.version;
-})();
+const defaultRuntimeVersion = installedPackageVersion();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function parseSemVer(value: string): ParsedSemVer | null {
-  const match = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(value);
-  if (!match) return null;
-  const prerelease = match[4]?.split(".").map(identifier => {
-    if (/^(0|[1-9]\d*)$/.test(identifier)) return Number(identifier);
-    return identifier;
-  }) ?? [];
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-    prerelease,
-  };
-}
-
-function compareSemVer(left: ParsedSemVer, right: ParsedSemVer): number {
-  for (const key of ["major", "minor", "patch"] as const) {
-    if (left[key] !== right[key]) return left[key] < right[key] ? -1 : 1;
-  }
-  if (left.prerelease.length === 0 || right.prerelease.length === 0) {
-    if (left.prerelease.length === right.prerelease.length) return 0;
-    return left.prerelease.length === 0 ? 1 : -1;
-  }
-  const length = Math.max(left.prerelease.length, right.prerelease.length);
-  for (let index = 0; index < length; index++) {
-    const leftPart = left.prerelease[index];
-    const rightPart = right.prerelease[index];
-    if (leftPart === undefined || rightPart === undefined) {
-      if (leftPart === rightPart) return 0;
-      return leftPart === undefined ? -1 : 1;
-    }
-    if (leftPart === rightPart) continue;
-    if (typeof leftPart === "number" && typeof rightPart === "string") return -1;
-    if (typeof leftPart === "string" && typeof rightPart === "number") return 1;
-    return leftPart < rightPart ? -1 : 1;
-  }
-  return 0;
-}
 
 function isRuntimeCompatible(minimumVersion: unknown, runtimeVersion: string): boolean | null {
   if (typeof minimumVersion !== "string" || minimumVersion.length === 0) return null;
@@ -454,31 +405,6 @@ async function readCachedCandidate(
   }
 }
 
-async function writeCacheAtomically(
-  path: string,
-  content: string,
-  fileSystem: ModelCatalogFileSystem,
-): Promise<boolean> {
-  const directory = dirname(path);
-  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  let handle: ModelCatalogFileHandle | null = null;
-  try {
-    await fileSystem.mkdir(directory, { recursive: true, mode: 0o700 });
-    handle = await fileSystem.open(tempPath, "wx", 0o600);
-    await handle.writeFile(content, { encoding: "utf8" });
-    await handle.sync();
-    await handle.close();
-    handle = null;
-    await fileSystem.rename(tempPath, path);
-    return true;
-  } catch {
-    if (handle) {
-      try { await handle.close(); } catch { /* best effort cleanup */ }
-    }
-    try { await fileSystem.unlink(tempPath); } catch { /* best effort cleanup */ }
-    return false;
-  }
-}
 
 function statusFor(
   source: CatalogSource,

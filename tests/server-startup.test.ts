@@ -5,6 +5,7 @@ import { createRuntimeConfigState } from "../src/runtime-config-state";
 import { refreshModelCatalog, type SelectedModelCatalog } from "../src/model-catalog-runtime";
 import type { ModelCatalogDocumentV1 } from "../src/model-catalog-schema";
 import { startServer } from "../src/server";
+import { createUpdateStatusService } from "../src/update-status";
 import type { FrogConfig } from "../src/types";
 
 const HASH = "a".repeat(64);
@@ -235,5 +236,41 @@ describe("server startup runtime config", () => {
     expect(saved).toHaveLength(1);
     expect(saved[0].providers.gateway.userModels).toEqual(["private-model"]);
     expect(state.effective.providers.gateway.models).toEqual(["catalog-model"]);
+  });
+  test("binds before creating and deferring the ordinary update check", async () => {
+    const events: string[] = [];
+    let scheduled: (() => void) | null = null;
+    const updateStatusService = createUpdateStatusService({
+      enabled: true,
+      identityHint: { kind: "source", version: "1.2.3" },
+      detectInstall: async () => ({ kind: "source", version: "1.2.3" }),
+    });
+    let refreshCalls = 0;
+    updateStatusService.refresh = async () => {
+      refreshCalls += 1;
+      return updateStatusService.snapshot();
+    };
+
+    await startServer(0, {
+      createRuntimeConfigState: () => createRuntimeConfigState({
+        loadConfig: persistedConfig,
+        configExists: () => false,
+        refreshCatalog: async () => selected(),
+      }),
+      serve: fakeServe(() => { events.push("listener"); }),
+      createUpdateStatusService: () => {
+        events.push("service");
+        return updateStatusService;
+      },
+      scheduleUpdateRefresh: task => {
+        events.push("scheduled");
+        scheduled = task;
+      },
+    });
+
+    expect(events).toEqual(["listener", "service", "scheduled"]);
+    expect(refreshCalls).toBe(0);
+    scheduled?.();
+    expect(refreshCalls).toBe(1);
   });
 });
