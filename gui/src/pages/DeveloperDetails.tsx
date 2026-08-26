@@ -119,9 +119,6 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [updateSettingsSaving, setUpdateSettingsSaving] = useState(false);
   const [updateSettingsError, setUpdateSettingsError] = useState<SectionError>(null);
-  const [updateRefreshing, setUpdateRefreshing] = useState(false);
-  const [updateRefreshError, setUpdateRefreshError] = useState(false);
-
 
   useEffect(() => {
     const fetchData = async () => {
@@ -356,23 +353,6 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
     }
   };
 
-  const refreshUpdateStatus = async () => {
-    if (updateRefreshing) return;
-    setUpdateRefreshing(true);
-    try {
-      const response = await fetch(`${apiBase}/api/update-status/refresh`, { method: "POST" });
-      const payload: unknown = await response.json();
-      const parsed = parseUpdateStatus(payload);
-      if (!response.ok || !parsed) throw new Error("invalid update refresh response");
-      setUpdateStatus(parsed);
-      setUpdateRefreshError(parsed.failure !== null);
-    } catch {
-      setUpdateRefreshError(true);
-    } finally {
-      setUpdateRefreshing(false);
-    }
-  };
-
   return (
     <>
       <div className="page-head"><h2>{t("nav.developerDetails")}</h2></div>
@@ -425,21 +405,12 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
             {t(updateSettingsError === "save" ? "update.settingsSaveFailed" : "update.loadFailed")}
           </Notice>
         )}
-        {updateRefreshError && <Notice tone="err">{t("update.refreshFailed")}</Notice>}
         <div className="fallback-row">
           <div>
             <div style={{ fontWeight: 650 }}>{t("update.settingsAutomatic")}</div>
             <div className="muted" style={{ fontSize: 13 }}>{t("update.settingsPrivacy")}</div>
           </div>
           <div className="fallback-controls">
-            <button
-              className="btn btn-ghost btn-sm"
-              type="button"
-              disabled={updateRefreshing}
-              onClick={() => void refreshUpdateStatus()}
-            >
-              {updateRefreshing ? t("update.refreshing") : t("update.refresh")}
-            </button>
             <Switch
               on={updateStatus?.enabled ?? false}
               disabled={!updateStatus || updateSettingsSaving}

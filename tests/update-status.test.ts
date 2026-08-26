@@ -128,27 +128,42 @@ describe("stable update status service", () => {
     expect(await first).toEqual(await second);
   });
 
-  test("queues one forced refresh behind an ordinary in-flight check", async () => {
+  test("deduplicates a forced refresh with an ordinary in-flight check", async () => {
     const ordinaryGate = Promise.withResolvers<Response>();
     const ordinaryRequested = Promise.withResolvers<void>();
-    const forcedRequested = Promise.withResolvers<void>();
     let requests = 0;
     const update = service(tempCachePath(), identity(), async () => {
       requests += 1;
-      if (requests === 1) {
-        ordinaryRequested.resolve();
-        return ordinaryGate.promise;
-      }
-      forcedRequested.resolve();
-      return Response.json({ latest: "1.2.5" });
+      ordinaryRequested.resolve();
+      return ordinaryGate.promise;
     });
 
     const ordinary = update.refresh({ force: false });
     await ordinaryRequested.promise;
     const forced = update.refresh({ force: true });
+    expect(forced).toBe(ordinary);
+    expect(requests).toBe(1);
     ordinaryGate.resolve(Response.json({ latest: "1.2.4" }));
-    await forcedRequested.promise;
     expect((await ordinary).latestVersion).toBe("1.2.4");
+    expect(await forced).toEqual(await ordinary);
+    expect(requests).toBe(1);
+  });
+
+  test("a concurrent forced refresh still bypasses a fresh ordinary-check cache", async () => {
+    const cachePath = tempCachePath();
+    let requests = 0;
+    await service(cachePath, identity(), async () => {
+      requests += 1;
+      return Response.json({ latest: "1.2.4" });
+    }).refresh({ force: true });
+
+    const restarted = service(cachePath, identity(), async () => {
+      requests += 1;
+      return Response.json({ latest: "1.2.5" });
+    });
+    const ordinary = restarted.refresh({ force: false });
+    const forced = restarted.refresh({ force: true });
+    expect(forced).toBe(ordinary);
     expect((await forced).latestVersion).toBe("1.2.5");
     expect(requests).toBe(2);
   });

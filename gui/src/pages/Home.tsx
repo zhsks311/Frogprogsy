@@ -241,8 +241,13 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
           <span className="chip">{settings ? `${settings.hostname}:${settings.port}` : "—"}</span>
           <span className="chip">v{health?.version ?? "—"}</span>
           <span className="chip">{updateStatus ? t(updateStatusLabelKey(updateStatus.status)) : t("common.loading")}</span>
+          <button className="btn btn-ghost btn-sm" type="button" onClick={refreshUpdate} disabled={updateRefreshing}>
+            {updateRefreshing ? t("update.refreshing") : t("update.refresh")}
+          </button>
         </div>
       </section>
+
+      {updateActionError && <Notice tone="err">{t("update.refreshFailed")}</Notice>}
 
       {showUpdateNotice && updateStatus?.latestVersion && (
         <section className="panel panel-accent home-update-panel home-hero-warn" style={{ marginTop: 16 }}>
@@ -254,15 +259,11 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
               latest: updateStatus.latestVersion,
             })}</p>
             {updateStatus.stale && <p className="muted">{t("update.stale")}</p>}
-            {updateActionError && <Notice tone="err">{t("update.refreshFailed")}</Notice>}
           </div>
           <div className="action-row">
             <button className="btn btn-primary" type="button" onClick={copyUpdateCommand}>
               <code>frogp update</code>
               <span>{copiedUpdateCommand ? t("dash.commandCopied") : t("update.copy")}</span>
-            </button>
-            <button className="btn btn-ghost" type="button" onClick={refreshUpdate} disabled={updateRefreshing}>
-              {updateRefreshing ? t("update.refreshing") : t("update.refresh")}
             </button>
             <button className="btn btn-ghost" type="button" onClick={dismissCurrentUpdate}>
               {t("update.dismiss")}

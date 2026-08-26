@@ -1,17 +1,6 @@
-import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { FrogConfig } from "./types";
 
 let _atomicSeq = 0;
@@ -21,31 +10,8 @@ let _atomicSeq = 0;
  */
 export function atomicWriteFile(path: string, content: string | Uint8Array): void {
   const tmp = `${path}.frogp.${process.pid}.${++_atomicSeq}.tmp`;
-  let descriptor: number | null = null;
-  try {
-    descriptor = openSync(tmp, "wx", 0o600);
-    writeFileSync(descriptor, content);
-    fsyncSync(descriptor);
-    closeSync(descriptor);
-    descriptor = null;
-    renameSync(tmp, path);
-    try {
-      const directoryDescriptor = openSync(dirname(path), "r");
-      try {
-        fsyncSync(directoryDescriptor);
-      } finally {
-        closeSync(directoryDescriptor);
-      }
-    } catch {
-      // Directory fsync is unavailable on some supported platforms.
-    }
-  } catch (error) {
-    if (descriptor !== null) {
-      try { closeSync(descriptor); } catch { /* best effort */ }
-    }
-    try { unlinkSync(tmp); } catch { /* best effort */ }
-    throw error;
-  }
+  writeFileSync(tmp, content, { mode: 0o600 });
+  renameSync(tmp, path);
 }
 
 let resolvedConfigDirCache: { raw: string | undefined; path: string } | null = null;

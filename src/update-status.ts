@@ -93,7 +93,7 @@ export class UpdateStatusService {
   private state: UpdateMemoryState;
   private preparePromise: Promise<void> | null = null;
   private inFlight: Promise<UpdateStatus> | null = null;
-  private inFlightForce = false;
+  private forceRequested = false;
 
   constructor(deps: UpdateStatusServiceDeps = {}) {
     const hint = deps.identityHint ?? installIdentityHint();
@@ -173,17 +173,12 @@ export class UpdateStatusService {
   }
 
   refresh(options: { force: boolean }): Promise<UpdateStatus> {
-    if (this.inFlight) {
-      if (options.force && !this.inFlightForce) {
-        return this.inFlight.then(() => this.refresh({ force: true }));
-      }
-      return this.inFlight;
-    }
-    this.inFlightForce = options.force;
-    const run = this.performRefresh(options.force).finally(() => {
+    if (options.force) this.forceRequested = true;
+    if (this.inFlight) return this.inFlight;
+    const run = this.performRefresh().finally(() => {
       if (this.inFlight === run) {
         this.inFlight = null;
-        this.inFlightForce = false;
+        this.forceRequested = false;
       }
     });
     this.inFlight = run;
@@ -236,8 +231,9 @@ export class UpdateStatusService {
     }
   }
 
-  private async performRefresh(force: boolean): Promise<UpdateStatus> {
+  private async performRefresh(): Promise<UpdateStatus> {
     await this.prepare();
+    const force = this.forceRequested;
     const installed = parseCanonicalStableSemVer(this.state.identity.version);
     if ((!this.enabled && !force) || this.state.identity.kind !== "bun" || !installed) return this.snapshot();
 

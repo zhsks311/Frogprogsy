@@ -68,13 +68,13 @@ describe("dashboard update presentation", () => {
     expect(parseUpdateStatus({ ...status(), status: "toString" })).toBeNull();
     expect(parseUpdateStatus({ ...status(), failure: "__proto__" })).toBeNull();
   });
-  test("manual dashboard refresh remains available after automatic checks are disabled", async () => {
+  test("Home owns manual dashboard refresh without a duplicate Details action", async () => {
     const homeSource = await Bun.file(new URL("../gui/src/pages/Home.tsx", import.meta.url)).text();
     const detailsSource = await Bun.file(new URL("../gui/src/pages/DeveloperDetails.tsx", import.meta.url)).text();
-    expect(homeSource).not.toContain("updateStatus?.enabled === false");
-    expect(homeSource).not.toContain("updateRefreshing || !updateStatus.enabled");
-    expect(detailsSource).toContain('/api/update-status/refresh');
-    expect(detailsSource).toContain("refreshUpdateStatus");
+    expect(homeSource).toContain('/api/update-status/refresh');
+    expect(homeSource).toContain("refreshUpdate");
+    expect(detailsSource).not.toContain('/api/update-status/refresh');
+    expect(detailsSource).not.toContain("refreshUpdateStatus");
   });
 
 });
