@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join, resolve } from "node:path";
 import { healthHost, loopbackManagementBase, readBoundedJson } from "../src/cli-local-api";
 import { detectInstallIdentity, installIdentityHint } from "../src/install-identity";
 import { compareSemVer, parseCanonicalStableSemVer, parseSemVer } from "../src/semver";
@@ -45,19 +46,21 @@ describe("safe local management client", () => {
 });
 
 describe("install identity", () => {
-  const packageRoot = "/tmp/frog/node_modules/frogprogsy";
-  const bin = "/tmp/frog/bin/frogp";
-  const realpath = (path: string) => path === bin ? `${packageRoot}/src/cli.ts` : path;
+  const fixtureRoot = resolve("tmp", "frog");
+  const packageRoot = join(fixtureRoot, "node_modules", "frogprogsy");
+  const binDir = join(fixtureRoot, "bin");
+  const bin = join(binDir, "frogp");
+  const realpath = (path: string) => path === bin ? join(packageRoot, "src", "cli.ts") : path;
   const exists = (path: string) => path === bin;
 
   test("source checkouts never invoke Bun ownership discovery", async () => {
     let calls = 0;
     const identity = await detectInstallIdentity({
-      packageRoot: "/tmp/frog/source",
+      packageRoot: join(fixtureRoot, "source"),
       version: "1.2.3",
       bunGlobalBin: async () => {
         calls += 1;
-        return "/tmp/frog/bin";
+        return binDir;
       },
     });
     expect(identity).toEqual({ kind: "source", version: "1.2.3" });
@@ -73,7 +76,7 @@ describe("install identity", () => {
     const bun = await detectInstallIdentity({
       packageRoot,
       version: "1.2.3",
-      bunGlobalBin: async () => "/tmp/frog/bin",
+      bunGlobalBin: async () => binDir,
       exists,
       realpath,
       devReceiptExists: false,
@@ -81,7 +84,7 @@ describe("install identity", () => {
     const development = await detectInstallIdentity({
       packageRoot,
       version: "1.2.3",
-      bunGlobalBin: async () => "/tmp/frog/bin",
+      bunGlobalBin: async () => binDir,
       exists,
       realpath,
       devReceiptExists: true,
@@ -89,7 +92,7 @@ describe("install identity", () => {
     const unsupported = await detectInstallIdentity({
       packageRoot,
       version: "1.2.3",
-      bunGlobalBin: async () => "/tmp/other/bin",
+      bunGlobalBin: async () => join(resolve("tmp", "other"), "bin"),
       exists: () => false,
       realpath,
     });
@@ -98,12 +101,14 @@ describe("install identity", () => {
     expect(unsupported.kind).toBe("unsupported");
   });
   test("recognizes Bun's Windows launcher beside the canonical global package tree", async () => {
-    const windowsRoot = "/tmp/windows-bun/install/global/node_modules/frogprogsy";
-    const windowsBin = "/tmp/windows-bun/bin/frogp.exe";
+    const windowsBunRoot = resolve("tmp", "windows-bun");
+    const windowsRoot = join(windowsBunRoot, "install", "global", "node_modules", "frogprogsy");
+    const windowsBinDir = join(windowsBunRoot, "bin");
+    const windowsBin = join(windowsBinDir, "frogp.exe");
     const identity = await detectInstallIdentity({
       packageRoot: windowsRoot,
       version: "1.2.3",
-      bunGlobalBin: async () => "/tmp/windows-bun/bin",
+      bunGlobalBin: async () => windowsBinDir,
       exists: path => path === windowsBin,
       realpath: path => path,
       devReceiptExists: false,
