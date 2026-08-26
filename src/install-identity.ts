@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InstallKind } from "./update-status-contract";
 export type { InstallKind } from "./update-status-contract";
@@ -34,10 +34,11 @@ export function installedPackageVersion(packageRoot = DEFAULT_PACKAGE_ROOT): str
     return "?";
   }
 }
+
 /** Fast fail-closed identity used before asynchronous Bun ownership verification completes. */
 export function installIdentityHint(packageRoot = DEFAULT_PACKAGE_ROOT): InstallIdentity {
   const version = installedPackageVersion(packageRoot);
-  if (!packageRoot.split(sep).includes("node_modules")) return { kind: "source", version };
+  if (!packageRoot.split(/[\\/]+/).includes("node_modules")) return { kind: "source", version };
   if (existsSync(join(packageRoot, ".frogprogsy-dev-build.json"))) return { kind: "development", version };
   return { kind: "unsupported", version };
 }
@@ -83,7 +84,7 @@ export async function detectInstallIdentity(deps: InstallIdentityDeps = {}): Pro
   const version = deps.version ?? installedPackageVersion(packageRoot);
   const exists = deps.exists ?? existsSync;
   const realpath = deps.realpath ?? realpathSync;
-  if (!packageRoot.split(sep).includes("node_modules")) return { kind: "source", version };
+  if (!packageRoot.split(/[\\/]+/).includes("node_modules")) return { kind: "source", version };
 
   const binDir = await (deps.bunGlobalBin ?? queryBunGlobalBin)();
   if (!binDir) return { kind: "unsupported", version };

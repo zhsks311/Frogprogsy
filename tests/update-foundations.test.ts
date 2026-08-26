@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { healthHost, loopbackManagementBase, readBoundedJson } from "../src/cli-local-api";
-import { detectInstallIdentity } from "../src/install-identity";
+import { detectInstallIdentity, installIdentityHint } from "../src/install-identity";
 import { compareSemVer, parseCanonicalStableSemVer, parseSemVer } from "../src/semver";
 
 function compare(left: string, right: string): number {
@@ -62,6 +62,11 @@ describe("install identity", () => {
     });
     expect(identity).toEqual({ kind: "source", version: "1.2.3" });
     expect(calls).toBe(0);
+  });
+
+  test("recognizes package roots using either path separator", () => {
+    expect(installIdentityHint("/tmp/frog/node_modules/frogprogsy").kind).toBe("unsupported");
+    expect(installIdentityHint("C:\\frog\\node_modules\\frogprogsy").kind).toBe("unsupported");
   });
 
   test("distinguishes Bun, development receipt, and unsupported package roots", async () => {
