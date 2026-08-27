@@ -163,6 +163,21 @@ A published npm version, Git tag, or GitHub Release is immutable. Moving or remo
 New preparation requires `main`'s `package.json.version`, npm `latest`, and the matching stable Git tag and
 GitHub Release to agree. Automation stops on disagreement instead of calculating from uncertain state.
 
+### Release path selection
+
+The maintainer selects the release path; automation does not infer it from the changed files. An npm preview
+is an optional, risk-based validation path, not a prerequisite for publishing stable `latest`. Select preview
+when a change needs acceptance against the public package or by real users, especially for high-risk
+authentication or credential handling, restoration or configuration, provider routing, protocol or streaming
+behavior, model-catalog or release machinery, and behavior whose cross-platform outcome remains uncertain.
+Choose direct stable for reviewed, lower-risk work when the exact-SHA gates provide adequate confidence.
+
+The choice changes the acceptance evidence, not the stable safeguards. A direct stable release still requires
+the release SHA's Cross-platform CI, Package lifecycle, Pages deployment and package-to-Pages checks, release
+dry-run and exact-tarball verification, and registry and provenance smoke checks. Published versions, Git tags,
+and GitHub Releases remain immutable, and failures retain the fix-forward and rollback boundaries below.
+Skipping preview makes no claim that a public preview tarball received acceptance testing.
+
 ### Release labels
 
 | Label | Eligible pull request | Meaning |
