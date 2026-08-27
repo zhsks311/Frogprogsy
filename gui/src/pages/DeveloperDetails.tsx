@@ -6,6 +6,7 @@ import { useT } from "../i18n";
 import type { TKey } from "../i18n";
 import type { DeepLinkTarget, Navigate } from "../navigation";
 import { ClassifierInfo } from "../components/ClassifierInfo";
+import { canApplyUpdatePoll } from "../update-status";
 import { parseUpdateStatus } from "../../../src/update-status-contract";
 import type { UpdateStatus } from "../../../src/update-status-contract";
 
@@ -119,9 +120,11 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [updateSettingsSaving, setUpdateSettingsSaving] = useState(false);
   const [updateSettingsError, setUpdateSettingsError] = useState<SectionError>(null);
+  const updateActionGeneration = useRef(0);
 
   useEffect(() => {
     const fetchData = async () => {
+      const updateGeneration = updateActionGeneration.current;
       const [settingsResult, fallbackResult, classifierResult, claudeStatusResult, updateStatusResult] = await Promise.allSettled([
         fetch(`${apiBase}/api/settings`).then(res => {
           if (!res.ok) throw new Error("settings load failed");
@@ -178,11 +181,13 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
         setClaudeStatus(null);
         setClaudeStatusError("load");
       }
-      if (updateStatusResult.status === "fulfilled") {
-        setUpdateStatus(updateStatusResult.value);
-        setUpdateSettingsError(null);
-      } else {
-        setUpdateSettingsError("load");
+      if (canApplyUpdatePoll(updateGeneration, updateActionGeneration.current)) {
+        if (updateStatusResult.status === "fulfilled") {
+          setUpdateStatus(updateStatusResult.value);
+          setUpdateSettingsError(null);
+        } else {
+          setUpdateSettingsError("load");
+        }
       }
     };
     fetchData();
@@ -331,6 +336,7 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
 
   const saveUpdateChecks = async (enabled: boolean) => {
     if (!updateStatus || updateSettingsSaving) return;
+    updateActionGeneration.current += 1;
     const previous = updateStatus;
     setUpdateSettingsSaving(true);
     setUpdateStatus({ ...previous, enabled, status: enabled ? "unavailable" : "disabled" });
@@ -349,6 +355,7 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
       setUpdateStatus(previous);
       setUpdateSettingsError("save");
     } finally {
+      updateActionGeneration.current += 1;
       setUpdateSettingsSaving(false);
     }
   };

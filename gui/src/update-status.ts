@@ -13,6 +13,10 @@ const STATUS_LABEL_KEYS: Record<UpdateStatus["status"], TKey> = {
   unsupported: "update.status.unsupported",
 };
 
+
+export function canApplyUpdatePoll(capturedGeneration: number, currentGeneration: number): boolean {
+  return capturedGeneration === currentGeneration && currentGeneration % 2 === 0;
+}
 export function updateStatusLabelKey(status: UpdateStatus["status"]): TKey {
   return STATUS_LABEL_KEYS[status];
 }

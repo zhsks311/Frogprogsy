@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DISMISSED_UPDATE_VERSION_KEY,
+  canApplyUpdatePoll,
   dismissUpdateVersion,
   readDismissedUpdateVersion,
   shouldShowUpdateNotice,
@@ -67,6 +68,21 @@ describe("dashboard update presentation", () => {
     expect(parseUpdateStatus({ ...status(), installKind: "constructor" })).toBeNull();
     expect(parseUpdateStatus({ ...status(), status: "toString" })).toBeNull();
     expect(parseUpdateStatus({ ...status(), failure: "__proto__" })).toBeNull();
+  });
+
+  test("poll responses cannot overwrite an update action", () => {
+    let generation = 0;
+    const beforeAction = generation;
+    generation += 1;
+    const duringAction = generation;
+
+    expect(canApplyUpdatePoll(beforeAction, generation)).toBe(false);
+    expect(canApplyUpdatePoll(duringAction, generation)).toBe(false);
+
+    generation += 1;
+    expect(canApplyUpdatePoll(beforeAction, generation)).toBe(false);
+    expect(canApplyUpdatePoll(duringAction, generation)).toBe(false);
+    expect(canApplyUpdatePoll(generation, generation)).toBe(true);
   });
   test("Home owns manual dashboard refresh without a duplicate Details action", async () => {
     const homeSource = await Bun.file(new URL("../gui/src/pages/Home.tsx", import.meta.url)).text();

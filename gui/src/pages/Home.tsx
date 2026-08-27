@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { IconAlert } from "../icons";
 import { useT } from "../i18n";
 import type { Navigate } from "../navigation";
@@ -7,6 +7,7 @@ import { Notice } from "../ui";
 import { parseUpdateStatus } from "../../../src/update-status-contract";
 import type { UpdateStatus } from "../../../src/update-status-contract";
 import {
+  canApplyUpdatePoll,
   dismissUpdateVersion,
   readDismissedUpdateVersion,
   shouldShowUpdateNotice,
@@ -61,6 +62,7 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
   const [updateRefreshing, setUpdateRefreshing] = useState(false);
   const [updateActionError, setUpdateActionError] = useState(false);
   const [copiedUpdateCommand, setCopiedUpdateCommand] = useState(false);
+  const updateActionGeneration = useRef(0);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(() => {
     try {
       return readDismissedUpdateVersion(window.localStorage);
@@ -71,6 +73,7 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
 
   useEffect(() => {
     const fetchData = async () => {
+      const updateGeneration = updateActionGeneration.current;
       try {
         setHealth(await fetchJson<HealthData>(`${apiBase}/healthz`));
         setError(false);
@@ -94,7 +97,7 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
       setModels(modelsResult.status === "fulfilled" ? modelsResult.value : []);
       setFeatured(featuredResult.status === "fulfilled" ? featuredResult.value : { available: [], chosen: [] });
       setUsage(usageResult.status === "fulfilled" ? usageResult.value : null);
-      if (updateResult.status === "fulfilled") {
+      if (canApplyUpdatePoll(updateGeneration, updateActionGeneration.current) && updateResult.status === "fulfilled") {
         const parsed = parseUpdateStatus(updateResult.value);
         if (parsed) setUpdateStatus(parsed);
       }
@@ -182,6 +185,7 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
 
   const refreshUpdate = async () => {
     if (updateRefreshing) return;
+    updateActionGeneration.current += 1;
     setUpdateRefreshing(true);
     try {
       const response = await fetch(`${apiBase}/api/update-status/refresh`, { method: "POST" });
@@ -193,6 +197,7 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
     } catch {
       setUpdateActionError(true);
     } finally {
+      updateActionGeneration.current += 1;
       setUpdateRefreshing(false);
     }
   };
