@@ -430,6 +430,11 @@ export async function refreshModelCatalog(
 ): Promise<SelectedModelCatalog> {
   const bundled = deps.bundled ?? defaultBundledCatalog;
   const runtimeVersion = deps.runtimeVersion ?? defaultRuntimeVersion;
+  if (!parseSemVer(runtimeVersion)) {
+    throw new Error(
+      `Frogprogsy runtime version detection failed: expected valid SemVer, received ${JSON.stringify(runtimeVersion)}.`,
+    );
+  }
   const now = deps.now?.() ?? new Date();
   const cachePath = deps.cachePath ?? getModelCatalogCachePath();
   const fileSystem: ModelCatalogFileSystem = { ...defaultFileSystem, ...deps.fileSystem };
