@@ -76,7 +76,7 @@ describe("update management API", () => {
     expect(oauthRecoveryCalls).toBe(0);
   });
 
-  test("explicit POST refresh uses the shared owner and remains allowed while disabled", async () => {
+  test("explicit disabled refresh remains visible to subsequent passive Dashboard polls", async () => {
     const cfg = config();
     cfg.updateChecks = { enabled: false };
     const update = fixture();
@@ -104,7 +104,7 @@ describe("update management API", () => {
       { method: "GET" },
       update.updateStatusService,
     );
-    expect((await passive?.json()).status).toBe("disabled");
+    expect((await passive?.json()).status).toBe("available");
     expect(update.registryRequests()).toBe(1);
   });
 

@@ -94,6 +94,7 @@ export class UpdateStatusService {
   private preparePromise: Promise<void> | null = null;
   private inFlight: Promise<UpdateStatus> | null = null;
   private forceRequested = false;
+  private manualResultVisible = false;
 
   constructor(deps: UpdateStatusServiceDeps = {}) {
     const hint = deps.identityHint ?? installIdentityHint();
@@ -116,6 +117,7 @@ export class UpdateStatusService {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
+    if (!enabled) this.manualResultVisible = false;
   }
 
   prepare(): Promise<void> {
@@ -126,10 +128,6 @@ export class UpdateStatusService {
   }
 
   snapshot(): UpdateStatus {
-    return this.createSnapshot(false);
-  }
-
-  private createSnapshot(explicitRefreshSucceeded: boolean): UpdateStatus {
     const nowMs = this.now().getTime();
     const installed = parseCanonicalStableSemVer(this.state.identity.version);
     const latest = this.state.latestVersion === null ? null : parseCanonicalStableSemVer(this.state.latestVersion);
@@ -139,7 +137,7 @@ export class UpdateStatusService {
     const stale = this.state.lastAttemptAtMs !== null
       && (!this.state.lastAttemptSucceeded || !lastAttemptCurrent);
     let status: UpdateStatus["status"];
-    if (!this.enabled && !explicitRefreshSucceeded) {
+    if (!this.enabled && !this.manualResultVisible) {
       status = "disabled";
     } else if (this.state.identity.kind === "source") {
       status = "source";
@@ -260,12 +258,13 @@ export class UpdateStatusService {
       this.state.checkedAtMs = this.now().getTime();
       this.state.lastAttemptSucceeded = true;
       this.state.failure = null;
+      if (force) this.manualResultVisible = true;
     } else {
       this.state.lastAttemptSucceeded = false;
       this.state.failure = result.failure;
     }
     if (!await this.persistCache()) this.state.failure = "cache-write";
-    return this.createSnapshot(force && result.ok);
+    return this.snapshot();
   }
 
   private async fetchLatestStable(): Promise<RegistryResult> {

@@ -309,7 +309,7 @@ describe("stable update status service", () => {
     expect(requests).toBe(1);
   });
 
-  test("opt-out keeps passive status disabled while explicit refresh reports the fetched result", async () => {
+  test("opt-out stays initially disabled and retains each successful explicit result for passive polls", async () => {
     for (const [latestVersion, expectedStatus] of [
       ["1.2.4", "available"],
       ["1.2.3", "up-to-date"],
@@ -343,7 +343,7 @@ describe("stable update status service", () => {
       expect(requests).toBe(1);
       expect(update.snapshot()).toMatchObject({
         enabled: false,
-        status: "disabled",
+        status: expectedStatus,
         latestVersion,
         nextCheckAt: null,
       });
