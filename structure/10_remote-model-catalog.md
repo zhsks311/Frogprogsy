@@ -29,6 +29,53 @@ The remote catalog must not contain or override:
 
 A model that needs a new adapter, transport, or request transformation requires a Frogprogsy release. Remote data cannot add that behavior.
 
+## Authenticity trust boundary
+
+Decision (2026-08-27): for the catalog v1 model-only scope, Frogprogsy accepts the
+maintainer-controlled GitHub repository, Actions workflows and their hosted runners/build
+dependencies, GitHub Pages/CDN, HTTPS, and the Bun process's effective TLS trust configuration as
+the publication trust boundary. Bun fetch trusts bundled Mozilla roots by default and can also use
+configured system or extra CA roots. This decision assumes certificate verification remains
+enabled; process-level settings that add roots or disable verification expand or weaken the
+boundary. Catalog v1 does not require an independent publisher signature.
+
+The catalog digest detects corruption and conflicting canonical provider/model payloads for one
+revision; it does not cover the surrounding envelope. It is not independent publisher
+authentication because the digest travels with the payload in the same document. A party that
+controls a trusted publication path could publish a schema-valid payload
+with matching digest, revision, and source metadata.
+Pinning individual Actions dependencies can reduce workflow supply-chain risk, but it remains inside
+this trust boundary and does not independently authenticate the catalog publisher.
+
+The strict schema is therefore a security boundary. A forged but schema-valid catalog could change
+managed model membership and defaults, retirements, provider wire model IDs, limits, capabilities,
+compatibility restrictions, and reasoning mappings. Catalog-derived membership, defaults, and
+retirements participate in routing, so forged data could influence which already-configured
+provider and model handle an unqualified request or an explicitly opted-in continuity fallback.
+The resulting impact includes model discovery, routing among existing destinations, request
+shaping, availability, provider-account usage, and recovery from a poisoned revision.
+
+The catalog cannot introduce or modify provider destinations, adapters, authentication modes,
+headers, credentials, executable code, or persisted user selections. The installed runtime and
+strict parser remain authoritative for those fields and for which catalog behavior is understood.
+
+After a publication-path compromise, maintainers normally restore the trusted path and publish
+corrected model data under a higher revision. Runtime and publication validation accept only
+positive JavaScript safe integers for `catalogRevision`, capped at `Number.MAX_SAFE_INTEGER`; an
+equal revision with a different digest is rejected. A forged maximum revision therefore requires a
+package/runtime or guarded publication-recovery change plus remediation of affected caches;
+clearing one cache is not durable while the compromised remote remains available. Ordinary
+network, parsing, schema, or compatibility failures continue to use the last valid cache or bundled
+fallback.
+
+Reconsider independent publisher authentication before expanding the remote schema or giving an
+existing field authority beyond this model-only damage limit, moving publication outside the
+current maintainer-controlled GitHub path, or after evidence that this accepted boundary is
+inadequate. Any future signature design must pin a verification trust root in the package, sign an
+exact canonical payload, fail closed before caching, and define key rotation, revocation, recovery,
+and high-revision cache-poison recovery. A signature field without that lifecycle is not
+sufficient.
+
 ## One generated artifact
 
 One deterministic generator combines the maintained provider registry and generated Jawcode metadata into `model-catalog-v1.json`. A maintained positive integer, `catalogRevision`, changes whenever the generated model data changes. Reverting bad model data still increments this revision, so clients can accept an operational rollback. For a given source commit, revision, and generation timestamp, the generator produces the same bytes.
