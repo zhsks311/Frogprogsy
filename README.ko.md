@@ -6,7 +6,7 @@
   <a href="README.md">English</a> · <b>한국어</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://zhsks311.github.io/Frogprogsy/ko/"><b>전체 문서</b></a>
 </p>
 
-frogprogsy는 Claude Code는 그대로 두고 여러 AI 서비스와 모델을 연결해 주는 로컬 도구입니다. 먼저 대시보드에서 AI 서비스를 연결하고, Claude Code는 평소처럼 실행하세요.
+frogprogsy는 Claude Code CLI, TUI, App, SDK 앞에 두고 쓰는 로컬 provider gateway입니다. frogprogsy package는 macOS, Linux, Windows를 지원합니다. Claude Code를 patch하지 않고 기존 gateway 설정을 사용합니다. 먼저 대시보드에서 AI 서비스를 연결하고, Claude Code는 평소처럼 실행하세요.
 
 ## 빠른 시작: 대시보드에서 첫 AI 서비스 연결하기
 
@@ -68,20 +68,28 @@ Bun이나 전역 패키지를 설치한 뒤에는 터미널을 새로 여세요.
 frogp start
 ```
 
-기본 대시보드 주소는 `http://localhost:3764`입니다. `3764`는 전화 키패드에서 FROG를 나타냅니다. 다른 포트를 사용하게 되더라도 다음 단계의 `frogp gui`가 현재 대시보드를 엽니다.
+기본 대시보드 주소는 `http://localhost:3764`입니다. `3764`는 전화 키패드에서 FROG를 나타냅니다. 다른 포트를 사용하게 되더라도 다음 단계의 `frogp gui`가 현재 대시보드를 엽니다. `frogp start`는 설정된 모든 Claude Code 홈에 FrogProgsy 소유 gateway 설정과 model catalog 항목을 동기화합니다.
+
+`frogp stop`은 relay를 멈추고 설정된 모든 홈에서 FrogProgsy가 추가한 Claude Code 설정과 catalog 항목을 복원합니다. `frogp restore`는 relay를 멈추지 않고 같은 native 상태 정리를 수행합니다. `frogp uninstall`은 FrogProgsy 설정과 관리 계정 바로가기를 제거하고, Bun 관리 설치라면 전역 package도 제거합니다. 세 명령 모두 native `~/.claude*` 홈, 전역 Claude credential, 관련 없는 Claude 설정은 보존합니다.
 
 <details>
 <summary><b>Docker에서 프록시를 실행하나요?</b></summary>
 
-포함된 Docker Compose 서비스를 빌드하고 실행합니다.
+처음 시작하기 전에 container 환경의 `FROGP_LOCAL_ACCESS_KEY`에 강한 비밀값을 설정하세요. Entrypoint는 hash만 저장합니다. 포함된 Docker Compose 서비스를 빌드하고 실행합니다.
 
 ```bash
+# macOS / Linux / WSL
+export FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
+docker compose up --build
+
+# Windows PowerShell
+$env:FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
 docker compose up --build
 ```
 
-Compose 파일은 `FROGP_EXTERNAL_SUPERVISOR=1`을 설정하고, 컨테이너 안의 프록시를 `0.0.0.0`에 바인딩하며, `3764` 포트를 공개하고, 설정을 `frogprogsy-config` 볼륨에 보존합니다. Crash 복구는 Docker restart policy가 맡으므로 컨테이너 안에서는 frogprogsy 자체 watchdog을 띄우지 않습니다.
+Compose 파일은 `FROGP_EXTERNAL_SUPERVISOR=1`을 설정하고, container 안의 proxy를 `0.0.0.0`에 bind하며, host loopback에 `3764` port를 공개하고, 설정을 `frogprogsy-config` volume에 보존합니다. Crash 복구는 Docker restart policy가 맡으므로 container 안에서는 frogprogsy 자체 watchdog을 띄우지 않습니다.
 
-Claude Code는 호스트에 열린 gateway를 보게 설정하세요. 예: `ANTHROPIC_BASE_URL=http://localhost:3764`.
+Claude Code는 host에 열린 gateway를 보게 설정하세요. 예: `ANTHROPIC_BASE_URL=http://localhost:3764`. 같은 relay 비밀값을 `x-frogp-local-key` header로 보내고, upstream `Authorization`이나 `x-api-key` credential은 원래 header에 그대로 두세요.
 
 </details>
 
@@ -126,24 +134,23 @@ claude "이 프로젝트의 진입점을 설명해 줘"
 
 이 동작은 Claude Code 2.1.220에서 검증했습니다. 홈 설정을 바꾼 뒤에는 Claude Code 세션을 다시 시작하거나 resume하세요. 기능을 켠 동안 메인 모델을 바꿀 때는 Claude Code 내장 `sonnet` 단축명 대신 FrogProgsy 모델 목록의 정확한 항목을 선택해야 합니다. 자세한 사용법은 [대시보드와 사용 기록](https://zhsks311.github.io/Frogprogsy/ko/guides/web-dashboard/#auto-mode-경로)과 [설정 파일 항목](https://zhsks311.github.io/Frogprogsy/ko/reference/configuration/#auto-mode-라우팅)을 참고하세요.
 
-## Claude 구독 연결: 기본은 Forward, 선택은 Claude grant
+## 선택: Claude 구독 연결(dual-auth grant)
 
-frogprogsy는 두 가지 방식으로 여러분의 Claude 구독을 씁니다. 두 방식 모두 native Claude Code 홈(`~/.claude`, `claude-work` 같은 홈)과 여러 계정 로그인은 그대로 보존합니다.
+기본적으로 Anthropic provider는 **forward** mode로 동작합니다. frogprogsy는 Claude token을 저장하지 않고 요청 시 활성 Claude Code 홈의 구독 인증을 다시 사용합니다. 추가 설정이 필요 없으며, native `~/.claude*` 홈과 여러 Claude 계정은 그대로 보존됩니다.
 
-**기본값 — Forward(토큰 보관 안 함).** Anthropic provider를 forward 모드로 추가하면 frogprogsy는 Claude 토큰을 저장하지 않습니다. Anthropic으로 가는 요청은 로그인된 Claude Code 홈이 보낸 실제 `Authorization`/`x-api-key` 헤더를 그대로 다시 씁니다. 별도 로그인이 필요 없고, Claude Code에서 평소처럼 로그인해 두면 됩니다.
-
-**선택 — Claude grant(격리 보관).** 스크립트/API처럼 Claude 헤더를 직접 보내지 않는 호출에서도 구독을 쓰고 싶다면, frogprogsy 전용으로 격리된 grant를 하나 만들 수 있습니다. grant는 여러분의 진짜 Claude 실행 파일과 별도 설정 디렉터리로 **여러분이 직접** 로그인합니다. frogprogsy는 로그인을 대신 실행하지 않고, 브라우저도 열지 않으며, native `~/.claude` 홈이나 전역 로그인은 건드리지 않습니다.
+로그인된 Claude Code 홈에 매번 의존하지 않고 Claude 구독이 같은 session이나 `frogp/mix` roster에서 Codex와 함께 응답하게 하려면, 선택 사항인 격리 **Claude grant**를 추가하세요.
 
 ```bash
-frogp claude grants add "업무용"      # grant를 만들고, 직접 실행할 로그인 명령을 출력
-# 출력된 로그인 명령을 터미널에서 직접 실행한 뒤:
-frogp claude grants status            # ok/none/unreadable/reauth_required/dangling 확인(비밀값 없음)
-frogp providers set anthropic --auth claude-grant --grant cg_ab12cd   # provider에 grant 연결(binding)
+frogp claude grants add "Work Claude"     # prints a login command; frogprogsy never runs it
+frogp claude grants status                # ok / reauth required / unreadable / none — no secrets
+frogp providers set anthropic --auth claude-grant --grant <cg_id>
 ```
 
-provider에 grant를 연결(binding)하면 Codex OAuth와 똑같이 일반 세션과 Model Mixing에서 Anthropic을 쓸 수 있습니다. grant 토큰은 연결된 provider에만 붙고, Codex OAuth 로그인은 계속 별개로 유지됩니다. 만료가 임박한 토큰은 사용 전에 새로 고치고, 재로그인이 필요하면(`reauth_required`) frogprogsy가 직접 실행할 로그인 명령만 안내합니다.
+- Grant는 사용자가 실제 `claude` executable을 사용해 frogprogsy 소유 `CLAUDE_CONFIG_DIR`에 직접 로그인하는 별도 Claude login입니다. `frogp claude grants add`는 grant record와 scoped directory를 만들고 `CLAUDE_CONFIG_DIR=<grant-dir> claude auth login --claudeai` 명령을 출력합니다. 로그인을 자동화하거나 browser를 열거나 token을 복사하거나 native `~/.claude*` 홈 또는 전역 Keychain login을 인수하지 않습니다. 로그인 후 `frogp claude grants status` 또는 dashboard에서 scoped credential이 생겼는지 확인합니다.
+- Grant custody는 격리되고 fail-closed입니다. Grant token은 연결된 Anthropic provider에만 쓰이고, Codex OAuth는 별도 credential로 유지됩니다. Refresh에 실패하면 다른 credential로 fallback하지 않고 typed re-auth error를 반환합니다.
+- Grant 설정 시, 그리고 live 구독 인증 진단을 실행할 때 명시적 `--yes` 또는 dashboard 확인으로 동의합니다. 정상 routed request마다 동의하지는 않습니다. 이 custody는 frogprogsy에 구독 token을 맡기므로 구독 인증 요청에는 어떤 보호 장치로도 없앨 수 없는 Anthropic ToS, account, quota risk가 있습니다. 이를 원하지 않으면 headless/API caller도 지원하는 Anthropic API-key provider를 사용하세요.
 
-grant는 frogprogsy 전용 격리 credential을 보관하는 **선택**입니다. 명시적 동의는 grant를 opt-in할 때와 `probe-b --live --yes` 진단을 돌릴 때 필요하고, 연결된 provider로 가는 정상 요청마다 확인창이 뜨지는 않습니다. 네트워크 호출이 구독 인증을 실어 나르므로 Anthropic 약관·계정·사용량(quota)에 영향을 줄 수 있습니다. 구독 보관을 원치 않거나 headless/API 인증이 필요하면 Anthropic **API 키** provider가 항상 대안으로 남아 있습니다. grant를 지우면(`frogp claude grants remove`) frogprogsy가 보관한 격리 credential·디렉터리·기록만 지워지고, Anthropic 서버 쪽 취소나 native 로그아웃·전역 로그인 변경은 일어나지 않습니다.
+Grant readiness 상태, re-auth, `frogp doctor claude`는 [Claude Code 연결 가이드](https://zhsks311.github.io/Frogprogsy/ko/guides/claude-integration/)에서 확인하세요.
 
 ## model-mixing 프로필
 
