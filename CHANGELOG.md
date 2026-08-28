@@ -6,6 +6,7 @@
 
 - Label-driven release automation now prepares and cancels versions, publishes previews from accepted `develop` merge SHAs, and publishes stable releases from accepted `develop` to `main` merge SHAs after channel-specific exact-SHA gates.
 - Maintainers can promote only the current exactly reconciled preview and recover partial publication only for the original prepared SHA without reusing a consumed version.
+- Bun-global stable installs now detect npm `latest` after startup without blocking the proxy, expose one cached update status across CLI/API/dashboard, and keep installation, restart, Claude state, credentials, and telemetry under explicit user control.
 
 ### Changed
 

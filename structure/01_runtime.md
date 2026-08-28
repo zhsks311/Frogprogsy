@@ -4,8 +4,10 @@
 
 | Path | Responsibility |
 | --- | --- |
-| `src/cli.ts` | `frogp` / `frogprogsy` CLI: init, start, stop, restore, refresh, status, models, `models continuity`, `claude`, login/logout, gui, update, version, help, uninstall. Unknown commands and help topics get a closest-match suggestion. Owns human and JSON status/models rendering: `status --json` exposes a stable snapshot schema (fixed normalized `watchdog` fields only), `models [--json]` is an online-only view over `GET /api/models`, and `models continuity [--json]` uses the running proxy's continuity report. Continuity `set` saves exact route policy; `replace` permanently changes one validated owner. JSON modes print exactly one JSON document to stdout with diagnostics on stderr. |
-| `src/server.ts` | Bun server for Claude-facing `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models`, static GUI, and `/api/*` management endpoints, including `GET`/`POST /api/model-continuity`. The old OpenAI Responses inbound path returns `410`. |
+| `src/cli.ts` | `frogp` / `frogprogsy` CLI: init, start, stop, restore, refresh, status, models, `models continuity`, `claude`, login/logout, gui, update, version, help, uninstall. Unknown commands and help topics get a closest-match suggestion. Owns human and JSON status/models rendering: `status --json` exposes fixed normalized `watchdog` and additive `update` fields; `status --refresh-update` explicitly refreshes through the healthy proxy or locally only when stopped. `models [--json]` is an online-only view over `GET /api/models`, and `models continuity [--json]` uses the running proxy's continuity report. JSON modes print exactly one JSON document to stdout with diagnostics on stderr. |
+| `src/server.ts` | Bun server for Claude-facing `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models`, static GUI, and `/api/*` management endpoints, including update snapshot/refresh/settings. The old OpenAI Responses inbound path returns `410`. |
+| `src/install-identity.ts` | Shared package version plus asynchronous bounded `bun`/`source`/`development`/`unsupported` install ownership classification. Server paths never use a synchronous package-manager subprocess. |
+| `src/update-status.ts` | One process-local stable-release snapshot/refresh owner: fixed npm dist-tags request, strict SemVer, 24-hour cache, single-flight, and normalized failure state. It never installs, restarts, or touches Claude state. |
 | `src/cli-suggest.ts` | Side-effect-free typo suggestion helper (edit distance ≤ 2, order-stable ties) shared by command and `login` provider suggestions. |
 | `src/cli-color.ts` | Dependency-free minimal ANSI palette for human output only: `NO_COLOR` always wins, non-TTY disables by default, `FORCE_COLOR=1` forces on; JSON output never uses it. |
 | `src/init.ts` | Interactive setup wizard. Provider menu derives from `src/providers/registry.ts` via `src/providers/derive.ts`, but the default provider is the explicit `DEFAULT_INIT_PROVIDER_ID` constant (not registry order). Invalid input reprompts; the wizard is all-or-nothing — `saveConfig` runs only after every answer is validated, and EOF/aborts write nothing. |
@@ -23,6 +25,13 @@ models/cache for every configured Claude Code home, then serves until shutdown. 
 restores native Claude Code for configured homes.
 `FROGP_EXTERNAL_SUPERVISOR=1` means Docker/systemd/Kubernetes already owns restart behavior, so
 frogp skips its watchdog and avoids repeated restore/reinject churn across supervised restarts.
+
+After the listener binds and any same-machine access token is published, `startServer` defers one ordinary
+stable-update check without awaiting it. Only a canonical Bun-global stable install contacts the fixed npm
+`latest` dist-tag endpoint. Source, development, unsupported, preview, disabled, and fresh-cache starts make
+no registry request. `/healthz`, Claude requests, stop/restore/uninstall, and runtime config initialization
+never wait for update identity, cache, or registry work. The strict mode-0600 cache is
+`cache/update-status-v1.json`; a failed check may retain only a previously newer result as stale.
 
 The active Claude Messages bridge sends keepalive comments during upstream silence and enforces
 `stallTimeoutSec` (default 90 seconds, minimum 1 second) from real adapter activity. At the deadline it
@@ -61,9 +70,10 @@ Trust is per request, not per network position. `src/local-access.ts` owns relay
   because `Origin`/`Host` are caller-controlled and cannot carry trust.
 - When enabled, every `/api/*`, `/v1/*`, and `/usage` request is authenticated; `/healthz` and GUI assets are not.
 - Same-machine tooling authenticates with a per-start token written to `~/.frogprogsy/local-access.token`
-  (mode `0600`, `config.ts`), not with a configured key: reading it already implies access to the config
-  directory that holds the provider credentials. The dashboard instead asks for a key and keeps it in
-  sessionStorage, attached by a single `window.fetch` wrapper (`gui/src/local-key.ts`).
+  (mode `0600`, `config.ts`), not with a configured key. This unrestricted token is sent only to loopback;
+  wildcard binds are reached through loopback, and exact non-loopback hostnames refuse token-bearing CLI
+  management calls. The dashboard instead keeps a configured key in sessionStorage and attaches it through
+  one `window.fetch` wrapper (`gui/src/local-key.ts`).
 - `frogp local-key add`/`remove` refuse while a healthy proxy is running: the server keeps the config it
   loaded at start and rewrites the whole file on profile writes, which would drop the edit — and a created
   key's plaintext is unrecoverable.

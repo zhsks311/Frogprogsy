@@ -17,6 +17,7 @@ Dashboard와 문서에서 쓰는 public schema 이름은 `ProviderConfig`와 `We
 | `~/.frogprogsy/auth.json` | OAuth provider access/refresh token store |
 | `~/.frogprogsy/claude-profiles/<cp_id>/claude-settings-backup.json` | 프로필별 FrogProgsy-owned Claude Code settings restore 백업 |
 | `~/.frogprogsy/model-aliases.json` | Claude Code-visible routed model alias map |
+| `~/.frogprogsy/cache/update-status-v1.json` | 사용자/기기 식별자를 담지 않는 strict mode 제한 안정판 update attempt/success cache |
 
 FrogProgsy는 config와 backup file을 temp-file + rename 방식으로 씁니다. API key는 literal보다 `${ENV_VAR}` 또는 `$ENV_VAR` reference를 권장합니다.
 
@@ -31,6 +32,7 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 | `port` | `number` | `10100` | Local relay listen port |
 | `hostname` | `string` | `"127.0.0.1"` | Bind hostname. `0.0.0.0`은 모든 interface에 노출하므로 명시적으로만 사용합니다. |
 | `localAccess` | object | — | Relay access key 설정. `{ enabled, keys }`이며 각 key는 `id`, `secretHash`(`sha256:<hex>`), 선택 `label`과 `requestLimit`을 가집니다. [Relay access keys](#relay-access-keys) 참고. |
+| `updateChecks` | object | 없으면 enabled | 안정판 npm metadata 확인. 일반 startup 확인을 끄려면 정확히 `{ "enabled": false }`를 설정하며 명시적 refresh와 `frogp update`는 계속 사용 가능 |
 | `providers` | object | fallback provider | Named provider lanes. key가 route prefix가 됩니다. |
 | `defaultProvider` | `string` | `"anthropic"` | 모델 id에 provider prefix가 없을 때 쓰는 routing fallback lane |
 | `subagentModels` | `string[]` | default GPT native list | Claude Code subagent picker 앞쪽에 먼저 보여줄 최대 5개 routed/native model id |
@@ -45,6 +47,12 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 | `modelMixing` | object | — | `frogp/mix` 별칭 뒤의 모델 섞어 쓰기(route/fusion/pipeline). `enabled: true` 전에는 비활성. [Model mixing fields](#model-mixing-fields) 참고. |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field; Claude Messages data plane은 HTTP/SSE 사용 |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op; Claude Code history는 건드리지 않음 |
+
+정상 Bun 전역 안정판 설치만 자동 확인을 사용합니다. 저장된 attempt 하나는 cache window 동안
+다음 일반 확인을 막고 명시적 refresh는 이를 우회할 수 있습니다. Endpoint, deadline, response
+limit은 설정할 수 없습니다. Credential, prompt, provider config, Claude state, telemetry는 보내지
+않습니다. Cache 실패 시에도 proxy는 healthy 상태를 유지하며 throttle은 현재 process로 제한됩니다.
+
 
 ## 모델 연속성
 
@@ -80,7 +88,7 @@ JSON 필드는 `providers.*` 아래의 런타임 `ProviderConfig` 객체와 `web
 - config에는 key의 `sha256:<hex>`만 저장됩니다. 평문은 `frogp local-key add`가 생성할 때 한 번만 출력되고 이후에는 복구할 수 없습니다.
 - `requestLimit`은 relay process에서 적용되는 key별 sliding window이며, 한도를 넘으면 `Retry-After`와 함께 `429`를 반환합니다.
 - 제시된 key는 upstream으로 전달되지 않으므로, `forward` lane은 실제 호출자 provider credential만 계속 전달합니다.
-- 같은 머신의 도구는 key가 필요하지 않습니다. 실행 중인 relay가 시작마다 `~/.frogprogsy/local-access.token`(mode `0600`)에 token을 쓰고, `frogp models` / `frogp doctor claude`가 그것을 전송합니다. 이 token은 config에 저장되지 않으며 재시작 후에는 남지 않습니다.
+- 같은 머신의 도구는 설정 key가 필요하지 않습니다. 실행 중인 relay가 시작마다 `~/.frogprogsy/local-access.token`(mode `0600`)에 token을 씁니다. CLI는 이 제한 없는 token을 loopback 대상으로만 보내며 wildcard bind는 loopback으로 접근합니다. 정확한 non-loopback `hostname`에서는 token이 포함된 management 호출을 거부합니다. Token은 config에 저장되지 않으며 재시작 후에는 남지 않습니다.
 - Loopback이 아닌 `hostname`은 최소 한 개의 key를 요구합니다. Docker를 처음 시작할 때 container environment 또는 secret 설정으로 `FROGP_LOCAL_ACCESS_KEY`를 전달하세요. Entrypoint는 hash만 저장하고 평문을 출력하지 않습니다. Enabled key가 저장된 volume은 이후 환경 변수 없이 다시 시작할 수 있습니다.
 - key별 `providers`/`models` scope는 아직 적용되지 않습니다. 이를 선언한 key는 조용히 무시되지 않고 시작 시 거부됩니다.
 

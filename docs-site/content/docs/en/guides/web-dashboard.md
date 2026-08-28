@@ -22,12 +22,17 @@ cd gui && bun dev
 
 | Panel | Use it for |
 | --- | --- |
-| **Dashboard** | Proxy status, version, uptime, provider count, search/image fallback settings, and auto-mode classifier model settings. |
+| **Dashboard** | Proxy status, installed/stable-update status, version, uptime, provider count, search/image fallback settings, and auto-mode classifier model settings. |
 | **Providers** | OAuth login, API-key providers, Anthropic Claude Code home rows, custom endpoints, opt-in connection tests, default provider switching, and removal. |
 | **Models** | Dashboard/API model-list reload: routed model visibility, disabled models, and Claude Code discovery state. This reloads what the dashboard and `/v1/models` expose; it is not the Claude Code picker recovery command. |
 | **Claude Code Homes** | Named Claude Code config directories, pass-through auth state, inject/restore/refresh actions, and per-home model overlays. Refresh prepares Claude Code picker recovery and shows the stable `frogp claude reload-models <profile-id>` command for that home. |
 | **Activity** | Safe request phase traces, recent logs, and local usage accounting grouped by day, model, and provider. |
 | **Stop Proxy** | Graceful shutdown plus native Claude Code restore. |
+
+For an available stable release, Home shows installed → latest, the exact `frogp update` command, explicit
+refresh, and dismissal for that version. A newer version reappears. **Details** owns the persistent
+automatic-check toggle and the npm-metadata-only privacy disclosure. The dashboard never compares versions
+or contacts npm itself; it renders the proxy's shared snapshot.
 
 ## Model list refresh vs Claude Code picker recovery
 
@@ -98,6 +103,9 @@ Most operations should stay in the UI. Use these endpoints only for automation o
 | --- | --- |
 | `GET /api/provider-state` | Non-secret provider and runtime summary. |
 | `GET /api/claude-status` | Redacted Claude Code injection/base URL, runtime/watchdog/external-supervisor, and last `/v1/messages` status. |
+| `GET /api/update-status` | Read the disk/memory snapshot only; never starts registry work. |
+| `POST /api/update-status/refresh` | Explicit bounded stable-release refresh; requires the normal local mutation guard. |
+| `PUT /api/update-settings` | Persist exactly `{enabled:boolean}` for automatic checks; explicit refresh remains available while disabled. |
 | `GET /api/providers` | Configured provider summaries. |
 | `POST /api/providers` | Add or update a provider from catalog/custom input. |
 | `POST /api/providers/test` | Opt-in single minimal-token provider connection test with enum-only error results. |

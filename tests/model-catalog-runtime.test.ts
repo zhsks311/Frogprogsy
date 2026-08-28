@@ -63,6 +63,7 @@ function runtimeDeps(input: {
   fetchImpl?: ModelCatalogRuntimeDeps["fetch"];
   cachePath?: string;
   fileSystem?: ModelCatalogRuntimeDeps["fileSystem"];
+  runtimeVersion?: string;
 } = {}): ModelCatalogRuntimeDeps & { cachePath: string } {
   const cachePath = input.cachePath ?? join(makeTempDir(), "cache", "model-catalog-v1.json");
   if (input.cacheDocument) {
@@ -72,7 +73,7 @@ function runtimeDeps(input: {
   return {
     bundled,
     cachePath,
-    runtimeVersion: "1.0.0",
+    runtimeVersion: input.runtimeVersion ?? "1.0.0",
     now: () => new Date(NOW),
     fetch: input.fetchImpl ?? (async () => {
       throw new Error("network unavailable");
@@ -321,6 +322,32 @@ describe("model catalog candidate validation", () => {
     expect(result.skippedRecords).toBe(1);
   });
 
+describe("model catalog runtime version detection", () => {
+  test("rejects an unknown runtime version before reading cache or fetching remote", async () => {
+    let cacheReads = 0;
+    let fetchCalls = 0;
+    const deps = runtimeDeps({
+      runtimeVersion: "?",
+      fileSystem: {
+        readFile: async () => {
+          cacheReads++;
+          return JSON.stringify(makeDocument());
+        },
+      },
+      fetchImpl: async () => {
+        fetchCalls++;
+        return jsonResponse(makeDocument());
+      },
+    });
+
+    await expect(refreshModelCatalog(deps)).rejects.toThrow(
+      'Frogprogsy runtime version detection failed: expected valid SemVer, received "?".',
+    );
+    expect(cacheReads).toBe(0);
+    expect(fetchCalls).toBe(0);
+  });
+});
+
 describe("model catalog refresh fallback", () => {
   const failures = [
     ["timeout", async (_input: string | URL | Request, init?: RequestInit) => {
@@ -527,7 +554,7 @@ describe("model catalog revision and cache trust", () => {
     expect(result.status.catalogDigest).toBe(bundled.catalogDigest);
   });
 
-  test("flushes a mode-0600 temp file before rename", async () => {
+  test("flushes a mode-0600 temp file and parent directory around rename", async () => {
     const remote = makeDocument();
     const events: string[] = [];
     const handle: ModelCatalogFileHandle = {
@@ -551,7 +578,9 @@ describe("model catalog revision and cache trust", () => {
     const result = await refreshModelCatalog(deps);
 
     expect(result.status.source).toBe("remote");
-    expect(events).toEqual(["mkdir", "open:wx:600", "write", "sync", "close", "rename"]);
+    expect(events).toEqual([
+      "mkdir", "open:wx:600", "write", "sync", "close", "rename", "open:r:undefined", "sync", "close",
+    ]);
   });
 
   test("an interrupted rename leaves the existing cache intact", async () => {

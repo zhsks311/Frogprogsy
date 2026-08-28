@@ -20,6 +20,7 @@ import {
   removeActivePort,
   removePid,
   saveConfig,
+  updateChecksEnabled,
   writePid,
   writeActivePort,
   writeShutdownIntent,
@@ -79,18 +80,15 @@ import type { ClaudeCodeCatalogRefreshResult } from "./claude-refresh";
 import { deleteClaudeGrantCredential, inspectClaudeGrantStatus, type ClaudeGrantStatusState } from "./claude-grant-auth";
 import { ClaudeGrantProbeError, runClaudeGrantLiveProbe } from "./claude-grant-probe";
 import { assertAllowedClaudeGrantTarget } from "./provider-auth";
+import { detectInstallIdentity, installedPackageVersion } from "./install-identity";
+import { createUpdateStatusService } from "./update-status";
+import { parseUpdateStatus } from "./update-status-contract";
+import type { UpdateStatus } from "./update-status-contract";
+import { healthHost, loopbackManagementBase, readBoundedJson } from "./cli-local-api";
 
 const args = process.argv.slice(2);
 const command = args[0];
 
-function cliVersion(): string {
-  try {
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
-    return (JSON.parse(readFileSync(pkgPath, "utf-8")).version as string) ?? "unknown";
-  } catch {
-    return "unknown";
-  }
-}
 
 function installedDevBuildId(): string | null {
   try {
@@ -105,7 +103,7 @@ function installedDevBuildId(): string | null {
 }
 
 function guiBuildWarning(): string | null {
-  const version = cliVersion();
+  const version = installedPackageVersion();
   const identity = resolveGuiBuildIdentity(
     findGuiDistFromModuleDir(dirname(fileURLToPath(import.meta.url))),
     version,
@@ -130,7 +128,7 @@ Usage:
   frogp uninstall               Remove local config, restore native Claude Code, and remove the package
   frogp gui                     Open the local dashboard
   frogp refresh                 Ensure the proxy is running and re-sync Claude Code config/models/cache
-  frogp status [--json]         Check proxy server status (JSON for scripts)
+  frogp status [--json] [--refresh-update]  Check proxy and cached stable-update status
   frogp doctor claude [--json]   Diagnose Claude Code model picker visibility
   frogp models [--json]         List routed models from the running proxy
   frogp claude <command>        Manage Claude Code homes, isolated subscription grants, and project enrollment
@@ -219,7 +217,7 @@ function printSubcommandUsage(name: string | undefined): boolean {
       break;
 
     case "status":
-      console.log("Usage: frogp status [--json]\n\nCheck proxy server status. --json prints a stable machine-readable snapshot (stdout is JSON only).");
+      console.log("Usage: frogp status [--json] [--refresh-update]\n\nCheck proxy and cached stable-update status. --refresh-update explicitly checks npm through the healthy proxy or locally only when stopped. --json prints one stable machine-readable snapshot.");
       break;
     case "models":
       console.log(`Usage:
@@ -348,18 +346,22 @@ function parsePortOption(): number | undefined {
   return port;
 }
 
-function healthHost(hostname?: string): string {
-  return !hostname || hostname === "0.0.0.0" || hostname === "::" ? "127.0.0.1" : hostname;
-}
 
 async function proxyHealthy(port?: number): Promise<boolean> {
   const config = loadConfig();
   const p = port ?? config.port ?? DEFAULT_PORT;
   try {
-    const res = await fetch(`http://${healthHost(config.hostname)}:${p}/healthz`, {
+    const response = await fetch(`http://${healthHost(config.hostname)}:${p}/healthz`, {
       signal: AbortSignal.timeout(750),
     });
-    return res.ok;
+    if (!response.ok) return false;
+    const payload = await readBoundedJson(response, 4 * 1024);
+    return payload !== null
+      && typeof payload === "object"
+      && "status" in payload
+      && payload.status === "ok"
+      && "serverBuildId" in payload
+      && payload.serverBuildId === `frogprogsy-server@${installedPackageVersion()}`;
   } catch {
     return false;
   }
@@ -371,15 +373,15 @@ async function refreshClaudeProfileThroughRunningProxy(
   profileId: string,
   includeAuthToken = false,
 ): Promise<RunningProfileRefreshResponse> {
+  const apiBase = loopbackManagementBase(config, port);
   const response = await fetch(
-    `http://${healthHost(config.hostname)}:${port}/api/claude-profiles/${encodeURIComponent(profileId)}/refresh`,
+    `${apiBase}/api/claude-profiles/${encodeURIComponent(profileId)}/refresh`,
     {
       method: "POST",
-      // Management mutations require a loopback Origin even when the authenticated relay binds to a LAN address.
       headers: {
         ...sameMachineAccessHeaders(),
         "content-type": "application/json",
-        Origin: `http://127.0.0.1:${port}`,
+        Origin: apiBase,
       },
       body: JSON.stringify(includeAuthToken ? { globalDiscoveryAuth: true } : {}),
       signal: AbortSignal.timeout(15_000),
@@ -759,8 +761,7 @@ async function handleUninstall() {
   }
   // Best-effort Bun global package removal (must run last — removes the running binary's package)
   try {
-    const { detectInstall } = await import("./update");
-    const installer = detectInstall();
+    const installer = (await detectInstallIdentity()).kind;
     if (installer === "source") {
       console.log("Source checkout — remove the directory manually (no global package removal).");
     } else if (installer === "unsupported") {
@@ -798,6 +799,7 @@ interface StatusSnapshot {
   dashboardUrl: string | null;
   recovery: string | null;
   watchdog: WatchdogSnapshot;
+  update: UpdateStatus;
 }
 
 /** Normalize the watchdog give-up file into a fixed, raw-field-free schema. */
@@ -819,15 +821,64 @@ function readWatchdogSnapshot(): WatchdogSnapshot {
   }
 }
 
-async function collectStatusSnapshot(): Promise<StatusSnapshot> {
+async function requestProxyUpdateStatus(config: FrogConfig, port: number, refresh: boolean): Promise<UpdateStatus> {
+  const apiBase = loopbackManagementBase(config, port);
+  const headers = sameMachineAccessHeaders();
+  if (refresh) headers.Origin = apiBase;
+  const response = await fetch(
+    `${apiBase}/api/update-status${refresh ? "/refresh" : ""}`,
+    {
+      method: refresh ? "POST" : "GET",
+      headers,
+      signal: AbortSignal.timeout(12_000),
+    },
+  );
+  if (!response.ok) throw new Error(`update status request failed with HTTP ${response.status}`);
+  const payload = await readBoundedJson(response, 16 * 1024);
+  const parsed = parseUpdateStatus(payload);
+  if (!parsed) throw new Error("running proxy returned an invalid update status");
+  return parsed;
+}
+
+async function collectUpdateSnapshot(
+  config: FrogConfig,
+  pid: number | null,
+  port: number | null,
+  healthy: boolean,
+  refresh: boolean,
+): Promise<UpdateStatus> {
+  if (healthy && port !== null) {
+    try {
+      return await requestProxyUpdateStatus(config, port, refresh);
+    } catch {
+      // Fall back to disk/memory only. An existing process never creates a second registry owner.
+    }
+  }
+  const service = createUpdateStatusService({ enabled: updateChecksEnabled(config) });
+  await service.prepare();
+  return refresh && pid === null ? service.refresh({ force: true }) : service.snapshot();
+}
+
+async function collectStatusSnapshot(refreshUpdate = false): Promise<StatusSnapshot> {
   const pid = readPid();
   const watchdog = readWatchdogSnapshot();
-  if (!pid) {
-    return { running: false, healthy: false, pid: null, port: null, dashboardUrl: null, recovery: "frogp start", watchdog };
-  }
   const config = loadConfig();
+  if (!pid) {
+    const update = await collectUpdateSnapshot(config, null, null, false, refreshUpdate);
+    return {
+      running: false,
+      healthy: false,
+      pid: null,
+      port: null,
+      dashboardUrl: null,
+      recovery: "frogp start",
+      watchdog,
+      update,
+    };
+  }
   const port = readActivePort() ?? config.port ?? DEFAULT_PORT;
   const healthy = await proxyHealthy(port);
+  const update = await collectUpdateSnapshot(config, pid, port, healthy, refreshUpdate);
   return {
     running: true,
     healthy,
@@ -836,6 +887,7 @@ async function collectStatusSnapshot(): Promise<StatusSnapshot> {
     dashboardUrl: healthy ? `http://localhost:${port}` : null,
     recovery: healthy ? null : "frogp refresh",
     watchdog,
+    update,
   };
 }
 
@@ -877,15 +929,29 @@ function renderHumanStatus(snapshot: StatusSnapshot, paint: boolean): void {
       console.log(warn("⚠️  Claude 모델 선택기에 GPT/codex가 없으면 진단 실행: frogp doctor claude", paint));
     }
   }
+  const update = snapshot.update;
+  if (update.status === "available" && update.latestVersion) {
+    const staleNote = update.stale ? " (cached; the latest check failed)" : "";
+    console.log(warn(`⬆️  frogprogsy ${update.installedVersion} → ${update.latestVersion}${staleNote}`, paint));
+    console.log("   Update with: frogp update");
+  } else if (update.status === "up-to-date") {
+    console.log(dim(`   Update: v${update.installedVersion} is the latest stable release.`, paint));
+  } else if (update.status === "disabled") {
+    console.log(dim("   Update checks: disabled.", paint));
+  } else if (update.status === "unavailable") {
+    console.log(dim(`   Update status: unavailable${update.failure ? ` (${update.failure})` : ""}.`, paint));
+  } else {
+    console.log(dim(`   Update status: ${update.status} install (${update.installedVersion}); no Bun stable-update action.`, paint));
+  }
 }
 
 async function handleStatus(flags: string[]) {
-  const unknown = flags.filter(flag => flag !== "--json");
+  const unknown = flags.filter(flag => flag !== "--json" && flag !== "--refresh-update");
   if (unknown.length > 0) {
-    console.error(`Unknown status option: ${unknown.join(" ")}\nUsage: frogp status [--json]`);
+    console.error(`Unknown status option: ${unknown.join(" ")}\nUsage: frogp status [--json] [--refresh-update]`);
     process.exit(1);
   }
-  const snapshot = await collectStatusSnapshot();
+  const snapshot = await collectStatusSnapshot(flags.includes("--refresh-update"));
   if (flags.includes("--json")) {
     printJson(snapshot);
     return;
@@ -1071,7 +1137,12 @@ async function runningProxyApiBaseForContinuity(): Promise<string> {
     console.error(`❌ Proxy is not answering on port ${port}. Check: frogp status, then recover with: frogp refresh (or frogp start)`);
     process.exit(1);
   }
-  return `http://${healthHost(config.hostname)}:${port}`;
+  try {
+    return loopbackManagementBase(config, port);
+  } catch (error) {
+    console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
 }
 
 async function requestModelContinuity(
@@ -1084,7 +1155,7 @@ async function requestModelContinuity(
       method: action ? "POST" : "GET",
       headers: {
         ...sameMachineAccessHeaders(),
-        ...(action ? { "content-type": "application/json" } : {}),
+        ...(action ? { "content-type": "application/json", Origin: apiBase } : {}),
       },
       ...(action ? { body: JSON.stringify(action) } : {}),
       signal: AbortSignal.timeout(5_000),
@@ -1280,7 +1351,13 @@ async function handleModels(flags: string[]) {
     console.error(`❌ Proxy is not answering on port ${port}. Check: frogp status, then recover with: frogp refresh (or frogp start)`);
     process.exit(1);
   }
-  const apiBase = `http://${healthHost(config.hostname)}:${port}`;
+  let apiBase: string;
+  try {
+    apiBase = loopbackManagementBase(config, port);
+  } catch (error) {
+    console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
   const requestOptions = {
     headers: sameMachineAccessHeaders(),
     signal: AbortSignal.timeout(5_000),
@@ -1329,7 +1406,8 @@ async function handleModels(flags: string[]) {
 async function fetchApiModelRowsForDoctor(config: ReturnType<typeof loadConfig>, port: number): Promise<ApiModelRow[]> {
   if (!readPid() || !(await proxyHealthy(port))) return [];
   try {
-    const res = await fetch(`http://${healthHost(config.hostname)}:${port}/api/models`, {
+    const apiBase = loopbackManagementBase(config, port);
+    const res = await fetch(`${apiBase}/api/models`, {
       headers: sameMachineAccessHeaders(),
       signal: AbortSignal.timeout(5_000),
     });
@@ -2640,7 +2718,7 @@ switch (command) {
   case "--version":
   case "-v": {
     const devBuildId = installedDevBuildId();
-    console.log(`frogprogsy v${cliVersion()}${devBuildId ? ` dev ${devBuildId}` : ""}`);
+    console.log(`frogprogsy v${installedPackageVersion()}${devBuildId ? ` dev ${devBuildId}` : ""}`);
     break;
   }
   case "help": {

@@ -25,6 +25,11 @@ bun add -g frogprogsy@preview
 
 `frogp update`는 Bun으로 설치한 패키지를 항상 안정판 `latest`로 옮깁니다. 시험판을 계속 쓰려면 Bun으로 `frogprogsy@preview`를 다시 설치하세요.
 
+일반 Bun 전역 안정판 설치에서는 프록시 시작 뒤 npm 안정판 릴리스 정보를 백그라운드에서 확인하고
+대시보드와 `frogp status`에 사용 가능한 버전을 표시합니다. 자동 설치나 재시작은 하지 않습니다.
+**자세한 설정**에서 자동 확인을 끌 수 있으며, 명시적인 `frogp status --refresh-update`와
+`frogp update`는 계속 사용자가 직접 실행합니다.
+
 시험판은 공개된 변경 불가 후보이므로 안정판보다 불안정할 수 있습니다. `preview` 태그는 새 후보로
 이동하므로 특정 후보를 유지하려면 버전을 정확히 지정해 설치하세요. 유지관리자는
 [라벨 기반 릴리스 절차](structure/06_docs-and-release.md#release-strategy)를 따르세요.

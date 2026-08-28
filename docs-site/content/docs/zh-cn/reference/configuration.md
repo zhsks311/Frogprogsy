@@ -17,6 +17,7 @@ Dashboard 与文档使用的 public schema 名称是 `ProviderConfig` 和 `WebSe
 | `~/.frogprogsy/auth.json` | OAuth provider access/refresh token store |
 | `~/.frogprogsy/claude-profiles/<cp_id>/claude-settings-backup.json` | 按 profile 隔离的 FrogProgsy-owned Claude Code settings restore 备份 |
 | `~/.frogprogsy/model-aliases.json` | Claude Code-visible routed model alias map |
+| `~/.frogprogsy/cache/update-status-v1.json` | 不含用户/机器标识符的 strict、权限受限稳定版 update attempt/success cache |
 
 FrogProgsy 通过 temp-file + rename 写入 config 与 backup file。API key 建议使用 `${ENV_VAR}` 或 `$ENV_VAR` reference，而不是 literal key。
 
@@ -31,6 +32,7 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 | `port` | `number` | `10100` | Local relay listen port |
 | `hostname` | `string` | `"127.0.0.1"` | Bind hostname。`0.0.0.0` 会暴露到所有 interface，只应显式使用。 |
 | `localAccess` | object | — | Relay access key 配置。`{ enabled, keys }`，每个 key 含 `id`、`secretHash`（`sha256:<hex>`）以及可选的 `label` 与 `requestLimit`。参见 [Relay access keys](#relay-access-keys)。|
+| `updateChecks` | object | 缺省时 enabled | 稳定版 npm metadata 检查。要关闭普通 startup 检查，只设置 `{ "enabled": false }`；显式 refresh 与 `frogp update` 仍可用 |
 | `providers` | object | fallback provider | Named provider lanes。key 会成为 route prefix。 |
 | `defaultProvider` | `string` | `"anthropic"` | model id 没有 provider prefix 时使用的 routing fallback lane |
 | `subagentModels` | `string[]` | default GPT native list | Claude Code subagent picker 前面优先显示的最多 5 个 routed/native model id |
@@ -45,6 +47,12 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 | `modelMixing` | object | — | `frogp/mix` 别名背后的模型混合（route/fusion/pipeline）。`enabled: true` 前为禁用。见 [Model mixing fields](#model-mixing-fields)。 |
 | `websockets` | `boolean` | `false` | Legacy ignored compatibility field；Claude Messages data plane 使用 HTTP/SSE |
 | `syncResumeHistory` | `boolean` | `false` | Legacy ignored/no-op；不修改 Claude Code history |
+
+只有标准 Bun 全局稳定版安装使用自动检查。一个持久化 attempt 会在 cache window 内阻止下一次
+普通检查；显式 refresh 可以绕过。Endpoint、deadline、response limit 不可配置。不会发送
+credential、prompt、provider config、Claude state 或 telemetry。Cache 失败时 proxy 仍保持
+healthy，throttle 仅限当前 process。
+
 
 ## 模型连续性
 
@@ -80,7 +88,7 @@ JSON 字段对应 `providers.*` 下的运行时 `ProviderConfig` 对象，以及
 - config 只保存 key 的 `sha256:<hex>`。明文仅在 `frogp local-key add` 创建时输出一次，之后无法恢复。
 - `requestLimit` 是在 relay 进程内生效的按 key sliding window；超出后返回 `429` 并带 `Retry-After`。
 - 提供的 key 不会转发到 upstream，因此 `forward` lane 仍然只转发真实的调用方 provider credential。
-- 同一台机器上的工具不需要 key：运行中的 relay 会在每次启动时把 token 写入 `~/.frogprogsy/local-access.token`（mode `0600`），`frogp models` / `frogp doctor claude` 会发送它。该 token 不保存在 config 中，也不会在重启后保留。
+- 同一台机器上的工具不需要配置 key：运行中的 relay 会在每次启动时把 token 写入 `~/.frogprogsy/local-access.token`（mode `0600`）。CLI 只会把这个无限制 token 发送到 loopback；wildcard bind 也通过 loopback 访问。对于精确的非 loopback `hostname`，会拒绝携带 token 的 management call。该 token 不保存在 config 中，也不会在重启后保留。
 - 非 loopback 的 `hostname` 至少需要一个 key。首次启动 Docker 时，请通过 container environment 或 secret 配置提供 `FROGP_LOCAL_ACCESS_KEY`。Entrypoint 只保存 hash，绝不输出明文。Volume 中已有 enabled key 时，之后无需再次提供该环境变量即可重启。
 - 按 key 的 `providers`/`models` scope 尚未生效；声明它们的 key 会在启动时被拒绝，而不是静默失效。
 

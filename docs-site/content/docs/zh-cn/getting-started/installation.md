@@ -31,6 +31,13 @@ bun add -g frogprogsy@preview
 
 `frogp update` 始终把 Bun 管理的安装更新到稳定版 `latest`。要继续使用预览版，请用 Bun 重新安装 `frogprogsy@preview`。
 
+对于标准的 Bun 全局稳定版安装，proxy 启动后只会在后台检查 npm 上 FrogProgsy 的稳定版
+发布信息。有新稳定版时，dashboard 和 `frogp status` 会显示已安装版本 → 最新版本以及准确的
+`frogp update` 命令。检测不会安装、重启或写入 Claude Code 状态，也不会发送 prompt、
+provider 设置、credential、Claude home 数据或稳定标识符。可在 dashboard 的
+**详细设置**中关闭自动检查；显式的 `frogp status --refresh-update` 与 `frogp update`
+仍可使用。
+
 如果要从源码仓库安装，而不是使用 registry package：
 
 ```bash

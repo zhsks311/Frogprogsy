@@ -43,7 +43,7 @@ frogp --version
 | `frogp stop` | process, Claude Code settings/catalog | 停止 proxy，并为所有已配置的 Claude Code 目录恢复 native Claude Code 状态。托管 launcher 会保留；proxy 停止时它们直通 native Claude Code。 |
 | `frogp restore` | Claude Code settings/catalog | 不停止运行中的 proxy，只从所有已配置的 Claude Code 目录中移除 FrogProgsy-owned Claude Code settings/catalog entry。没有 active proxy 时，托管 launcher 会直通 native Claude Code。 |
 | `frogp uninstall` | config, Claude Code settings/catalog, launcher shim, installed package | 移除 FrogProgsy local config，恢复 native Claude Code 状态，移除包含托管 launcher 的 config directory，并移除全局包。 |
-| `frogp status [--json]` | 无 | 输出 PID guard，在 active port 上检查 relay health，并给出 dashboard URL。有 PID 但无响应时提示 `frogp refresh`；未运行时提示 `frogp start`。`--json` 输出稳定 schema 快照：`running`、`healthy`、`pid`、`port`、`dashboardUrl`、`recovery`，以及固定字段的 `watchdog` 对象（`present`、`attempts`、`gaveUpAt`、`unreadable`）— 绝不暴露 watchdog 文件的 raw 字段。relay 停止时 exit code 仍为 0。 |
+| `frogp status [--json] [--refresh-update]` | 仅显式 refresh 时更新 cache | 输出 relay health 与共享稳定版 update snapshot。Healthy relay 是 update GET/POST 的唯一 owner；relay 停止时只读取本地 cache，只有 `--refresh-update` 才连接 npm。有无响应 PID 时不会启动第二个 checker。人类可读输出只在 `available` 时显示已安装版本 → 最新版本与 `frogp update`。`--json` 在固定 `watchdog` 对象旁新增规范化 `update`（`enabled`、`installKind`、`installedVersion`、`status`、`latestVersion`、`checkedAt`、`lastAttemptAt`、`stale`、`nextCheckAt`、`failure`），并仍只输出一个 JSON 文档。 |
 
 ## Provider and account
 
@@ -120,7 +120,12 @@ Dashboard 是查看 config、route、safe request log、usage summary 的运营�
 
 | Command | Mutates | Effect |
 | --- | --- | --- |
-| `frogp update [--no-restart]` | installed package | 使用 Bun 更新到已发布的最新版本并重启 proxy（`--no-restart` 跳过重启）。若在包注册表中找不到该包，会在不做任何更改的情况下明确失败；source checkout 会被提示使用 `git pull && bun install`。 |
+| `frogp update [--no-restart]` | installed package | 显式把 Bun 管理的安装更新到经过验证的稳定版 `latest` 并重启 proxy（`--no-restart` 可跳过）。Registry 版本相同或更旧时不替换包；source、unsupported、development 安装会失败或给出准确替代方式。自动检查绝不会调用此命令。 |
 | `frogp version` | 无 | 输出已安装的 frogprogsy version（`--version` / `-v` 相同）。 |
 | `frogp help [command]` | 无 | 输出完整 command map，或某个 command 的 usage。 |
 | `frogp <command> --help` | 无 | 输出该 command usage。 |
+
+对于符合条件的 Bun 全局稳定版安装，listener 准备完成后会检查固定的官方 npm 稳定版
+dist-tag endpoint，并使用持久 cache window。Preview、source、development、unsupported 安装
+不会收到更新 CTA，也不会自动安装或重启。将 `updateChecks.enabled` 设为 `false` 可关闭普通检查；
+显式 status refresh 与 update 仍可使用。

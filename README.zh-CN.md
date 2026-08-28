@@ -25,6 +25,11 @@ bun add -g frogprogsy@preview
 
 `frogp update` 始终把 Bun 管理的安装切换到稳定版 `latest`。要继续使用预览版，请用 Bun 重新安装 `frogprogsy@preview`。
 
+对于普通的 Bun 全局稳定版安装，proxy 启动后会在后台检查 npm 稳定版发布信息，并在
+dashboard 和 `frogp status` 中显示可用版本。它不会自动安装或重启。可以在
+**详细设置**中关闭自动检查；显式的 `frogp status --refresh-update` 与 `frogp update`
+仍由你主动执行。
+
 预览版是公开且不可变的候选版本，稳定性可能不如正式版。`preview` tag 会指向更新的候选版本；
 如需固定某个候选版本，请安装其确切版本号。维护者请遵循
 [基于标签的发布流程](structure/06_docs-and-release.md#release-strategy)。

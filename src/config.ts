@@ -84,6 +84,10 @@ export function getModelCatalogCachePath(): string {
   return join(getConfigDir(), "cache", "model-catalog-v1.json");
 }
 
+export function getUpdateStatusCachePath(): string {
+  return join(getConfigDir(), "cache", "update-status-v1.json");
+}
+
 export function getConfigPath(): string {
   return resolveConfigPath();
 }
@@ -185,6 +189,10 @@ export function saveConfig(config: FrogConfig): void {
 
 export function websocketsEnabled(_config: Pick<FrogConfig, "websockets">): boolean {
   return false;
+}
+
+export function updateChecksEnabled(config: Pick<FrogConfig, "updateChecks">): boolean {
+  return config.updateChecks?.enabled !== false;
 }
 
 
