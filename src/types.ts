@@ -615,6 +615,15 @@ export interface FrogProviderConfig {
   /** Claude grant id (`cg_...`) bound to this provider when `authMode` is `"claude-grant"`. */
   claudeGrantId?: string;
   /**
+   * Request-scoped auth metadata resolved from the credential broker. This field is never persisted
+   * or returned by management APIs; adapters use it only while building one upstream request.
+   */
+  runtimeAuth?: {
+    kind: "kiro";
+    region: string;
+    profileArn: string;
+  };
+  /**
    * Provider-wide Claude Code-visible reasoning tiers for routed models. Use only Claude Code-supported labels
    * here (`low`, `medium`, `high`, `xhigh`); translate to provider-specific wire values with
    * `reasoningEffortMap` / `modelReasoningEffortMap` below.

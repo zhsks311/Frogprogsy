@@ -49,13 +49,14 @@ frogp --version
 
 | Command | Mutates | Effect |
 | --- | --- | --- |
-| `frogp login --list` | 无 | read-only provider 列表：输出 OAuth 组（codex、xai、kimi）、API-key 组以及 `openai` 别名说明，然后 exit 0。 |
+| `frogp login --list` | 无 | read-only provider 列表：输出 account 组（codex、xai、kimi、kiro）、API-key 组以及 `openai` 别名说明，然后 exit 0。 |
 | `frogp login codex` | OAuth store, config | 创建 OpenAI Codex/ChatGPT OAuth lane。 |
 | `frogp login openai` | config | 保存 OpenAI API-key provider（`openai` 是 `openai-apikey` 的别名；ChatGPT 账号登录用 `codex`）。 |
 | `frogp login xai` | OAuth store, config | 创建 xAI OAuth lane。 |
 | `frogp login kimi` | OAuth store, config | 创建 Kimi OAuth lane。 |
+| `frogp login kiro` | OAuth store, config | 导入当前官方 Kiro CLI session，或运行官方交互式 `kiro-cli login`；native SQLite 保持 read-only。 |
 | `frogp login <catalog-provider>` | config 或 OAuth store | 添加 provider registry 中的 API-key/OAuth/local provider。拼写接近时会输出 `Did you mean: frogp login <provider>?` 建议；OAuth 失败以 `Login failed for <provider>: <原因>` 加重试指引报告，而不是 raw 堆栈。 |
-| `frogp logout <provider>` | OAuth store | 删除该 provider 的已保存 OAuth credential。缺少参数或该 provider 未登录时会失败，并列出当前已保存的登录。它不是 API-key provider 删除命令。 |
+| `frogp logout <provider>` | OAuth store | 删除该 provider 的已保存 account credential，并 refresh 运行中 relay 的 model readiness。缺少参数或该 provider 未登录时会失败，并列出当前已保存的登录。它不是 API-key provider 删除命令。`frogp logout kiro` 只删除 FrogProgsy 副本，native Kiro CLI session 保持不变。 |
 | `frogp local-key list` | 无 | 列出 relay access key（id、label、request limit）以及 relay 认证是否启用。不会输出 key 本身。|
 | `frogp local-key add <label> [--limit <maxRequests>/<windowSec>]` | config | 创建 relay access key、启用 `localAccess`，并一次性输出明文 key。config 只保留其 SHA-256 hash。需先停止 proxy：运行中的 proxy 会用启动时的快照重写 config，从而丢失新 key。|
 | `frogp local-key remove <id-or-label>` | config | 删除一个 relay access key（同样需先停止 proxy）。删除最后一个 key 会关闭 relay 认证，此时非 loopback 的 `hostname` 将拒绝启动。|
@@ -63,6 +64,7 @@ frogp --version
 Credential 位置与暴露规则：
 
 - OAuth credential 存在 `~/.frogprogsy/auth.json`。
+- Kiro credential 从各操作系统的 native Kiro CLI database 复制到 `~/.frogprogsy/auth.json`；native database 是 read-only，social/OIDC refresh path 绝不互相 fallback。
 - API-key provider 存在 `~/.frogprogsy/config.json`。
 - 直接编辑时建议使用 `${ENV_VAR}` 或 `$ENV_VAR` reference，而不是 literal key。
 - Request log、usage log、dashboard safe log 不保存 API key、OAuth token、prompt body、account identity。

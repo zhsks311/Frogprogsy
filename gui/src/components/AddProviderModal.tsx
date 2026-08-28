@@ -125,6 +125,7 @@ export default function AddProviderModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [oauthSupported, setOauthSupported] = useState<string[]>([]);
+  const [oauthLoginModes, setOauthLoginModes] = useState<Record<string, "browser" | "cli">>({});
   const [oauthBusy, setOauthBusy] = useState(false);
   const [oauthMsg, setOauthMsg] = useState("");
   const [presets, setPresets] = useState<Preset[]>(FALLBACK_PRESETS);
@@ -175,7 +176,13 @@ export default function AddProviderModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [close]);
   useEffect(() => {
-    fetch(`${apiBase}/api/oauth/providers`).then(r => r.json()).then(d => setOauthSupported(d.providers ?? [])).catch(() => {});
+    fetch(`${apiBase}/api/oauth/providers`).then(r => r.json()).then((data: {
+      providers?: string[];
+      loginModes?: Record<string, "browser" | "cli">;
+    }) => {
+      setOauthSupported(data.providers ?? []);
+      setOauthLoginModes(data.loginModes ?? {});
+    }).catch(() => {});
   }, [apiBase]);
   useEffect(() => {
     fetch(`${apiBase}/api/provider-presets`).then(r => r.json()).then((d: { providers?: Preset[] }) => {
@@ -354,6 +361,8 @@ export default function AddProviderModal({
   const isCustom = preset?.id === "custom";
   const selectedPresetLabel = preset ? presetLabel(preset) : "";
   const selectedPresetNote = preset ? presetNote(preset) : "";
+  const selectedOauthProvider = preset?.oauthProvider ?? "";
+  const selectedOauthLoginMode = oauthLoginModes[selectedOauthProvider];
 
   return (
     <div role="dialog" aria-modal="true" aria-label={t("modal.title")} className="modal-overlay" onClick={close}>
@@ -397,8 +406,12 @@ export default function AddProviderModal({
             // OAuth login pane
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div className="muted" style={{ fontSize: 13 }}>{selectedPresetNote || t("modal.oauthNote")}</div>
-              {oauthSupported.includes(preset.oauthProvider ?? "") ? (
-                <button className="btn btn-primary" onClick={() => loginOAuth(preset.oauthProvider!)} disabled={oauthBusy}
+              {selectedOauthLoginMode === "cli" ? (
+                <div style={{ fontSize: 13, color: "var(--accent-hover)", background: "var(--accent-soft)", border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)", padding: "10px 12px" }}>
+                  {t("prov.terminalLogin", { cmd: `frogp login ${selectedOauthProvider}` })}
+                </div>
+              ) : oauthSupported.includes(selectedOauthProvider) ? (
+                <button className="btn btn-primary" onClick={() => loginOAuth(selectedOauthProvider)} disabled={oauthBusy}
                   style={{ width: "100%", padding: "12px 16px", fontSize: 14 }}>
                   <IconLock />{oauthBusy ? t("modal.waitingBrowser") : t("modal.logInWith", { label: selectedPresetLabel })}
                 </button>
@@ -409,7 +422,9 @@ export default function AddProviderModal({
               )}
               {oauthMsg && <div style={{ fontSize: 12, whiteSpace: "pre-wrap", color: oauthMsgTone === "warn" ? "var(--amber)" : "var(--accent-hover)" }}>{oauthMsg}</div>}
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
-                <button className="link-btn" onClick={() => { setForm({ ...form, authMode: "key" }); setOAuthMessage(""); }}>{t("modal.useApiKeyInstead")}</button>
+                {selectedOauthLoginMode !== "cli" && (
+                  <button className="link-btn" onClick={() => { setForm({ ...form, authMode: "key" }); setOAuthMessage(""); }}>{t("modal.useApiKeyInstead")}</button>
+                )}
                 <div style={{ flex: 1 }} />
                 <button className="btn btn-ghost" onClick={back}>{t("modal.back")}</button>
               </div>

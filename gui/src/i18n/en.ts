@@ -139,6 +139,7 @@ export const en = {
   "prov.notLoggedIn": "not logged in",
   "prov.logout": "Logout",
   "prov.loginWith": "Login with {provider}",
+  "prov.terminalLogin": "Run {cmd} in a terminal to sign in.",
   "prov.waitingBrowser": "Waiting for browser…",
   "prov.didntOpen": "Didn't open? Click here",
   "prov.enterCode": "Enter code",
@@ -182,6 +183,7 @@ export const en = {
   "prov.testCode.requestFailed": "request failed",
   "prov.testCode.providerNon2xx": "provider returned non-2xx",
   "prov.testCode.bridgeParseError": "unexpected response",
+  "prov.testCode.probeUnavailable": "no non-billable probe",
   "common.close": "Close",
   "common.back": "Back",
 

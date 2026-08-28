@@ -1109,6 +1109,7 @@ describe("CLI subcommand help", () => {
     expect(result.stdout).toContain("frogprogsy (frogp)");
     expect(result.stdout).toContain("frogp login [--list|<provider>]");
     expect(result.stdout).toContain("codex, openai, xai, kimi");
+    expect(result.stdout).toContain("kiro");
     expect(result.stdout).toContain("frogp login codex");
     expect(result.stdout).not.toContain("frogp service <sub>");
     expect(result.stdout).not.toContain("frogp claude-shim <sub>");

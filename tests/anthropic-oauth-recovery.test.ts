@@ -13,8 +13,11 @@ describe("Anthropic OAuth removal", () => {
     expect(deriveOAuthIds()).not.toContain("anthropic");
     expect(deriveOAuthProviderConfig("anthropic")).toBeUndefined();
 
-    await expect(refreshOAuthCredential("anthropic", "stale-refresh"))
-      .rejects.toThrow("Unknown OAuth provider: anthropic");
+    await expect(refreshOAuthCredential("anthropic", {
+      access: "stale-access",
+      refresh: "stale-refresh",
+      expires: 0,
+    })).rejects.toThrow("Unknown OAuth provider: anthropic");
   });
 
   test("keeps Anthropic available as Claude Code pass-through guidance", () => {

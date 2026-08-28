@@ -17,6 +17,14 @@ or outputless terminal envelopes into an `AdapterEvent` error. The Messages brid
 Code, and request logs must finish with `provider_stream_error` or `provider_response_error` rather than recording a
 blank `200 completed` request.
 
+Kiro remains an Anthropic Messages ingress route but uses the upstream
+`AmazonCodeWhispererStreamingService.GenerateAssistantResponse` AWS binary event stream. The adapter validates
+prelude and message CRCs across arbitrary chunk boundaries, deduplicates repeated content events, and preserves
+tool-input fragments as `tool_call_delta` values so `messages/bridge.ts` emits exact `input_json_delta` fragments.
+A new Kiro tool-start closes the preceding tool block before opening the next. Inline exceptions, truncated or
+malformed frames, input without an active tool, a stream ending mid-tool, and an outputless stream emit one safe
+terminal error and never a normal `message_stop`.
+
 OpenAI/ChatGPT forward routes use `authMode:"forward"` and forward only the allowed Claude Code/OpenAI auth/session
 headers. Anthropic forward routes use the `anthropic` adapter and forward only real `Authorization` or `x-api-key`
 values; the local `local-frogprogsy` marker is stripped before upstream traffic.

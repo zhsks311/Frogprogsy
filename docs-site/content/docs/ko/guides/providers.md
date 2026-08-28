@@ -97,6 +97,7 @@ OAuth 계정은 `~/.frogprogsy/auth.json`에 저장되고 만료 전에 갱신�
 frogp login codex        # ChatGPT/Codex 계정, Codex backend로 route
 frogp login xai          # xAI Grok
 frogp login kimi         # Moonshot Kimi
+frogp login kiro         # 공식 Kiro CLI 로그인을 가져오거나 시작
 frogp logout <provider>
 ```
 
@@ -105,6 +106,10 @@ frogp logout <provider>
 | `codex` | `https://chatgpt.com/backend-api/codex`의 `openai-responses` 연결 | Claude Code를 바꾸지 않고 Codex/ChatGPT 계정으로 요청을 보냅니다. |
 | `xai` | `https://api.x.ai/v1`의 `openai-chat` 연결 | Grok 쪽 차이는 FrogProgsy가 연결 경계에서 맞춥니다. |
 | `kimi` | `https://api.kimi.com/coding/v1`의 `openai-chat` 연결 | Kimi 코딩 모델을 같은 모델 목록에 넣습니다. |
+| `kiro` | credential region의 Kiro runtime으로 보내는 `kiro` adapter 연결 | Claude Messages, tool call, image, binary event stream을 명시적으로 선택한 Kiro model id로 처리합니다. |
+
+
+Kiro 로그인은 터미널에서 진행합니다. 공식 `kiro-cli`를 설치하고 `kiro-cli login`으로 로그인한 다음 `frogp login kiro`를 실행하세요. 현재 native session이 없으면 FrogProgsy가 같은 공식 로그인 명령을 시작합니다. FrogProgsy는 운영체제별 Kiro SQLite database를 read-only로 읽고, 결과 session을 자체 권한 제한 `auth.json`에 복사하며, social session과 OIDC session을 서로 다른 provider endpoint로 갱신합니다. `frogp logout kiro`는 FrogProgsy의 복사본만 제거하고 `kiro-cli logout`을 실행하거나 Kiro database를 수정하지 않습니다. Dashboard는 저장된 로그인 상태와 터미널 안내를 표시하지만, 이 route에는 비과금 runtime probe가 없으므로 live 연결 확인이라고 표시하지 않습니다. `kiro/claude-sonnet-4.6`, `kiro/gpt-5.6-sol`처럼 model route를 명시적으로 선택하세요. FrogProgsy는 `auto`나 다른 provider로 조용히 대체하지 않습니다.
 
 일반 OpenAI API key billing은 ChatGPT/Codex OAuth와 분리됩니다.
 

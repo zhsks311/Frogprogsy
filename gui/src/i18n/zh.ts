@@ -139,6 +139,7 @@ export const zh: Record<TKey, string> = {
   "prov.notLoggedIn": "未登录",
   "prov.logout": "退出登录",
   "prov.loginWith": "使用 {provider} 登录",
+  "prov.terminalLogin": "请在终端中运行 {cmd} 登录。",
   "prov.waitingBrowser": "等待浏览器…",
   "prov.didntOpen": "没有打开？点击这里",
   "prov.enterCode": "Enter code",
@@ -182,6 +183,7 @@ export const zh: Record<TKey, string> = {
   "prov.testCode.requestFailed": "请求失败",
   "prov.testCode.providerNon2xx": "提供方返回非 2xx",
   "prov.testCode.bridgeParseError": "响应异常",
+  "prov.testCode.probeUnavailable": "无非计费探测接口",
   "common.close": "关闭",
   "common.back": "返回",
 

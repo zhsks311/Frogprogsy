@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatLoginFailure, providerConfigFromKeyLoginProvider } from "../src/oauth/login-cli";
+import { oauthProviderLoginModes, startLoginFlow } from "../src/oauth";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
@@ -27,11 +28,12 @@ describe("CLI login provider help", () => {
       const result = runCli(["login", "--list"], home);
       expect(result.status).toBe(0);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toContain("OAuth login:");
+      expect(result.stdout).toContain("Account login:");
       expect(result.stdout).toContain("codex");
       expect(result.stdout).toContain("anthropic");
       expect(result.stdout).toContain("xai");
       expect(result.stdout).toContain("kimi");
+      expect(result.stdout).toContain("kiro");
       expect(result.stdout).toContain("API-key login:");
       expect(result.stdout).toContain("openai-apikey");
       expect(result.stdout).toContain("openai is an alias for openai-apikey");
@@ -46,7 +48,7 @@ describe("CLI login provider help", () => {
       const result = runCli(["login"], home);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("Usage: frogp login [--list|<provider>]");
-      expect(result.stderr).toContain("OAuth login:");
+      expect(result.stderr).toContain("Account login:");
       expect(result.stderr).toContain("API-key login:");
       expect(result.stderr).toContain("openai is an alias for openai-apikey");
       expect(existsSync(join(home, "config.json"))).toBe(false);
@@ -67,11 +69,16 @@ describe("CLI login provider help", () => {
     }
   });
 
-  test("OAuth login failure formatter includes provider and cause without stack frames", () => {
+  test("account login failure formatter includes provider and cause without stack frames", () => {
     const message = formatLoginFailure("codex", new Error("callback timed out"));
     expect(message).toContain("Login failed for codex: callback timed out");
     expect(message).toContain("Try again: frogp login codex");
     expect(message).not.toContain("at ");
+  });
+
+  test("Kiro is terminal-owned and cannot start a dashboard browser flow", async () => {
+    expect(oauthProviderLoginModes().kiro).toBe("cli");
+    await expect(startLoginFlow("kiro")).rejects.toThrow("frogp login kiro");
   });
 
   test("key login seed stores the original catalog identity without managed metadata", () => {
