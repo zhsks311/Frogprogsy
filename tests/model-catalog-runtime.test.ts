@@ -290,6 +290,14 @@ describe("model catalog candidate validation", () => {
 
     expect(validateCatalogCandidate(future, bundled, "1.0.0", NOW).ok).toBeFalse();
   });
+
+  test("accepts the maximum safe revision and rejects a higher positive value", () => {
+    const maximum = makeDocument({ revision: Number.MAX_SAFE_INTEGER });
+    const unsafe = makeDocument({ revision: Number.MAX_SAFE_INTEGER + 1 });
+
+    expect(validateCatalogCandidate(maximum, bundled, "1.0.0", NOW).ok).toBeTrue();
+    expect(validateCatalogCandidate(unsafe, bundled, "1.0.0", NOW).ok).toBeFalse();
+  });
 });
 
   test("rejects a parseable date that is not an ISO offset datetime", () => {
@@ -329,6 +337,9 @@ describe("model catalog refresh fallback", () => {
     ["malformed", async () => new Response("{", { headers: { "content-type": "application/json" } })],
     ["schema", async () => jsonResponse({ schemaVersion: 2 })],
     ["future-time", async () => jsonResponse(makeDocument({ generatedAt: "2030-01-01T00:00:00.000Z" }))],
+    ["unsafe-revision", async () => jsonResponse(makeDocument({
+      revision: Number.MAX_SAFE_INTEGER + 1,
+    }))],
   ] as const;
 
   for (const [failure, fetchImpl] of failures) {

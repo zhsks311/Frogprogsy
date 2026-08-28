@@ -200,7 +200,7 @@ function validateEnvelope(raw: unknown, runtimeVersion: string, now: Date): raw 
   if (Object.keys(raw).some(key => !allowedKeys.has(key))) return false;
   if (raw.schemaVersion !== 1
     || typeof raw.catalogRevision !== "number"
-    || !Number.isInteger(raw.catalogRevision)
+    || !Number.isSafeInteger(raw.catalogRevision)
     || raw.catalogRevision <= 0
     || typeof raw.catalogDigest !== "string"
     || !SHA256_PATTERN.test(raw.catalogDigest)

@@ -33,8 +33,11 @@ A model that needs a new adapter, transport, or request transformation requires 
 
 Decision (2026-08-27): for the catalog v1 model-only scope, Frogprogsy accepts the
 maintainer-controlled GitHub repository, Actions workflows and their hosted runners/build
-dependencies, GitHub Pages/CDN, HTTPS, and the system CA store as the publication trust boundary.
-Catalog v1 does not require an independent publisher signature.
+dependencies, GitHub Pages/CDN, HTTPS, and the Bun process's effective TLS trust configuration as
+the publication trust boundary. Bun fetch trusts bundled Mozilla roots by default and can also use
+configured system or extra CA roots. This decision assumes certificate verification remains
+enabled; process-level settings that add roots or disable verification expand or weaken the
+boundary. Catalog v1 does not require an independent publisher signature.
 
 The catalog digest detects corruption and conflicting canonical provider/model payloads for one
 revision; it does not cover the surrounding envelope. It is not independent publisher
@@ -57,13 +60,13 @@ headers, credentials, executable code, or persisted user selections. The install
 strict parser remain authoritative for those fields and for which catalog behavior is understood.
 
 After a publication-path compromise, maintainers normally restore the trusted path and publish
-corrected model data under a higher revision. That recovery has a known saturation limit:
-`catalogRevision` accepts `Number.MAX_SAFE_INTEGER`, no higher JSON integer is accepted, and an
-equal revision with a different digest is rejected. A forged maximum revision therefore requires
-a package/runtime or guarded publication-recovery change plus remediation of affected caches;
+corrected model data under a higher revision. Runtime and publication validation accept only
+positive JavaScript safe integers for `catalogRevision`, capped at `Number.MAX_SAFE_INTEGER`; an
+equal revision with a different digest is rejected. A forged maximum revision therefore requires a
+package/runtime or guarded publication-recovery change plus remediation of affected caches;
 clearing one cache is not durable while the compromised remote remains available. Ordinary
-network, parsing, schema, or compatibility failures continue to use the last valid cache or
-bundled fallback.
+network, parsing, schema, or compatibility failures continue to use the last valid cache or bundled
+fallback.
 
 Reconsider independent publisher authentication before expanding the remote schema or giving an
 existing field authority beyond this model-only damage limit, moving publication outside the
