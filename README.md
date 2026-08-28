@@ -142,7 +142,7 @@ If you want a Claude subscription to answer alongside Codex in the same session 
 
 ```bash
 frogp claude grants add "Work Claude"     # prints a login command; frogprogsy never runs it
-frogp claude grants status                # ok / reauth required / unreadable / none — no secrets
+frogp claude grants status                # ok / expiring / none / unreadable / reauth_required / dangling — no secrets
 frogp providers set anthropic --auth claude-grant --grant <cg_id>
 ```
 

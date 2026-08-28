@@ -142,7 +142,7 @@ claude "解释这个项目的入口点"
 
 ```bash
 frogp claude grants add "Work Claude"     # prints a login command; frogprogsy never runs it
-frogp claude grants status                # ok / reauth required / unreadable / none — no secrets
+frogp claude grants status                # ok / expiring / none / unreadable / reauth_required / dangling — no secrets
 frogp providers set anthropic --auth claude-grant --grant <cg_id>
 ```
 
