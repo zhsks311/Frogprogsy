@@ -309,23 +309,44 @@ describe("stable update status service", () => {
     expect(requests).toBe(1);
   });
 
-  test("default-on opt-out suppresses ordinary work but explicit refresh remains available", async () => {
-    let requests = 0;
-    const update = createUpdateStatusService({
-      enabled: false,
-      cachePath: tempCachePath(),
-      identityHint: identity(),
-      detectInstall: async () => identity(),
-      fetch: async () => {
-        requests += 1;
-        return Response.json({ latest: "1.2.4" });
-      },
-    });
-    expect((await update.refresh({ force: false })).status).toBe("disabled");
-    expect(requests).toBe(0);
-    const forced = await update.refresh({ force: true });
-    expect(forced.status).toBe("disabled");
-    expect(forced.latestVersion).toBe("1.2.4");
-    expect(requests).toBe(1);
+  test("opt-out keeps passive status disabled while explicit refresh reports the fetched result", async () => {
+    for (const [latestVersion, expectedStatus] of [
+      ["1.2.4", "available"],
+      ["1.2.3", "up-to-date"],
+    ] as const) {
+      let requests = 0;
+      const update = createUpdateStatusService({
+        enabled: false,
+        cachePath: tempCachePath(),
+        identityHint: identity(),
+        detectInstall: async () => identity(),
+        fetch: async () => {
+          requests += 1;
+          return Response.json({ latest: latestVersion });
+        },
+      });
+      expect(update.snapshot()).toMatchObject({
+        enabled: false,
+        status: "disabled",
+        nextCheckAt: null,
+      });
+      expect((await update.refresh({ force: false })).status).toBe("disabled");
+      expect(requests).toBe(0);
+
+      const forced = await update.refresh({ force: true });
+      expect(forced).toMatchObject({
+        enabled: false,
+        status: expectedStatus,
+        latestVersion,
+        nextCheckAt: null,
+      });
+      expect(requests).toBe(1);
+      expect(update.snapshot()).toMatchObject({
+        enabled: false,
+        status: "disabled",
+        latestVersion,
+        nextCheckAt: null,
+      });
+    }
   });
 });

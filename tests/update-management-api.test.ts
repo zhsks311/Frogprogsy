@@ -89,8 +89,22 @@ describe("update management API", () => {
     );
     expect(response?.status).toBe(200);
     const payload = await response?.json();
-    expect(payload.status).toBe("disabled");
-    expect(payload.latestVersion).toBe("1.2.4");
+    expect(payload).toMatchObject({
+      enabled: false,
+      status: "available",
+      latestVersion: "1.2.4",
+      nextCheckAt: null,
+    });
+    expect(cfg.updateChecks).toEqual({ enabled: false });
+    expect(update.registryRequests()).toBe(1);
+
+    const passive = await request(
+      cfg,
+      "http://127.0.0.1:3764/api/update-status",
+      { method: "GET" },
+      update.updateStatusService,
+    );
+    expect((await passive?.json()).status).toBe("disabled");
     expect(update.registryRequests()).toBe(1);
   });
 

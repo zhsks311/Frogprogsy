@@ -126,6 +126,10 @@ export class UpdateStatusService {
   }
 
   snapshot(): UpdateStatus {
+    return this.createSnapshot(false);
+  }
+
+  private createSnapshot(explicitRefreshSucceeded: boolean): UpdateStatus {
     const nowMs = this.now().getTime();
     const installed = parseCanonicalStableSemVer(this.state.identity.version);
     const latest = this.state.latestVersion === null ? null : parseCanonicalStableSemVer(this.state.latestVersion);
@@ -135,7 +139,7 @@ export class UpdateStatusService {
     const stale = this.state.lastAttemptAtMs !== null
       && (!this.state.lastAttemptSucceeded || !lastAttemptCurrent);
     let status: UpdateStatus["status"];
-    if (!this.enabled) {
+    if (!this.enabled && !explicitRefreshSucceeded) {
       status = "disabled";
     } else if (this.state.identity.kind === "source") {
       status = "source";
@@ -261,7 +265,7 @@ export class UpdateStatusService {
       this.state.failure = result.failure;
     }
     if (!await this.persistCache()) this.state.failure = "cache-write";
-    return this.snapshot();
+    return this.createSnapshot(force && result.ok);
   }
 
   private async fetchLatestStable(): Promise<RegistryResult> {
