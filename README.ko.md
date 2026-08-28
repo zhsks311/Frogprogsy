@@ -75,21 +75,35 @@ frogp start
 <details>
 <summary><b>Docker에서 프록시를 실행하나요?</b></summary>
 
-처음 시작하기 전에 container 환경의 `FROGP_LOCAL_ACCESS_KEY`에 강한 비밀값을 설정하세요. Entrypoint는 hash만 저장합니다. 포함된 Docker Compose 서비스를 빌드하고 실행합니다.
+처음 시작하기 전에 container 환경의 `FROGP_LOCAL_ACCESS_KEY`에 강한 비밀값을 설정하세요. Entrypoint는 hash만 저장합니다. 한 terminal에서 포함된 Docker Compose 서비스를 빌드하고 실행합니다.
 
 ```bash
-# macOS / Linux / WSL
 export FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
 docker compose up --build
+```
 
-# Windows PowerShell
+```powershell
 $env:FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
 docker compose up --build
 ```
 
-Compose 파일은 `FROGP_EXTERNAL_SUPERVISOR=1`을 설정하고, container 안의 proxy를 `0.0.0.0`에 bind하며, host loopback에 `3764` port를 공개하고, 설정을 `frogprogsy-config` volume에 보존합니다. Crash 복구는 Docker restart policy가 맡으므로 container 안에서는 frogprogsy 자체 watchdog을 띄우지 않습니다.
+Compose를 실행하는 동안 해당 terminal을 열어 두거나, detached mode로 실행하려면 `-d`를 추가하세요. Compose 파일은 `FROGP_EXTERNAL_SUPERVISOR=1`을 설정하고, container 안의 proxy를 `0.0.0.0`에 bind하며, host loopback에 `3764` port를 공개하고, 설정을 `frogprogsy-config` volume에 보존합니다. Crash 복구는 Docker restart policy가 맡으므로 container 안에서는 frogprogsy 자체 watchdog을 띄우지 않습니다.
 
-Claude Code는 host에 열린 gateway를 보게 설정하세요. 예: `ANTHROPIC_BASE_URL=http://localhost:3764`. 같은 relay 비밀값을 `x-frogp-local-key` header로 보내고, upstream `Authorization`이나 `x-api-key` credential은 원래 header에 그대로 두세요.
+별도의 client terminal에서 Claude Code가 host에 열린 gateway를 사용하고 같은 비밀값을 전용 relay header로 보내도록 설정하세요.
+
+```bash
+export ANTHROPIC_BASE_URL='http://localhost:3764'
+export ANTHROPIC_CUSTOM_HEADERS='x-frogp-local-key: <strong-secret>'
+claude
+```
+
+```powershell
+$env:ANTHROPIC_BASE_URL='http://localhost:3764'
+$env:ANTHROPIC_CUSTOM_HEADERS='x-frogp-local-key: <strong-secret>'
+claude
+```
+
+Upstream `Authorization`이나 `x-api-key` credential은 원래 header에 그대로 두세요. `ANTHROPIC_CUSTOM_HEADERS`는 둘 중 어느 것도 대체하지 않고 relay key를 추가합니다.
 
 </details>
 

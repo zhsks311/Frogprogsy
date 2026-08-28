@@ -75,21 +75,35 @@ The default dashboard URL is `http://localhost:3764` — `3764` spells FROG on a
 <details>
 <summary><b>Running the proxy in Docker?</b></summary>
 
-Before the first start, set a strong `FROGP_LOCAL_ACCESS_KEY` in the container environment; the entrypoint stores only its hash. Build and run the included Docker Compose service:
+Before the first start, set a strong `FROGP_LOCAL_ACCESS_KEY` in the container environment; the entrypoint stores only its hash. In one terminal, build and run the included Docker Compose service:
 
 ```bash
-# macOS / Linux / WSL
 export FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
 docker compose up --build
+```
 
-# Windows PowerShell
+```powershell
 $env:FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
 docker compose up --build
 ```
 
-The Compose file sets `FROGP_EXTERNAL_SUPERVISOR=1`, binds the proxy to `0.0.0.0` inside the container, publishes `3764` on host loopback, and persists config in the `frogprogsy-config` volume. Docker's restart policy owns crash recovery, so frogprogsy does not start its own watchdog inside the container.
+Keep that terminal open while Compose runs, or add `-d` to run it detached. The Compose file sets `FROGP_EXTERNAL_SUPERVISOR=1`, binds the proxy to `0.0.0.0` inside the container, publishes `3764` on host loopback, and persists config in the `frogprogsy-config` volume. Docker's restart policy owns crash recovery, so frogprogsy does not start its own watchdog inside the container.
 
-Point Claude Code at the host-exposed gateway, for example `ANTHROPIC_BASE_URL=http://localhost:3764`, and send the same relay secret in `x-frogp-local-key`. Keep any upstream `Authorization` or `x-api-key` credential in its original header.
+In a separate client terminal, point Claude Code at the host-exposed gateway and send the same secret in the dedicated relay header:
+
+```bash
+export ANTHROPIC_BASE_URL='http://localhost:3764'
+export ANTHROPIC_CUSTOM_HEADERS='x-frogp-local-key: <strong-secret>'
+claude
+```
+
+```powershell
+$env:ANTHROPIC_BASE_URL='http://localhost:3764'
+$env:ANTHROPIC_CUSTOM_HEADERS='x-frogp-local-key: <strong-secret>'
+claude
+```
+
+Keep any upstream `Authorization` or `x-api-key` credential in its original header; `ANTHROPIC_CUSTOM_HEADERS` adds the relay key without replacing either one.
 
 </details>
 

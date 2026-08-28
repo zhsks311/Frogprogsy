@@ -75,21 +75,35 @@ frogp start
 <details>
 <summary><b>在 Docker 中运行 proxy？</b></summary>
 
-首次启动前，请在 container 环境中为 `FROGP_LOCAL_ACCESS_KEY` 设置一个高强度 secret；entrypoint 只存储其 hash。然后构建并运行随仓库提供的 Docker Compose 服务：
+首次启动前，请在 container 环境中为 `FROGP_LOCAL_ACCESS_KEY` 设置一个高强度 secret；entrypoint 只存储其 hash。在一个 terminal 中构建并运行随仓库提供的 Docker Compose 服务：
 
 ```bash
-# macOS / Linux / WSL
 export FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
 docker compose up --build
+```
 
-# Windows PowerShell
+```powershell
 $env:FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
 docker compose up --build
 ```
 
-Compose 文件会设置 `FROGP_EXTERNAL_SUPERVISOR=1`，让 container 内 proxy 绑定到 `0.0.0.0`，在 host loopback 上发布 `3764` 端口，并把配置保存在 `frogprogsy-config` volume 中。Crash recovery 由 Docker restart policy 负责，因此 frogprogsy 不会在 container 内启动自己的 watchdog。
+Compose 运行期间请保持该 terminal 打开，或者添加 `-d` 让它在 detached mode 中运行。Compose 文件会设置 `FROGP_EXTERNAL_SUPERVISOR=1`，让 container 内 proxy 绑定到 `0.0.0.0`，在 host loopback 上发布 `3764` 端口，并把配置保存在 `frogprogsy-config` volume 中。Crash recovery 由 Docker restart policy 负责，因此 frogprogsy 不会在 container 内启动自己的 watchdog。
 
-让 Claude Code 指向 host 暴露的 gateway，例如 `ANTHROPIC_BASE_URL=http://localhost:3764`，并在 `x-frogp-local-key` header 中发送同一个 relay secret。所有 upstream `Authorization` 或 `x-api-key` credential 都应保留在原来的 header 中。
+在另一个 client terminal 中，让 Claude Code 指向 host 暴露的 gateway，并通过专用 relay header 发送同一个 secret：
+
+```bash
+export ANTHROPIC_BASE_URL='http://localhost:3764'
+export ANTHROPIC_CUSTOM_HEADERS='x-frogp-local-key: <strong-secret>'
+claude
+```
+
+```powershell
+$env:ANTHROPIC_BASE_URL='http://localhost:3764'
+$env:ANTHROPIC_CUSTOM_HEADERS='x-frogp-local-key: <strong-secret>'
+claude
+```
+
+所有 upstream `Authorization` 或 `x-api-key` credential 都应保留在原来的 header 中；`ANTHROPIC_CUSTOM_HEADERS` 会添加 relay key，而不会替换其中任何一个。
 
 </details>
 
