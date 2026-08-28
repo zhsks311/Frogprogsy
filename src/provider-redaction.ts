@@ -51,8 +51,9 @@ function redactHeadersForApi(headers: Record<string, string> | undefined): Recor
 }
 
 export function redactProviderForApi(provider: FrogProviderConfig): FrogProviderConfig {
+  const { runtimeAuth: _runtimeAuth, ...safeProvider } = provider;
   return {
-    ...provider,
+    ...safeProvider,
     ...(provider.apiKey !== undefined ? { apiKey: maskConfiguredSecret(provider.apiKey) } : {}),
     ...(provider.apiKeys !== undefined ? { apiKeys: provider.apiKeys.map(key => maskConfiguredSecret(key) ?? "") } : {}),
     ...(provider.headers !== undefined ? { headers: redactHeadersForApi(provider.headers) } : {}),

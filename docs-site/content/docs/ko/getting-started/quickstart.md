@@ -21,7 +21,7 @@ frogp gui
 
 1. **Add Provider**를 누릅니다.
 2. 내장 항목을 고르거나 직접 OpenAI 호환 서버 주소를 입력합니다.
-3. API 키를 붙여넣거나 Codex/ChatGPT, xAI, Kimi OAuth 로그인을 완료합니다. Claude 구독 접근은 Claude Code에 남기고 여러 Claude home은 `frogp claude`로 관리합니다.
+3. API 키를 붙여넣거나 Codex/ChatGPT, xAI, Kimi OAuth 로그인을 완료하거나, 공식 `kiro-cli`에서 `frogp login kiro`로 Kiro를 가져옵니다. Claude 구독 접근은 Claude Code에 남기고 여러 Claude home은 `frogp claude`로 관리합니다.
 4. 사용할 모델을 확인하고 기본 AI 서비스/모델로 선택합니다.
 
 모델 목록은 가능한 경우 자동으로 가져오고, 이미 알려진 목록과 합칩니다. 기본 AI 서비스/모델을 저장하면 재시작 없이 바로 사용할 수 있습니다.

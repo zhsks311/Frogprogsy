@@ -128,6 +128,19 @@ This keeps the artifact's `sourceCommit` anchored to the commit that defines its
 
 To update the bundled file, run `bun scripts/generate-model-catalog.ts --source-commit <40-char-source-SHA> --generated-at <source-commit-ISO-date> --out src/generated/model-catalog-v1.json`. Then repeat the command with `--check`. `bun run generate:model-catalog:git` writes the prepublish artifact in the Git common directory; it does not update the bundled source file.
 
+### Kiro route boundary: 2026-08-28
+
+Kiro model inventory is tied to the official Kiro model page updated 2026-08-04 and the exact
+`GenerateAssistantResponse` route. The runtime endpoint does not expose a `/models` resource, so FrogProgsy keeps
+the official current wire ids as an auth-gated managed list rather than probing a fabricated endpoint or borrowing
+another provider's catalog. The maintained list includes the three `gpt-5.6-*` tiers, `auto`, current Claude
+Opus/Sonnet/Haiku ids, and the current MiniMax/GLM/DeepSeek/Qwen ids. Context and modality metadata is recorded only
+where the Kiro documentation or a source-verified Kiro adapter contract supplies the route-specific value.
+
+Kiro's separate account-management model-list API is not treated as the runtime `/models` contract in this
+release. Adding it later requires its own authenticated request/response validation and focused catalog tests.
+Unknown ids remain unknown; FrogProgsy never rewrites them to `auto`, another Kiro model, or another provider.
+
 ### Audited baseline: 2026-08-19
 
 The 2026-08-19 refresh audited Codex, xAI, Anthropic, Google, DeepSeek, Moonshot, Kimi Code, Z.AI, Neuralwatt, Umans, MiniMax, Cerebras, and Xiaomi provider data. It preserved OpenRouter's existing full catalog.

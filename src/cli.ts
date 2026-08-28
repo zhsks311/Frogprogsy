@@ -85,6 +85,8 @@ import { createUpdateStatusService } from "./update-status";
 import { parseUpdateStatus } from "./update-status-contract";
 import type { UpdateStatus } from "./update-status-contract";
 import { healthHost, loopbackManagementBase, readBoundedJson } from "./cli-local-api";
+import { handleLogin, logoutProvider } from "./oauth/login-cli";
+import { loadAuthStore } from "./oauth/store";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -132,8 +134,8 @@ Usage:
   frogp doctor claude [--json]   Diagnose Claude Code model picker visibility
   frogp models [--json]         List routed models from the running proxy
   frogp claude <command>        Manage Claude Code homes, isolated subscription grants, and project enrollment
-  frogp login [--list|<provider>]  Login or add a key (codex, openai, xai, kimi, API-key catalog)
-  frogp logout <provider>       Remove a stored OAuth login
+  frogp login [--list|<provider>]  Login or add a key (codex, openai, xai, kimi, kiro, API-key catalog)
+  frogp logout <provider>       Remove a stored account login
   frogp providers set <name> --auth claude-grant --grant <id>   Bind a provider to an isolated Claude subscription grant
   frogp local-key <command>     Manage relay access keys (required to bind a non-loopback hostname)
   frogp update [--no-restart]   Update frogprogsy to the latest published version
@@ -229,7 +231,7 @@ function printSubcommandUsage(name: string | undefined): boolean {
 These commands require a RUNNING proxy. If the proxy is stopped, run \`frogp start\` first. Use \`--json\` for machine-readable output.`);
       break;
     case "login":
-      console.log("Usage: frogp login [--list|<provider>]\n\nOAuth or API-key login for a provider. --list shows available OAuth and API-key providers.");
+      console.log("Usage: frogp login [--list|<provider>]\n\nAccount or API-key login for a provider. Kiro delegates browser/device authentication to the official kiro-cli. --list shows available providers.");
       break;
     case "logout":
       console.log("Usage: frogp logout <provider>\n\nRemove a stored provider login.");
@@ -2662,12 +2664,10 @@ switch (command) {
     await handleLocalKeyCommand(args.slice(1));
     break;
   case "login": {
-    const { handleLogin } = await import("./oauth/login-cli");
     await handleLogin(args[1]);
     break;
   }
   case "logout": {
-    const { loadAuthStore, removeCredential } = await import("./oauth/store");
     const name = (args[1] ?? "").trim().toLowerCase();
     const store = loadAuthStore();
     const loginList = Object.keys(store).length > 0 ? Object.keys(store).join(", ") : "(none)";
@@ -2679,8 +2679,9 @@ switch (command) {
       console.error(`Not logged in to ${name}.\n  Stored logins: ${loginList}`);
       process.exit(1);
     }
-    removeCredential(name);
+    await logoutProvider(name);
     console.log(`✅ Logged out of ${name}.`);
+    if (name === "kiro") console.log("The native Kiro CLI session was not changed.");
     break;
   }
 

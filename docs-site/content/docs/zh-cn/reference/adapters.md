@@ -37,6 +37,7 @@ FrogProgsy adapter 位于 Claude Code 的 Anthropic Messages ingress 与 `config
 | `anthropic` | `/v1/messages` | `key`, `forward` | Claude-native Messages、pass-through auth boundary、extended-thinking token budget、tool name compatibility |
 | `google` | Gemini `generateContent` / `streamGenerateContent` | `key` | Gemini contents/parts、inline image conversion、synthetic tool-call id |
 | `azure-openai` | Azure OpenAI Responses-compatible endpoint | `key` | Azure API-key header 与 `api-version` query handling。`azure` 是 legacy alias。 |
+| `kiro` | Kiro `GenerateAssistantResponse` binary event stream | `oauth` | 显式 model routing、Kiro conversation/tool/image mapping 与 AWS event-stream decoding |
 
 ## Common invariants
 
@@ -45,6 +46,15 @@ FrogProgsy adapter 位于 Claude Code 的 Anthropic Messages ingress 与 `config
 - Tool namespaced path 使用 `namespacedToolName(namespace, name)` 规则 flatten，并在 return path 恢复。
 - Provider 拒绝的 option 会按 model/provider gate 移除或降级。不会把 unsupported 值原样发送。
 - Claude Code ingress 是 Anthropic Messages。FrogProgsy 不会向 Claude Code public ingress 广告 `/v1/responses`。
+
+## `kiro`：Kiro runtime lane
+
+Kiro adapter 会把请求发到 credential profile 的准确 region，并使用用户显式选择的 wire model id。它不会猜测 family alias、替换为 `auto`，也不会 fallback 到其他 provider。
+
+- Claude Messages history 转换成轮流出现的 Kiro `userInputMessage` 和 `assistantResponseMessage` entry。Image 保留在 `userInputMessage` 上。
+- Tool 使用 namespace-safe name。Adapter 只移除经 source 验证不受支持的 JSON Schema field（`additionalProperties` 和空 `required` array），把 tool input 的 partial JSON 保留为 incremental `input_json_delta`，并在下一个 tool 开始前关闭当前 tool block。
+- 验证 AWS binary event-stream prelude/message checksum 与 frame boundary。截断 frame、inline exception、malformed payload、未结束的 tool call 和无输出 completion 都会成为 terminal error，不会输出正常 `message_stop`。
+- Request-scoped auth 只包含复制的 bearer、profile ARN 与 runtime region。它会从 persisted/provider API shape 中剥离，绝不跨入其他 auth mode。
 
 ## `openai-chat`: compatible chat lane
 

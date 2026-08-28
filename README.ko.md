@@ -117,7 +117,7 @@ frogp gui
 
 1. **Add Provider**를 엽니다.
 2. 내장 항목을 선택하거나 OpenAI 호환 서버 주소를 입력합니다.
-3. API 키를 저장하거나, OAuth를 지원하는 서비스(Codex/ChatGPT, xAI, Kimi)는 로그인합니다. Anthropic Claude는 구독 인증을 Claude Code 홈에 남기고, Anthropic provider를 추가하면 frogprogsy가 Claude 토큰을 저장하지 않는 forward-auth 모델 선택 항목이 생깁니다.
+3. API 키를 저장하거나, OAuth를 지원하는 서비스(Codex/ChatGPT, xAI, Kimi)는 로그인하거나, 공식 `kiro-cli`와 `frogp login kiro`로 Kiro를 가져옵니다. Anthropic Claude는 구독 인증을 Claude Code 홈에 남기고, Anthropic provider를 추가하면 frogprogsy가 Claude 토큰을 저장하지 않는 forward-auth 모델 선택 항목이 생깁니다.
 4. 기본으로 사용할 AI 서비스와 모델을 선택합니다.
 5. 모델 목록이 Claude Code 모델 선택기에 반영되는지 확인합니다.
 Provider나 모델을 바꾼 뒤 Claude Code 모델 선택기가 예전 목록처럼 보이면, Claude Code profile의 모델 목록을 새로고침한 다음 새 Claude Code 세션을 시작하거나 기존 세션을 resume해서 선택기를 다시 여세요.

@@ -19,13 +19,16 @@
  */
 import { resolveEnvValue } from "./config";
 import { getClaudeGrantAccessToken, ClaudeGrantError } from "./claude-grant-auth";
-import { getValidAccessToken } from "./oauth/index";
+import { getValidAccessToken, getValidOAuthCredential } from "./oauth/index";
 import { effectiveKeyCandidates } from "./provider-keys";
+import type { OAuthCredentials } from "./oauth/types";
 import type { FrogConfig, FrogProviderConfig } from "./types";
 
 export interface ProviderAuthDeps {
   /** Resolve a stored OAuth access token (auto-refreshed). */
   getOAuthAccessToken: (providerName: string) => Promise<string>;
+  /** Resolve complete provider-owned OAuth metadata when an adapter needs more than one bearer value. */
+  getOAuthCredential?: (providerName: string) => Promise<OAuthCredentials>;
   /** Resolve an isolated, config-dir-scoped Claude subscription grant token (auto-refreshed). */
   getClaudeGrantAccessToken: (config: FrogConfig, providerName: string, provider: FrogProviderConfig) => Promise<string>;
   /** Resolve `${ENV}` / `$ENV` static-key references. */
@@ -37,6 +40,7 @@ export interface ProviderAuthDeps {
 
 const defaultProviderAuthDeps: ProviderAuthDeps = {
   getOAuthAccessToken: getValidAccessToken,
+  getOAuthCredential: getValidOAuthCredential,
   getClaudeGrantAccessToken,
   resolveEnvValue,
 };
@@ -100,12 +104,27 @@ export async function resolveProviderAuth(
   provider: FrogProviderConfig,
   deps: ProviderAuthDeps = defaultProviderAuthDeps,
 ): Promise<FrogProviderConfig> {
-  // Dereference a `${ENV}` static key once as a base; every mode below overwrites `apiKey` with its
-  // own request-scoped credential (`forward` deliberately clears it — see below).
-  const resolved: FrogProviderConfig = { ...provider, apiKey: deps.resolveEnvValue(provider.apiKey) };
+  // Discard any persisted/user-supplied runtime metadata before resolving the trusted request copy.
+  const { runtimeAuth: _runtimeAuth, ...providerWithoutRuntimeAuth } = provider;
+  const resolved: FrogProviderConfig = {
+    ...providerWithoutRuntimeAuth,
+    apiKey: deps.resolveEnvValue(provider.apiKey),
+  };
   switch (provider.authMode) {
     case "oauth":
-      resolved.apiKey = await deps.getOAuthAccessToken(providerName);
+      if (provider.adapter === "kiro") {
+        const credential = await (deps.getOAuthCredential ?? getValidOAuthCredential)(providerName);
+        const kiro = credential.providerMetadata?.kiro;
+        if (!kiro) throw new Error("Kiro credential metadata is unavailable. Run: frogp login kiro");
+        resolved.apiKey = credential.access;
+        resolved.runtimeAuth = {
+          kind: "kiro",
+          region: kiro.region,
+          profileArn: kiro.profileArn,
+        };
+      } else {
+        resolved.apiKey = await deps.getOAuthAccessToken(providerName);
+      }
       break;
     case "claude-grant":
       // A subscription (grant) Bearer must only ever reach the real Anthropic API. Validate the

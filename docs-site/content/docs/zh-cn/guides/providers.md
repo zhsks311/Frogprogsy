@@ -92,6 +92,7 @@ OAuth account 存在 `~/.frogprogsy/auth.json`，并在过期前 refresh。Claud
 frogp login codex        # ChatGPT/Codex account，route 到 Codex backend
 frogp login xai          # xAI Grok
 frogp login kimi         # Moonshot Kimi
+frogp login kiro         # 导入或启动官方 Kiro CLI 登录
 frogp logout <provider>
 ```
 
@@ -100,6 +101,10 @@ frogp logout <provider>
 | `codex` | 到 `https://chatgpt.com/backend-api/codex` 的 `openai-responses` route | 不修改 Claude Code，把 Messages request 转换为 Codex Responses call。 |
 | `xai` | 到 `https://api.x.ai/v1` 的 `openai-chat` route | 在 adapter boundary 处理 Grok 不支持 reasoning param 等差异。 |
 | `kimi` | 到 `https://api.kimi.com/coding/v1` 的 `openai-chat` route | Kimi coding model 进入同一份 FrogProgsy catalog。 |
+| `kiro` | 通过 `kiro` adapter route 到 credential region 的 Kiro runtime | 使用显式 Kiro model id 处理 Claude Messages、tool call、image 和 binary event stream。 |
+
+
+Kiro 登录由终端负责。安装官方 `kiro-cli`，用 `kiro-cli login` 登录，再运行 `frogp login kiro`；如果没有当前 native session，FrogProgsy 会启动同一个官方登录命令。FrogProgsy 以 read-only 方式读取各操作系统原生的 Kiro SQLite database，把结果 session 复制到自己权限受限的 `auth.json`，并通过彼此独立的 provider endpoint refresh social 和 OIDC session。`frogp logout kiro` 只删除 FrogProgsy 的副本，不会运行 `kiro-cli logout`，也不会修改 Kiro database。Dashboard 显示 stored-login 状态和终端指引；由于这条 route 没有非计费 runtime probe，它不会声称已经完成 live connectivity probe。请显式选择 `kiro/claude-sonnet-4.6`、`kiro/gpt-5.6-sol` 等 model route；FrogProgsy 不会静默改用 `auto` 或其他 provider。
 
 普通 OpenAI API key billing 与 ChatGPT/Codex OAuth 是分开的。
 

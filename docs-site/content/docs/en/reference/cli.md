@@ -49,13 +49,14 @@ frogp --version
 
 | Command | Mutates | Effect |
 | --- | --- | --- |
-| `frogp login --list` | none | Read-only provider discovery: prints the OAuth group (codex, xai, kimi), the API-key group, and the `openai` alias explanation, then exits 0. |
+| `frogp login --list` | none | Read-only provider discovery: prints the account group (codex, xai, kimi, kiro), the API-key group, and the `openai` alias explanation, then exits 0. |
 | `frogp login codex` | OAuth store, config | Creates an OpenAI Codex/ChatGPT OAuth lane. |
 | `frogp login openai` | config | Saves an OpenAI API-key provider (`openai` is an alias for `openai-apikey`; ChatGPT-account login stays `codex`). |
 | `frogp login xai` | OAuth store, config | Creates an xAI OAuth lane. |
 | `frogp login kimi` | OAuth store, config | Creates a Kimi OAuth lane. |
+| `frogp login kiro` | OAuth store, config | Imports a current official Kiro CLI session, or runs the official interactive `kiro-cli login`; native SQLite stays read-only. |
 | `frogp login <catalog-provider>` | config or OAuth store | Adds an API-key, OAuth, or local provider from the provider registry. A close typo gets a `Did you mean: frogp login <provider>?` suggestion. OAuth failures are reported as `Login failed for <provider>: <reason>` with retry guidance instead of a raw stack trace. |
-| `frogp logout <provider>` | OAuth store | Removes the stored OAuth credential for that provider. Without an argument, or for a provider that is not logged in, it fails and lists the currently stored logins. It is not an API-key provider deletion command. |
+| `frogp logout <provider>` | OAuth store | Removes the stored account credential for that provider and refreshes a running relay's model readiness. Without an argument, or for a provider that is not logged in, it fails and lists the currently stored logins. It is not an API-key provider deletion command. `frogp logout kiro` removes only FrogProgsy's copy and leaves the native Kiro CLI session unchanged. |
 | `frogp local-key list` | none | Lists relay access keys (id, label, request limit) and whether relay authentication is enabled. Never prints a key. |
 | `frogp local-key add <label> [--limit <maxRequests>/<windowSec>]` | config | Creates a relay access key, enables `localAccess`, and prints the plaintext key once. Config keeps only its SHA-256 hash. Requires the proxy to be stopped, since a running proxy would rewrite the config from its start-time snapshot and drop the key. |
 | `frogp local-key remove <id-or-label>` | config | Removes one relay access key; also requires the proxy to be stopped. Removing the last key disables relay authentication, which makes a non-loopback `hostname` refuse to start. |
@@ -63,6 +64,7 @@ frogp --version
 Credential locations and exposure rules:
 
 - OAuth credentials live in `~/.frogprogsy/auth.json`.
+- Kiro credentials are copied from the platform-native Kiro CLI database into `~/.frogprogsy/auth.json`; the native database is read-only and social/OIDC refresh paths never fall back to each other.
 - API-key providers live in `~/.frogprogsy/config.json`.
 - Prefer `${ENV_VAR}` or `$ENV_VAR` references over literal keys when editing by hand.
 - Request logs, usage logs, and dashboard safe logs must not store API keys, OAuth tokens, prompt bodies, or account identities.

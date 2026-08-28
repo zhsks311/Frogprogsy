@@ -139,6 +139,7 @@ export const ko: Record<TKey, string> = {
   "prov.notLoggedIn": "로그인 안 됨",
   "prov.logout": "로그아웃",
   "prov.loginWith": "{provider} 로 로그인",
+  "prov.terminalLogin": "터미널에서 {cmd} 명령으로 로그인하세요.",
   "prov.waitingBrowser": "브라우저 대기 중…",
   "prov.didntOpen": "안 열렸나요? 여기를 클릭하세요",
   "prov.enterCode": "Enter code",
@@ -182,6 +183,7 @@ export const ko: Record<TKey, string> = {
   "prov.testCode.requestFailed": "요청 실패",
   "prov.testCode.providerNon2xx": "프로바이더가 non-2xx 반환",
   "prov.testCode.bridgeParseError": "예상 밖 응답",
+  "prov.testCode.probeUnavailable": "비과금 확인 경로 없음",
   "common.close": "닫기",
   "common.back": "뒤로",
 

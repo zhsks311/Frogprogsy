@@ -41,6 +41,7 @@ FrogProgsy 어댑터는 Claude Code 요청과 `config.json`에서 선택한 AI �
 | `anthropic` | `/v1/messages` | `key`, `forward` | Claude-native Messages, pass-through auth boundary, extended-thinking token budget, tool name compatibility |
 | `google` | Gemini `generateContent` / `streamGenerateContent` | `key` | Gemini contents/parts, inline image 변환, synthetic tool-call id |
 | `azure-openai` | Azure OpenAI Responses-compatible endpoint | `key` | Azure API-key header와 `api-version` query 처리. `azure`는 legacy alias입니다. |
+| `kiro` | Kiro `GenerateAssistantResponse` binary event stream | `oauth` | 명시적 model routing, Kiro conversation/tool/image 변환, AWS event-stream decoding |
 
 ## Common invariants
 
@@ -49,6 +50,15 @@ FrogProgsy 어댑터는 Claude Code 요청과 `config.json`에서 선택한 AI �
 - Tool namespaced path는 `namespacedToolName(namespace, name)` 규칙으로 flatten하고 return path에서 복원합니다.
 - Provider가 거부하는 option은 모델/provider gate에서 제거하거나 낮춥니다. Unsupported 값을 그대로 보내지 않습니다.
 - Claude Code ingress는 Anthropic Messages입니다. FrogProgsy는 `/v1/responses`를 Claude Code-facing public ingress로 광고하지 않습니다.
+
+## `kiro`: Kiro runtime 레인
+
+Kiro adapter는 credential profile의 정확한 region으로 요청을 보내고 사용자가 명시적으로 선택한 wire model id를 사용합니다. Family alias를 추측하거나 `auto`로 대체하거나 다른 provider로 fallback하지 않습니다.
+
+- Claude Messages history는 번갈아 나오는 Kiro `userInputMessage`와 `assistantResponseMessage` entry로 변환됩니다. Image는 `userInputMessage`에 유지됩니다.
+- Tool은 namespace-safe name을 사용합니다. Adapter는 source로 확인된 미지원 JSON Schema field(`additionalProperties`, 빈 `required` array)만 제거하고, tool input의 partial JSON을 incremental `input_json_delta`로 보존하며, 다음 tool이 시작되기 전에 현재 tool block을 닫습니다.
+- AWS binary event-stream prelude/message checksum과 frame boundary를 검증합니다. 잘린 frame, inline exception, malformed payload, 끝나지 않은 tool call, output 없는 completion은 정상 `message_stop` 없이 terminal error가 됩니다.
+- Request-scoped auth에는 복사된 bearer, profile ARN, runtime region만 들어갑니다. Persisted/provider API shape에서는 제거되고 다른 auth mode로 넘어가지 않습니다.
 
 ## `openai-chat`: 호환 채팅 레인
 

@@ -6,14 +6,18 @@ import { loginXai, refreshXaiToken } from "./xai";
 import { ANTHROPIC_OAUTH_BETA } from "./anthropic";
 import { loginKimi, refreshKimiToken } from "./kimi";
 import { loginCodex, refreshCodexToken, isCodexBackendBaseUrl, codexBackendHeaders } from "./codex";
+import { loginKiro, refreshKiroCredential } from "./kiro";
 import { deriveOAuthDefaultModel } from "../providers/derive";
 import { providerUserSeedFromRegistry } from "../providers/registry";
 
 const REFRESH_SKEW_MS = 60_000;
 
+export type OAuthLoginMode = "browser" | "cli";
+
 interface OAuthProviderDef {
   login(ctrl: OAuthController): Promise<OAuthCredentials>;
-  refresh(refreshToken: string, signal?: AbortSignal): Promise<OAuthCredentials>;
+  refresh(credential: OAuthCredentials, signal?: AbortSignal): Promise<OAuthCredentials>;
+  loginMode: OAuthLoginMode;
   /** provider entry written into config.json on first login. */
   providerConfig: FrogProviderConfig;
   defaultModel: string;
@@ -34,21 +38,31 @@ function oauthDefaultModel(id: string): string {
 export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
   codex: {
     login: (ctrl) => loginCodex(ctrl),
-    refresh: refreshCodexToken,
+    refresh: (credential, signal) => refreshCodexToken(credential.refresh, signal),
+    loginMode: "browser",
     providerConfig: oauthConfig("codex"),
     defaultModel: oauthDefaultModel("codex"),
   },
   xai: {
     login: (ctrl) => loginXai(ctrl, { importLocal: "fallback" }),
-    refresh: refreshXaiToken,
+    refresh: (credential, signal) => refreshXaiToken(credential.refresh, signal),
+    loginMode: "browser",
     providerConfig: oauthConfig("xai"),
     defaultModel: oauthDefaultModel("xai"),
   },
   kimi: {
     login: (ctrl) => loginKimi(ctrl),
-    refresh: refreshKimiToken,
+    refresh: (credential) => refreshKimiToken(credential.refresh),
+    loginMode: "browser",
     providerConfig: oauthConfig("kimi"),
     defaultModel: oauthDefaultModel("kimi"),
+  },
+  kiro: {
+    login: loginKiro,
+    refresh: refreshKiroCredential,
+    loginMode: "cli",
+    providerConfig: oauthConfig("kiro"),
+    defaultModel: oauthDefaultModel("kiro"),
   },
 };
 
@@ -56,31 +70,39 @@ export function isOAuthProvider(name: string): boolean {
   return name in OAUTH_PROVIDERS;
 }
 
-/** Provider ids that support real OAuth login (drives the GUI's "Log in with …" buttons). */
+/** Provider ids managed by the account status/logout surfaces. */
 export function listOAuthProviders(): string[] {
   return Object.keys(OAUTH_PROVIDERS);
 }
 
+export function oauthProviderLoginModes(): Record<string, OAuthLoginMode> {
+  return Object.fromEntries(Object.entries(OAUTH_PROVIDERS).map(([id, provider]) => [id, provider.loginMode]));
+}
+
 export async function refreshOAuthCredential(
   provider: string,
-  refreshToken: string,
+  credential: OAuthCredentials,
 ): Promise<OAuthCredentials> {
   const def = OAUTH_PROVIDERS[provider];
   if (!def) throw new Error(`Unknown OAuth provider: ${provider}`);
-  return def.refresh(refreshToken);
+  return def.refresh(credential);
 }
 
-
-/** Return a valid access token, refreshing + persisting if expired. Throws if not logged in. */
-export async function getValidAccessToken(provider: string): Promise<string> {
+/** Return the current complete credential, refreshing and persisting it when needed. */
+export async function getValidOAuthCredential(provider: string): Promise<OAuthCredentials> {
   const def = OAUTH_PROVIDERS[provider];
   if (!def) throw new Error(`Unknown OAuth provider: ${provider}`);
-  const cred = getCredential(provider);
-  if (!cred) throw new Error(`Not logged in to ${provider}. Run: frogp login ${provider}`);
-  if (cred.expires > Date.now() + REFRESH_SKEW_MS) return cred.access;
-  const fresh = await refreshOAuthCredential(provider, cred.refresh);
+  const credential = getCredential(provider);
+  if (!credential) throw new Error(`Not logged in to ${provider}. Run: frogp login ${provider}`);
+  if (credential.expires > Date.now() + REFRESH_SKEW_MS) return credential;
+  const fresh = await refreshOAuthCredential(provider, credential);
   saveCredential(provider, fresh);
-  return fresh.access;
+  return fresh;
+}
+
+/** Return a valid access token. Throws if the provider is not logged in. */
+export async function getValidAccessToken(provider: string): Promise<string> {
+  return (await getValidOAuthCredential(provider)).access;
 }
 
 /**
@@ -215,6 +237,9 @@ export async function startLoginFlow(
 ): Promise<LoginAuthInfo> {
   const def = OAUTH_PROVIDERS[provider];
   if (!def) throw new Error(`Unknown OAuth provider: ${provider}`);
+  if (def.loginMode === "cli") {
+    throw new Error(`Provider ${provider} requires terminal login. Run: frogp login ${provider}`);
+  }
 
   const now = opts.now ?? Date.now;
   const existing = loginState.get(provider);
