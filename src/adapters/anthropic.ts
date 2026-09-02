@@ -161,10 +161,16 @@ function reasoningBudget(effort: string): number {
 function usageFromAnthropic(usage: Record<string, number> | undefined): FrogUsage | undefined {
   if (!usage) return undefined;
   const hasCache = usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined;
+  const cacheReadInputTokens = usage.cache_read_input_tokens ?? 0;
+  const cacheCreationInputTokens = usage.cache_creation_input_tokens ?? 0;
   return {
     inputTokens: usage.input_tokens ?? 0,
     outputTokens: usage.output_tokens ?? 0,
-    ...(hasCache ? { cachedInputTokens: (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) } : {}),
+    ...(hasCache ? {
+      cachedInputTokens: cacheReadInputTokens + cacheCreationInputTokens,
+      cacheReadInputTokens,
+      cacheCreationInputTokens,
+    } : {}),
   };
 }
 
@@ -419,6 +425,7 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
       let currentBlockType = "";
       let currentToolCallId = "";
       let currentToolCallName = "";
+      let pendingUsage: Record<string, number> | undefined;
 
       try {
         while (true) {
@@ -448,6 +455,11 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
             }
 
             switch (currentEventType || data.type) {
+              case "message_start": {
+                const message = data.message as { usage?: Record<string, number> } | undefined;
+                if (message?.usage) pendingUsage = message.usage;
+                break;
+              }
               case "content_block_start": {
                 const block = data.content_block as { type: string; id?: string; name?: string } | undefined;
                 if (!block) break;
@@ -481,13 +493,16 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
               }
               case "message_delta": {
                 const usage = data.usage as Record<string, number> | undefined;
+                const completeUsage = pendingUsage || usage
+                  ? { ...(pendingUsage ?? {}), ...(usage ?? {}) }
+                  : undefined;
                 const delta = data.delta as { stop_reason?: unknown } | undefined;
                 const stop = normalizeAnthropicStopReason(delta?.stop_reason, "stream");
                 if (stop?.diagnostic) yield { type: "diagnostic", diagnostic: stop.diagnostic };
-                if (usage || stop) {
+                if (completeUsage || stop) {
                   yield {
                     type: "done",
-                    usage: usageFromAnthropic(usage),
+                    usage: usageFromAnthropic(completeUsage),
                     ...(stop ? { stopReason: stop.stopReason, stopReasonProvenance: stop.provenance } : {}),
                   };
                 }

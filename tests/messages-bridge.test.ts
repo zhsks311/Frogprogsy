@@ -34,7 +34,7 @@ describe("Anthropic Messages bridge", () => {
       { type: "tool_call_start", id: "toolu_1", name: "read_file" },
       { type: "tool_call_delta", arguments: "{\"path\":\"README.md\"}" },
       { type: "tool_call_end" },
-      { type: "done", usage: { inputTokens: 8, outputTokens: 5, cachedInputTokens: 2, reasoningOutputTokens: 1 } },
+      { type: "done", usage: { inputTokens: 8, outputTokens: 5, cachedInputTokens: 5, cacheReadInputTokens: 2, cacheCreationInputTokens: 3, reasoningOutputTokens: 1 } },
     ], "claude-frogp-test-model");
 
     expect(json).toMatchObject({
@@ -46,6 +46,7 @@ describe("Anthropic Messages bridge", () => {
         input_tokens: 8,
         output_tokens: 5,
         cache_read_input_tokens: 2,
+        cache_creation_input_tokens: 3,
         reasoning_output_tokens: 1,
       },
     });

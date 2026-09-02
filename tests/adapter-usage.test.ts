@@ -145,7 +145,45 @@ describe("adapter reasoning and usage details", () => {
 
     expect(events?.at(-1)).toEqual({
       type: "done",
-      usage: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 10 },
+      usage: {
+        inputTokens: 20,
+        outputTokens: 8,
+        cachedInputTokens: 10,
+        cacheReadInputTokens: 4,
+        cacheCreationInputTokens: 6,
+      },
+    });
+  });
+
+  test("Anthropic streaming merges message_start cache input with message_delta output", async () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const response = new Response([
+      "event: message_start\n",
+      "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"output_tokens\":0,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":6}}}\n\n",
+      "event: content_block_start\n",
+      "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n",
+      "event: content_block_delta\n",
+      "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n",
+      "event: message_delta\n",
+      "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",
+      "event: message_stop\n",
+      "data: {\"type\":\"message_stop\"}\n\n",
+    ].join(""));
+
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: {
+        inputTokens: 20,
+        outputTokens: 8,
+        cachedInputTokens: 10,
+        cacheReadInputTokens: 4,
+        cacheCreationInputTokens: 6,
+      },
+      stopReason: "end_turn",
+      stopReasonProvenance: "approved",
     });
   });
 

@@ -90,6 +90,11 @@ shortcut. A reviewer 404/429 can make Claude Code fall back to the current main 
 ## Usage accounting
 
 The Activity usage section is local accounting, not a provider invoice view. FrogProgsy records completed `/v1/messages` requests to `~/.frogprogsy/usage.jsonl` when the upstream response includes usage data. Requests without provider-reported usage are counted as `unreported` instead of being displayed as zero tokens.
+Prompt cache effectiveness uses only requests that preserve the complete Anthropic usage breakdown. The UI
+defines cache hit rate as `cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)`.
+It shows cache reads, cache creation, and the total input basis beside the percentage. Requests with
+non-equivalent provider semantics and requests whose breakdown is absent are counted separately, not folded
+into the percentage. A reported zero is shown as `0%`; no data and unsupported data remain distinct states.
 
 Use it to answer “which route/model consumed tokens through this proxy?” For account invoices, subscription quota, or organization spend, use the provider's own metering endpoints. Those endpoints are not standardized across providers and often require separate owner credentials.
 

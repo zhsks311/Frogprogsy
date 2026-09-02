@@ -11,7 +11,9 @@ function usageFromAdapter(usage: FrogUsage | undefined): Record<string, unknown>
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
   };
-  if (usage.cachedInputTokens !== undefined) out.cache_read_input_tokens = usage.cachedInputTokens;
+  if (usage.cacheReadInputTokens !== undefined) out.cache_read_input_tokens = usage.cacheReadInputTokens;
+  else if (usage.cachedInputTokens !== undefined) out.cache_read_input_tokens = usage.cachedInputTokens;
+  if (usage.cacheCreationInputTokens !== undefined) out.cache_creation_input_tokens = usage.cacheCreationInputTokens;
   if (usage.reasoningOutputTokens !== undefined) out.reasoning_output_tokens = usage.reasoningOutputTokens;
   return out;
 }

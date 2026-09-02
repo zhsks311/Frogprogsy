@@ -670,6 +670,37 @@ describe("privacy-safe request logs", () => {
     });
   });
 
+  test("usage API classifies a completed non-Anthropic request without usage as unsupported", async () => {
+    __requestLogTest.clear();
+    const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+    ctx.entry.route.provider = "codex";
+    ctx.entry.route.adapter = "openai-responses";
+    ctx.entry.route.routedModelLabel = "gpt-5.5";
+    __requestLogTest.finalizeRequestLog(ctx, "completed", 200);
+
+    const config = { port: 10100, defaultProvider: "codex", providers: {} };
+    const response = await __requestLogTest.handleManagementAPI(
+      new Request("http://127.0.0.1/api/usage"),
+      new URL("http://127.0.0.1/api/usage"),
+      config,
+    );
+
+    expect(response?.status).toBe(200);
+    const body = await response!.json();
+    expect(body.summary).toMatchObject({
+      requests: 1,
+      reportedRequests: 0,
+      unreportedRequests: 1,
+    });
+    expect(body.cacheHitRate).toMatchObject({
+      status: "unsupported",
+      hitRate: null,
+      reportedRequests: 0,
+      unsupportedRequests: 1,
+      unavailableRequests: 0,
+    });
+  });
+
   test("count-token upstream fetch observes client aborts", async () => {
     __requestLogTest.clear();
     const originalFetch = globalThis.fetch;
@@ -804,7 +835,13 @@ describe("privacy-safe request logs", () => {
       expect(calls).toEqual(["https://primary.test/v1/messages", "https://fallback.test/v1/messages"]);
       expect(entry.route.provider).toBe("fallback");
       expect(entry.route.routedModelLabel).toBe("fallback-model");
-      expect(entry.upstream?.usage).toEqual({ inputTokens: 13, outputTokens: 5, cachedInputTokens: 2 });
+      expect(entry.upstream?.usage).toEqual({
+        inputTokens: 13,
+        outputTokens: 5,
+        cachedInputTokens: 2,
+        cacheReadInputTokens: 2,
+        cacheCreationInputTokens: 0,
+      });
       expect(entry.attempts).toEqual([
         { provider: "primary", model: "primary-model", source: "primary", keyIndex: 0, status: "error", code: "provider_non_2xx", upstreamStatus: 429 },
         { provider: "fallback", model: "fallback-model", source: "fallback", keyIndex: 0, status: "ok", upstreamStatus: 200 },

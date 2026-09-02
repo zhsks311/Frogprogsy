@@ -17,6 +17,19 @@ interface UsageSummaryTotals {
   totalTokens: number;
   coverageRatio: number;
 }
+interface UsageCacheHitRate {
+  status: "available" | "no_data" | "unsupported" | "unavailable";
+  formula: "cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)";
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  inputTokens: number;
+  totalInputTokens: number;
+  hitRate: number | null;
+  reportedRequests: number;
+  unsupportedRequests: number;
+  unavailableRequests: number;
+}
+
 
 interface UsageDay {
   date: string;
@@ -125,6 +138,7 @@ interface UsageResponse {
   models: UsageModel[];
   providers: UsageProvider[];
   sourceState: UsageSourceState;
+  cacheHitRate: UsageCacheHitRate;
   pricing?: UsagePricing;
   error?: string;
 }
@@ -273,6 +287,7 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
 
   useEffect(() => {
     let cancelled = false;
+    let hasSuccessfulLoad = false;
     setLoading(true);
     setData(null);
     setLoadError(false);
@@ -284,21 +299,24 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
         if (!cancelled) {
           if (json.range === range) {
             setData(json);
-          } else {
+            setLoadError(false);
+            hasSuccessfulLoad = true;
+          } else if (!hasSuccessfulLoad) {
             setLoadError(true);
           }
         }
       } catch {
-        if (!cancelled) {
-          setData(null);
-          setLoadError(true);
-        }
+        if (!cancelled && !hasSuccessfulLoad) setLoadError(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
     };
     fetchUsage();
-    return () => { cancelled = true; };
+    const interval = window.setInterval(fetchUsage, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [apiBase, range]);
   useEffect(() => {
     if (target === "usage-source-state") sourceStateRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -321,6 +339,15 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
   const sourceState = isUsageSourceState(data?.sourceState) ? data.sourceState : null;
   const hasUsage = Boolean(data && data.summary.requests > 0);
   const pricing = data?.pricing?.available ? data.pricing : null;
+  const cacheHitRate = data?.cacheHitRate;
+  const cacheHasBreakdown = cacheHitRate?.status === "available";
+  const cacheStatusLabel = cacheHitRate?.status === "available"
+    ? t("usage.cache.status.available")
+    : cacheHitRate?.status === "no_data"
+      ? t("usage.cache.status.noData")
+      : cacheHitRate?.status === "unsupported"
+        ? t("usage.cache.status.unsupported")
+        : t("usage.cache.status.unavailable");
 
   return (
     <>
@@ -417,6 +444,42 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
               </div>
             ) : (
               <div className="notice notice-err">{t("usage.source.contractMissing")}</div>
+            )}
+          </section>
+          <section className="panel" style={{ marginTop: 16 }}>
+            <div className="panel-head">
+              <div>
+                <h3 className="panel-title">{t("usage.cache.title")}</h3>
+                <p className="muted usage-source-note">{t("usage.cache.note")}</p>
+              </div>
+              <span className={`badge ${cacheHasBreakdown ? "badge-green" : "badge-amber"}`}>{cacheStatusLabel}</span>
+            </div>
+            <div className="usage-cards">
+              <div className="stat">
+                <div className="muted">{t("usage.cache.hitRate")}</div>
+                <div className="stat-value">{cacheHasBreakdown && cacheHitRate.hitRate !== null ? formatPct(cacheHitRate.hitRate) : "—"}</div>
+              </div>
+              <div className="stat">
+                <div className="muted">{t("usage.cache.readTokens")}</div>
+                <div className="stat-value">{cacheHasBreakdown ? formatTokens(cacheHitRate.cacheReadInputTokens) : "—"}</div>
+              </div>
+              <div className="stat">
+                <div className="muted">{t("usage.cache.creationTokens")}</div>
+                <div className="stat-value">{cacheHasBreakdown ? formatTokens(cacheHitRate.cacheCreationInputTokens) : "—"}</div>
+              </div>
+              <div className="stat">
+                <div className="muted">{t("usage.cache.inputBasis")}</div>
+                <div className="stat-value">{cacheHasBreakdown ? formatTokens(cacheHitRate.totalInputTokens) : "—"}</div>
+              </div>
+            </div>
+            {cacheHitRate && (
+              <p className="muted" style={{ marginTop: 12, fontSize: 13 }}>
+                {t("usage.cache.coverage", {
+                  reported: cacheHitRate.reportedRequests,
+                  unsupported: cacheHitRate.unsupportedRequests,
+                  unavailable: cacheHitRate.unavailableRequests,
+                })}
+              </p>
             )}
           </section>
           {pricing && (

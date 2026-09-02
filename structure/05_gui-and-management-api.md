@@ -27,6 +27,25 @@ Management endpoints live in `src/server.ts` under `/api/*`:
 | Logs | Surface request/runtime logs for local diagnosis. |
 | Stop | `POST /api/stop` — restore native Claude Code, stop any installed service, and exit the proxy. |
 
+### Usage and prompt-cache effectiveness
+
+`GET /api/usage` derives its cache hit rate only from persisted Anthropic-compatible usage responses
+that preserve all three comparable buckets: `cache_read_input_tokens`, `cache_creation_input_tokens`, and
+`input_tokens`. Streaming adapters merge the input/cache buckets from `message_start` with output usage
+from `message_delta` before the request is finalized. The displayed formula is:
+
+```text
+cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)
+```
+
+This is the token share served from cache, not a request-hit percentage or provider invoice. The response
+separately counts requests with a comparable breakdown, non-equivalent provider semantics, and absent
+breakdowns. No requests means `no_data`; only non-equivalent provider rows means `unsupported`; an exact
+reported breakdown with zero cache reads remains `available` with a real zero rate. Mixed data calculates
+only over comparable requests and displays the excluded counts. Historical rows remain readable and are
+classified as unavailable rather than guessed. The Usage page polls the local summary so a completed
+request becomes visible without changing provider routing, credentials, request bodies, or restore state.
+
 Provider writes must not round-trip masked API keys as real secrets. Dashboard actions that change
 model visibility or subagent selection should trigger catalog/cache sync behavior through the server
 path that owns it.

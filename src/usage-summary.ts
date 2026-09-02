@@ -17,6 +17,21 @@ export interface UsageSummaryTotals {
   totalTokens: number;
   coverageRatio: number;
 }
+export type CacheHitRateStatus = "available" | "no_data" | "unsupported" | "unavailable";
+
+export interface UsageCacheHitRate {
+  status: CacheHitRateStatus;
+  formula: "cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)";
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  inputTokens: number;
+  totalInputTokens: number;
+  hitRate: number | null;
+  reportedRequests: number;
+  unsupportedRequests: number;
+  unavailableRequests: number;
+}
+
 
 export interface UsageDay {
   date: string;
@@ -78,6 +93,7 @@ export interface UsageSummary {
   models: UsageModel[];
   providers: UsageProvider[];
   sourceState: UsageSourceState;
+  cacheHitRate: UsageCacheHitRate;
   pricing: UsagePricingSummary;
 }
 
@@ -145,6 +161,61 @@ function addTokens(totals: UsageSummaryTotals, entry: PersistedUsageEntry): void
 
 function finalizeCoverage(totals: UsageSummaryTotals): void {
   totals.coverageRatio = totals.requests === 0 ? 0 : totals.reportedRequests / totals.requests;
+}
+
+function isNonNegativeFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function summarizeCacheHitRate(entries: PersistedUsageEntry[]): UsageCacheHitRate {
+  let cacheReadInputTokens = 0;
+  let cacheCreationInputTokens = 0;
+  let inputTokens = 0;
+  let reportedRequests = 0;
+  let unsupportedRequests = 0;
+  let unavailableRequests = 0;
+
+  for (const entry of entries) {
+    const usage = entry.usage;
+    const cacheRead = usage?.cacheReadInputTokens;
+    const cacheCreation = usage?.cacheCreationInputTokens;
+    const uncachedInput = usage?.inputTokens;
+    if (
+      isNonNegativeFinite(cacheRead)
+      && isNonNegativeFinite(cacheCreation)
+      && isNonNegativeFinite(uncachedInput)
+    ) {
+      cacheReadInputTokens += cacheRead;
+      cacheCreationInputTokens += cacheCreation;
+      inputTokens += uncachedInput;
+      reportedRequests += 1;
+    } else if (entry.cacheUsageStatus === "unsupported") {
+      unsupportedRequests += 1;
+    } else {
+      unavailableRequests += 1;
+    }
+  }
+
+  const totalInputTokens = cacheReadInputTokens + cacheCreationInputTokens + inputTokens;
+  const status: CacheHitRateStatus = entries.length === 0
+    ? "no_data"
+    : reportedRequests > 0
+      ? "available"
+      : unsupportedRequests > 0
+        ? "unsupported"
+        : "unavailable";
+  return {
+    status,
+    formula: "cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)",
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
+    inputTokens,
+    totalInputTokens,
+    hitRate: reportedRequests > 0 && totalInputTokens > 0 ? cacheReadInputTokens / totalInputTokens : null,
+    reportedRequests,
+    unsupportedRequests,
+    unavailableRequests,
+  };
 }
 
 function usageSourceState(pricing: UsagePricingSummary): UsageSourceState {
@@ -277,6 +348,7 @@ export function summarizeUsage(entries: PersistedUsageEntry[], range: UsageRange
     models: buildModels(inRange, totals.requests),
     providers: buildProviders(inRange, totals.requests),
     sourceState: usageSourceState(pricing),
+    cacheHitRate: summarizeCacheHitRate(inRange),
     pricing,
   };
 }

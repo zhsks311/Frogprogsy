@@ -241,6 +241,10 @@ export interface FrogUsage {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  /** Exact provider-reported prompt-cache reads when the adapter can preserve a comparable input breakdown. */
+  cacheReadInputTokens?: number;
+  /** Exact provider-reported prompt-cache writes when the adapter can preserve a comparable input breakdown. */
+  cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
 }
 

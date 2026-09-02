@@ -1639,7 +1639,14 @@ interface RequestLogEntry {
     contentTypeFamily?: "sse" | "json" | "text" | "binary" | "unknown";
     requestBytes?: number;
     responseBytes?: number;
-    usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningOutputTokens?: number };
+    usage?: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+      cacheReadInputTokens?: number;
+      cacheCreationInputTokens?: number;
+      reasoningOutputTokens?: number;
+    };
   };
   error?: {
     kind: "validation" | "routing" | "authentication" | "origin" | "timeout" | "upstream" | "bridge" | "internal";
@@ -2001,6 +2008,8 @@ function recordLogUsage(ctx: RequestLogContext, usage: FrogUsage | undefined): v
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+      ...(usage.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+      ...(usage.cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
       ...(usage.reasoningOutputTokens !== undefined ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
     },
   };
@@ -2154,8 +2163,19 @@ function usageFromLogEntry(entry: RequestLogEntry): FrogUsage | undefined {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+    ...(typeof usage.cacheReadInputTokens === "number" ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+    ...(typeof usage.cacheCreationInputTokens === "number" ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
     ...(typeof usage.reasoningOutputTokens === "number" ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
   };
+}
+
+function cacheUsageStatusForFinalLog(entry: RequestLogEntry, usage: FrogUsage | undefined): "reported" | "unsupported" | "unavailable" {
+  if (
+    typeof usage?.cacheReadInputTokens === "number"
+    && typeof usage.cacheCreationInputTokens === "number"
+  ) return "reported";
+  if (entry.route.adapter && entry.route.adapter !== "anthropic") return "unsupported";
+  return "unavailable";
 }
 
 function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
@@ -2170,6 +2190,7 @@ function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
       status: ctx.entry.status ?? 0,
       durationMs: ctx.entry.durationMs ?? 0,
       usageStatus: usageStatusForFinalLog(usage),
+      cacheUsageStatus: cacheUsageStatusForFinalLog(ctx.entry, usage),
       ...(usage ? { usage, totalTokens: usageTotalTokens(usage) } : {}),
     });
   } catch (err) {

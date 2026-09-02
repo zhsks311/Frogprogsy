@@ -195,12 +195,166 @@ describe("GET /api/usage", () => {
       expect(body.summary.requests).toBe(0);
       expect(body.summary.totalTokens).toBe(0);
       expect(body.summary.coverageRatio).toBe(0);
+      expect(body.cacheHitRate).toMatchObject({
+        status: "no_data",
+        hitRate: null,
+        reportedRequests: 0,
+        unsupportedRequests: 0,
+        unavailableRequests: 0,
+      });
       expectUsageSourceState(body);
       expectNoDerivedUsageEstimates(body);
     } finally {
       await server.stop(true);
     }
   });
+  test("separates comparable, unsupported, and absent cache usage without hiding a true zero", async () => {
+    const now = Date.now();
+    const lines = [
+      {
+        requestId: "cache-hit",
+        timestamp: now,
+        provider: "anthropic",
+        model: "claude-sonnet",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        usage: {
+          inputTokens: 50,
+          outputTokens: 5,
+          cachedInputTokens: 50,
+          cacheReadInputTokens: 40,
+          cacheCreationInputTokens: 10,
+        },
+        totalTokens: 55,
+      },
+      {
+        requestId: "cache-zero",
+        timestamp: now,
+        provider: "anthropic",
+        model: "claude-sonnet",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 5,
+          cachedInputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        },
+        totalTokens: 105,
+      },
+      {
+        requestId: "cache-unsupported",
+        timestamp: now,
+        provider: "openai",
+        model: "gpt",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "unsupported",
+        usage: { inputTokens: 20, outputTokens: 5, cachedInputTokens: 10 },
+        totalTokens: 25,
+      },
+      {
+        requestId: "cache-absent",
+        timestamp: now,
+        provider: "anthropic",
+        model: "claude-sonnet",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "unavailable",
+        usage: { inputTokens: 20, outputTokens: 5 },
+        totalTokens: 25,
+      },
+    ];
+    writeFileSync(join(testDir, "usage.jsonl"), `${lines.map(line => JSON.stringify(line)).join("\n")}\n`, { mode: 0o600 });
+    const server = await startServer(0);
+    try {
+      const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
+      expect(body.cacheHitRate).toEqual({
+        status: "available",
+        formula: "cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)",
+        cacheReadInputTokens: 40,
+        cacheCreationInputTokens: 10,
+        inputTokens: 150,
+        totalInputTokens: 200,
+        hitRate: 0.2,
+        reportedRequests: 2,
+        unsupportedRequests: 1,
+        unavailableRequests: 1,
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("reports a comparable zero hit rate instead of an unavailable state", async () => {
+    writeFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
+      requestId: "cache-zero",
+      timestamp: Date.now(),
+      provider: "anthropic",
+      model: "claude-sonnet",
+      status: 200,
+      durationMs: 10,
+      usageStatus: "reported",
+      cacheUsageStatus: "reported",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+      totalTokens: 105,
+    })}\n`, { mode: 0o600 });
+    const server = await startServer(0);
+    try {
+      const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
+      expect(body.cacheHitRate).toMatchObject({
+        status: "available",
+        cacheReadInputTokens: 0,
+        totalInputTokens: 100,
+        hitRate: 0,
+        reportedRequests: 1,
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("reports non-equivalent provider cache semantics as unsupported", async () => {
+    writeFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
+      requestId: "cache-unsupported",
+      timestamp: Date.now(),
+      provider: "openai",
+      model: "gpt",
+      status: 200,
+      durationMs: 10,
+      usageStatus: "reported",
+      cacheUsageStatus: "unsupported",
+      usage: { inputTokens: 100, outputTokens: 5, cachedInputTokens: 20 },
+      totalTokens: 105,
+    })}\n`, { mode: 0o600 });
+    const server = await startServer(0);
+    try {
+      const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
+      expect(body.cacheHitRate).toMatchObject({
+        status: "unsupported",
+        hitRate: null,
+        reportedRequests: 0,
+        unsupportedRequests: 1,
+        unavailableRequests: 0,
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("groups usage by final successful fallback provider and model only", async () => {
     saveConfig({
       port: 0,
@@ -272,6 +426,15 @@ describe("GET /api/usage", () => {
         inputTokens: 13,
         outputTokens: 5,
         cachedInputTokens: 2,
+      });
+      expect(body.cacheHitRate).toMatchObject({
+        status: "available",
+        cacheReadInputTokens: 2,
+        cacheCreationInputTokens: 0,
+        inputTokens: 13,
+        totalInputTokens: 15,
+        hitRate: 2 / 15,
+        reportedRequests: 1,
       });
       expect(body.providers).toHaveLength(1);
       expect(body.providers[0]).toMatchObject({ provider: "fallback", totalTokens: 18 });

@@ -4,6 +4,7 @@ import { ensureConfigDirForWrite, getConfigDir } from "./config";
 import type { FrogUsage } from "./types";
 
 export type UsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
+export type CacheUsageStatus = "reported" | "unsupported" | "unavailable";
 
 export interface PersistedUsageEntry {
   requestId: string;
@@ -15,6 +16,7 @@ export interface PersistedUsageEntry {
   durationMs: number;
   usageStatus: UsageStatus;
   usage?: FrogUsage;
+  cacheUsageStatus?: CacheUsageStatus;
   totalTokens?: number;
   /** Primary local request by default; future shadow comparison writes can mark shadow usage for exclusion from display pricing. */
   source?: "primary" | "shadow";

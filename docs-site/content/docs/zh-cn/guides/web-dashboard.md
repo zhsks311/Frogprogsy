@@ -90,6 +90,10 @@ Claude Code 2.1.220 会让这些目录的两个审查阶段使用保留别名；
 ## 用 usage accounting 查看 local 使用量
 
 Activity 的 usage section 是 local accounting，不是 provider invoice view。FrogProgsy 会在完成的 `/v1/messages` request 中，当 upstream response 提供 usage data 时，把记录写入 `~/.frogprogsy/usage.jsonl`。没有提供 usage 的 provider request 会归入 `unreported`，不会显示为 0 token。
+提示缓存效果只计算保留了完整 Anthropic usage 明细的请求。界面将缓存命中率定义为
+`cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)`。
+缓存读取、缓存创建和总输入基数会与百分比一起显示。语义不同的 provider 请求和明细缺失的请求会
+分别计数，不会混入百分比。已报告的真实零值显示为 `0%`；无数据和不支持的数据仍是不同状态。
 
 该 tab 用于回答“通过这个 proxy，哪些 route/model 消耗了 token？”Account invoice、subscription quota、organization spend 应使用 provider 的 metering endpoint。这些 endpoint 在 provider 之间没有标准，且通常需要单独的 owner credential。
 
