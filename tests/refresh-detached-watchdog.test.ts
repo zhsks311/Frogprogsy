@@ -108,6 +108,57 @@ describe("frogp refresh detached lifecycle", () => {
     expect(processProbeErrorMeansAlive(Object.assign(new Error("gone"), { code: "ESRCH" }))).toBe(false);
   });
 
+  test("refresh never signals a live PID without a FrogProgsy health identity", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-unverified-pid-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const port = reservation.port;
+    reservation.stop(true);
+    const unrelated = Bun.spawn(
+      [process.execPath, "-e", "await Promise.withResolvers<void>().promise"],
+      { stdout: "ignore", stderr: "ignore" },
+    );
+    writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+      port,
+      hostname: "127.0.0.1",
+      watchdog: { enabled: false },
+      providers: {},
+    }, null, 2) + "\n");
+    writeFileSync(join(frogHome, "frogp.pid"), String(unrelated.pid));
+    const env = {
+      ...process.env,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+      FROGPROGSY_NO_CLAUDE_WRITES: "1",
+    };
+
+    try {
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stderr, exitCode] = await Promise.all([
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("live PID is not authenticated by a FrogProgsy health response");
+      expect(() => process.kill(unrelated.pid, 0)).not.toThrow();
+      expect(readFileSync(join(frogHome, "frogp.pid"), "utf8")).toBe(String(unrelated.pid));
+    } finally {
+      unrelated.kill();
+      await unrelated.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test("refresh serializes stale replacement against a concurrent start on every platform", async () => {
     const root = mkdtempSync(join(tmpdir(), "frogp-refresh-stale-build-"));
     const frogHome = join(root, "frog-home");
@@ -125,7 +176,7 @@ describe("frogp refresh detached lifecycle", () => {
       "  fetch(request) {",
       "    const url = new URL(request.url);",
       '    if (url.pathname === "/healthz") {',
-      '      return Response.json({ status: "ok", serverBuildId: "frogprogsy-server@0.0.0-stale" });',
+      '      return Response.json({ status: "ok", serverBuildId: "frogprogsy-server@0.0.0-stale", processPid: process.pid });',
       "    }",
       '    return new Response("not found", { status: 404 });',
       "  },",
@@ -191,16 +242,16 @@ describe("frogp refresh detached lifecycle", () => {
         new Response(refresh.stdout).text(),
         new Response(refresh.stderr).text(),
         refresh.exited,
+        stale.exited,
+        oldWatchdog.exited,
       ]);
 
       expect(exitCode).toBe(0);
       expect(stderr).toBe("");
       expect(stdout).toContain(`Proxy running on port ${port}`);
-      await stale.exited;
       const replacementPid = Number(readFileSync(join(frogHome, "frogp.pid"), "utf8"));
       expect(replacementPid).not.toBe(stale.pid);
       if (replacementPid !== concurrent.pid) expect(await concurrent.exited).toBe(1);
-      await oldWatchdog.exited;
       replacementWatchdogPid = await waitForPidReplacement(watchdogPidPath, oldWatchdog.pid);
       expect(() => process.kill(replacementWatchdogPid!, 0)).not.toThrow();
       const health = await fetch(`http://127.0.0.1:${port}/healthz`).then(response => response.json()) as {

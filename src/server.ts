@@ -172,6 +172,7 @@ export function buildHealthzPayload(uptime = process.uptime()) {
     status: "ok",
     version: VERSION,
     uptime,
+    processPid: process.pid,
     ...resolveGuiBuildIdentity(GUI_DIST, VERSION, SERVER_BUILD_ID),
   };
 }
