@@ -56,20 +56,16 @@ describe("frogp refresh detached lifecycle", () => {
     expect(clearedAfterDeath).toBe(false);
   });
 
-  test("refresh serializes delayed stale shutdown against a concurrent start", async () => {
+  test("refresh serializes stale replacement against a concurrent start on every platform", async () => {
     const root = mkdtempSync(join(tmpdir(), "frogp-refresh-stale-build-"));
     const frogHome = join(root, "frog-home");
     const claudeHome = join(root, "claude-home");
-    const shutdownReady = join(root, "shutdown-ready");
-    const shutdownRelease = join(root, "shutdown-release");
+    const lockGate = join(root, "refresh-lock-gate");
     const fixturePath = join(root, "stale-server.ts");
     const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
     mkdirSync(frogHome, { recursive: true });
     mkdirSync(claudeHome, { recursive: true });
     writeFileSync(fixturePath, [
-      'import { existsSync, unlinkSync, watch, writeFileSync } from "node:fs";',
-      'import { dirname, join } from "node:path";',
-      "const [frogHome, shutdownReady, shutdownRelease] = process.argv.slice(2);",
       "const server = Bun.serve({",
       '  hostname: "127.0.0.1",',
       "  port: 0,",
@@ -82,36 +78,21 @@ describe("frogp refresh detached lifecycle", () => {
       "  },",
       "});",
       "console.log(server.port);",
-      'process.on("SIGTERM", async () => {',
-      '  try { unlinkSync(join(frogHome!, "frogp.pid")); } catch {}',
-      '  try { unlinkSync(join(frogHome!, "frogp.port")); } catch {}',
-      '  writeFileSync(shutdownReady!, "ready");',
-      "  if (!existsSync(shutdownRelease!)) {",
-      "    const { promise, resolve } = Promise.withResolvers<void>();",
-      "    const watcher = watch(dirname(shutdownRelease!), () => {",
-      "      if (!existsSync(shutdownRelease!)) return;",
-      "      watcher.close();",
-      "      resolve();",
-      "    });",
-      "    if (existsSync(shutdownRelease!)) { watcher.close(); resolve(); }",
-      "    await promise;",
-      "  }",
-      "  server.stop(true);",
-      "  process.exit(0);",
-      "});",
       "await Promise.withResolvers<void>().promise;",
     ].join("\n"));
 
-    const stale = Bun.spawn([process.execPath, fixturePath, frogHome, shutdownReady, shutdownRelease], {
+    const stale = Bun.spawn([process.execPath, fixturePath], {
       stdout: "pipe",
       stderr: "ignore",
     });
     const env = {
       ...process.env,
+      NODE_ENV: "test",
       FROGPROGSY_HOME: frogHome,
       CLAUDE_HOME: claudeHome,
       CLAUDE_CONFIG_DIR: claudeHome,
       FROGPROGSY_NO_CLAUDE_WRITES: "1",
+      FROGP_TEST_CONFIG_LOCK_GATE: lockGate,
     };
     let concurrent: { pid: number; exited: Promise<number>; kill: () => void } | undefined;
 
@@ -137,14 +118,14 @@ describe("frogp refresh detached lifecycle", () => {
         stdout: "pipe",
         stderr: "pipe",
       });
-      await waitForPath(shutdownReady);
+      await waitForPath(`${lockGate}.${refresh.pid}.ready`);
       concurrent = Bun.spawn([process.execPath, cliPath, "start"], {
         cwd: join(import.meta.dir, ".."),
         env,
         stdout: "ignore",
         stderr: "ignore",
       });
-      writeFileSync(shutdownRelease, "release");
+      writeFileSync(lockGate, "release");
       const [stdout, stderr, exitCode] = await Promise.all([
         new Response(refresh.stdout).text(),
         new Response(refresh.stderr).text(),
@@ -154,7 +135,7 @@ describe("frogp refresh detached lifecycle", () => {
       expect(exitCode).toBe(0);
       expect(stderr).toBe("");
       expect(stdout).toContain(`Proxy running on port ${port}`);
-      expect(await stale.exited).toBe(0);
+      await stale.exited;
       const replacementPid = Number(readFileSync(join(frogHome, "frogp.pid"), "utf8"));
       expect(replacementPid).not.toBe(stale.pid);
       if (replacementPid !== concurrent.pid) expect(await concurrent.exited).toBe(1);
@@ -164,7 +145,7 @@ describe("frogp refresh detached lifecycle", () => {
       const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version;
       expect(health.serverBuildId).toBe(`frogprogsy-server@${version}`);
     } finally {
-      writeFileSync(shutdownRelease, "release");
+      writeFileSync(lockGate, "release");
       const stop = Bun.spawn([process.execPath, cliPath, "stop"], {
         cwd: join(import.meta.dir, ".."),
         env,
@@ -176,6 +157,78 @@ describe("frogp refresh detached lifecycle", () => {
       await stale.exited;
       concurrent?.kill();
       if (concurrent) await concurrent.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("refresh preserves a current proxy that wins the startup lock race", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-current-race-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const lockGate = join(root, "start-lock-gate");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const port = reservation.port;
+    reservation.stop(true);
+    writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+      port,
+      hostname: "127.0.0.1",
+      watchdog: { enabled: false },
+      providers: {},
+    }, null, 2) + "\n");
+    const env = {
+      ...process.env,
+      NODE_ENV: "test",
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+      FROGPROGSY_NO_CLAUDE_WRITES: "1",
+      FROGP_TEST_CONFIG_LOCK_GATE: lockGate,
+    };
+    const start = Bun.spawn([process.execPath, cliPath, "start"], {
+      cwd: join(import.meta.dir, ".."),
+      env,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+
+    try {
+      await waitForPath(`${lockGate}.${start.pid}.ready`);
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      writeFileSync(lockGate, "release");
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(refresh.stdout).text(),
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout).toContain(`Proxy running on port ${port}`);
+      expect(Number(readFileSync(join(frogHome, "frogp.pid"), "utf8"))).toBe(start.pid);
+      const health = await fetch(`http://127.0.0.1:${port}/healthz`).then(response => response.json()) as {
+        serverBuildId?: string;
+      };
+      const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version;
+      expect(health.serverBuildId).toBe(`frogprogsy-server@${version}`);
+    } finally {
+      writeFileSync(lockGate, "release");
+      const stop = Bun.spawn([process.execPath, cliPath, "stop"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      await stop.exited;
+      start.kill();
+      await start.exited;
       rmSync(root, { recursive: true, force: true });
     }
   }, 20_000);

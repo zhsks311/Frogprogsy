@@ -114,7 +114,7 @@ describe("docs i18n parity (en is the source of truth)", () => {
     for (const locale of ["en", "ko", "zh-cn"]) {
       const text = readFileSync(`${DOCS_ROOT}/${locale}/getting-started/installation.md`, "utf8");
       const installSection = text.split(/^## /m).find(section =>
-        section.startsWith("Install\n") || section.startsWith("설치\n") || section.startsWith("安装\n")
+        section.startsWith("Install") || section.startsWith("설치") || section.startsWith("安装")
       );
       expect(installSection, locale).toBeDefined();
       expect(installSection, locale).not.toMatch(/\b\d+\.\d+\.\d+(?:-preview\.\d+)?\b/);
