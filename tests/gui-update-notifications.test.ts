@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   DISMISSED_UPDATE_VERSION_KEY,
   canApplyUpdatePoll,
+  copyStableUpdateCommand,
   dismissUpdateVersion,
   readDismissedUpdateVersion,
   shouldShowUpdateNotice,
@@ -84,6 +85,23 @@ describe("dashboard update presentation", () => {
     expect(canApplyUpdatePoll(duringAction, generation)).toBe(false);
     expect(canApplyUpdatePoll(generation, generation)).toBe(true);
   });
+  test("copy feedback succeeds only after the Clipboard API writes the update command", async () => {
+    expect(await copyStableUpdateCommand(undefined)).toBe(false);
+    expect(await copyStableUpdateCommand({
+      writeText: async () => {
+        throw new Error("clipboard denied");
+      },
+    })).toBe(false);
+
+    const writes: string[] = [];
+    expect(await copyStableUpdateCommand({
+      writeText: async text => {
+        writes.push(text);
+      },
+    })).toBe(true);
+    expect(writes).toEqual(["frogp update"]);
+  });
+
   test("Home owns manual dashboard refresh without a duplicate Details action", async () => {
     const homeSource = await Bun.file(new URL("../gui/src/pages/Home.tsx", import.meta.url)).text();
     const detailsSource = await Bun.file(new URL("../gui/src/pages/DeveloperDetails.tsx", import.meta.url)).text();

@@ -504,7 +504,7 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
                 const delta = data.delta as { stop_reason?: unknown } | undefined;
                 const stop = normalizeAnthropicStopReason(delta?.stop_reason, "stream");
                 if (stop?.diagnostic) yield { type: "diagnostic", diagnostic: stop.diagnostic };
-                if (completeUsage || stop) {
+                if (usage || stop) {
                   yield {
                     type: "done",
                     usage: usageFromAnthropic(completeUsage),

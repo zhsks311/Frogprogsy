@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rename as renameFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -70,7 +71,8 @@ describe("stable update status service", () => {
     expect((await restarted.refresh({ force: true })).status).toBe("available");
     expect(requests).toBe(2);
     expect(JSON.parse(readFileSync(cachePath, "utf8"))).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      attemptCompleted: true,
       lastAttemptAt: "2026-08-25T00:00:00.000Z",
       lastAttemptSucceeded: true,
       checkedAt: "2026-08-25T00:00:00.000Z",
@@ -307,6 +309,45 @@ describe("stable update status service", () => {
     expect(snapshot.failure).toBe("cache-write");
     expect((await update.refresh({ force: false })).status).toBe("available");
     expect(requests).toBe(1);
+  });
+
+  test("an interrupted final cache write cannot suppress the next process check", async () => {
+    const cachePath = tempCachePath();
+    let requests = 0;
+    let renames = 0;
+    const fetchLatest = async () => {
+      requests += 1;
+      return Response.json({ latest: "1.2.4" });
+    };
+    const first = service(
+      cachePath,
+      identity(),
+      fetchLatest,
+      new Date("2026-08-25T00:00:00.000Z"),
+      {
+        fileSystem: {
+          rename: async (oldPath, newPath) => {
+            renames += 1;
+            if (renames === 2) throw new Error("final cache replacement failed");
+            await renameFile(oldPath, newPath);
+          },
+        },
+      },
+    );
+
+    expect(await first.refresh({ force: false })).toMatchObject({
+      status: "available",
+      failure: "cache-write",
+    });
+    expect(JSON.parse(readFileSync(cachePath, "utf8"))).toMatchObject({
+      schemaVersion: 2,
+      attemptCompleted: false,
+      lastAttemptSucceeded: false,
+    });
+
+    const restarted = service(cachePath, identity(), fetchLatest);
+    expect((await restarted.refresh({ force: false })).status).toBe("available");
+    expect(requests).toBe(2);
   });
 
   test("opt-out stays initially disabled and retains each successful explicit result for passive polls", async () => {

@@ -88,7 +88,7 @@ healthy，throttle 仅限当前 process。
 - config 只保存 key 的 `sha256:<hex>`。明文仅在 `frogp local-key add` 创建时输出一次，之后无法恢复。
 - `requestLimit` 是在 relay 进程内生效的按 key sliding window；超出后返回 `429` 并带 `Retry-After`。
 - 提供的 key 不会转发到 upstream，因此 `forward` lane 仍然只转发真实的调用方 provider credential。
-- 同一台机器上的工具不需要配置 key：运行中的 relay 会在每次启动时把 token 写入 `~/.frogprogsy/local-access.token`（mode `0600`）。CLI 只会把这个无限制 token 发送到 loopback；wildcard bind 也通过 loopback 访问。对于精确的非 loopback `hostname`，会拒绝携带 token 的 management call。该 token 不保存在 config 中，也不会在重启后保留。
+- 同一台机器上的工具不需要配置 key：运行中的 relay 会在每次启动时把 token 写入 `~/.frogprogsy/local-access.token`（mode `0600`）。CLI 只会把这个无限制 token 发送到 loopback；wildcard bind 也通过 loopback 访问。该 token 不保存在 config 中，也不会在重启后保留。
 - 非 loopback 的 `hostname` 至少需要一个 key。首次启动 Docker 时，请通过 container environment 或 secret 配置提供 `FROGP_LOCAL_ACCESS_KEY`。Entrypoint 只保存 hash，绝不输出明文。Volume 中已有 enabled key 时，之后无需再次提供该环境变量即可重启。
 - 按 key 的 `providers`/`models` scope 尚未生效；声明它们的 key 会在启动时被拒绝，而不是静默失效。
 

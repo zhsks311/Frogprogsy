@@ -15,14 +15,14 @@ description: "Install the FrogProgsy local relay command and check what you need
 
 ## Install
 
-The normal install follows the stable `latest` registry channel, currently `0.0.1`:
+The normal install follows the stable `latest` registry channel:
 
 ```bash
 bun add -g frogprogsy
 frogp --version
 ```
 
-To test the current prerelease, `0.0.2-preview.1`, select the `preview` channel explicitly:
+To test the current prerelease, select the `preview` channel explicitly:
 
 ```bash
 bun add -g frogprogsy@preview

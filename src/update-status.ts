@@ -43,15 +43,21 @@ export interface UpdateStatusServiceDeps {
   timeoutSignal?: (milliseconds: number) => AbortSignal;
 }
 
-const failureSchema = z.enum(["timeout", "network", "http", "oversized", "invalid-response", "cache-write"]);
-const cacheSchema = z.strictObject({
-  schemaVersion: z.literal(1),
+const cacheRecordFields = {
   lastAttemptAt: z.iso.datetime({ offset: true }).nullable(),
   lastAttemptSucceeded: z.boolean(),
   checkedAt: z.iso.datetime({ offset: true }).nullable(),
   latestVersion: z.string().nullable(),
-  failure: failureSchema.nullable(),
-});
+  failure: z.enum(["timeout", "network", "http", "oversized", "invalid-response", "cache-write"]).nullable(),
+};
+const cacheSchema = z.union([
+  z.strictObject({ schemaVersion: z.literal(1), ...cacheRecordFields }),
+  z.strictObject({
+    schemaVersion: z.literal(2),
+    attemptCompleted: z.boolean(),
+    ...cacheRecordFields,
+  }),
+]);
 const distTagsSchema = z.object({ latest: z.string() });
 
 const defaultFileSystem: UpdateStatusFileSystem = {
@@ -205,6 +211,7 @@ export class UpdateStatusService {
       const parsedJson: unknown = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8"));
       const parsed = cacheSchema.safeParse(parsedJson);
       if (!parsed.success) return;
+      if (parsed.data.schemaVersion === 2 && !parsed.data.attemptCompleted) return;
       const nowMs = this.now().getTime();
       const lastAttemptAtMs = timestampMs(parsed.data.lastAttemptAt, nowMs);
       const checkedAtMs = timestampMs(parsed.data.checkedAt, nowMs);
@@ -250,7 +257,7 @@ export class UpdateStatusService {
     this.state.lastAttemptAtMs = nowMs;
     this.state.lastAttemptSucceeded = false;
     this.state.failure = null;
-    await this.persistCache();
+    await this.persistCache(false);
 
     const result = await this.fetchLatestStable();
     if (result.ok) {
@@ -263,7 +270,7 @@ export class UpdateStatusService {
       this.state.lastAttemptSucceeded = false;
       this.state.failure = result.failure;
     }
-    if (!await this.persistCache()) this.state.failure = "cache-write";
+    if (!await this.persistCache(true)) this.state.failure = "cache-write";
     return this.snapshot();
   }
 
@@ -323,9 +330,10 @@ export class UpdateStatusService {
     return { ok: true, latestVersion: parsed.data.latest };
   }
 
-  private async persistCache(): Promise<boolean> {
+  private async persistCache(attemptCompleted: boolean): Promise<boolean> {
     return writeCacheAtomically(this.cachePath, JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      attemptCompleted,
       lastAttemptAt: this.state.lastAttemptAtMs === null ? null : new Date(this.state.lastAttemptAtMs).toISOString(),
       lastAttemptSucceeded: this.state.lastAttemptSucceeded,
       checkedAt: this.state.checkedAtMs === null ? null : new Date(this.state.checkedAtMs).toISOString(),

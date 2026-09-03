@@ -1,10 +1,99 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 const cliSource = () => readFileSync(join(import.meta.dir, "..", "src", "cli.ts"), "utf8");
 
 describe("frogp refresh detached lifecycle", () => {
+  test("refresh replaces a live proxy from an older installed build", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-stale-build-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const fixturePath = join(root, "stale-server.ts");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(fixturePath, [
+      "const server = Bun.serve({",
+      '  hostname: "127.0.0.1",',
+      "  port: 0,",
+      "  fetch(request) {",
+      "    const url = new URL(request.url);",
+      '    if (url.pathname === "/healthz") {',
+      '      return Response.json({ status: "ok", serverBuildId: "frogprogsy-server@0.0.0-stale" });',
+      "    }",
+      '    return new Response("not found", { status: 404 });',
+      "  },",
+      "});",
+      "console.log(server.port);",
+      'process.on("SIGTERM", () => { server.stop(true); process.exit(0); });',
+      "await Promise.withResolvers<void>().promise;",
+    ].join("\n"));
+
+    const stale = Bun.spawn([process.execPath, fixturePath], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const env = {
+      ...process.env,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+      FROGPROGSY_NO_CLAUDE_WRITES: "1",
+    };
+
+    try {
+      const staleOutput = stale.stdout.getReader();
+      const announced = await staleOutput.read();
+      staleOutput.releaseLock();
+      const port = Number(new TextDecoder().decode(announced.value).trim());
+      expect(announced.done).toBe(false);
+      expect(Number.isInteger(port) && port > 0).toBe(true);
+      writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+        port,
+        hostname: "127.0.0.1",
+        watchdog: { enabled: false },
+        providers: {},
+      }, null, 2) + "\n");
+      writeFileSync(join(frogHome, "frogp.pid"), String(stale.pid));
+      writeFileSync(join(frogHome, "frogp.port"), String(port));
+
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(refresh.stdout).text(),
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout).toContain(`Proxy running on port ${port}`);
+      expect(await stale.exited).toBe(0);
+      const replacementPid = Number(readFileSync(join(frogHome, "frogp.pid"), "utf8"));
+      expect(replacementPid).not.toBe(stale.pid);
+      const health = await fetch(`http://127.0.0.1:${port}/healthz`).then(response => response.json()) as {
+        serverBuildId?: string;
+      };
+      const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version;
+      expect(health.serverBuildId).toBe(`frogprogsy-server@${version}`);
+    } finally {
+      spawnSync(process.execPath, [cliPath, "stop"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        encoding: "utf8",
+      });
+      stale.kill();
+      await stale.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test("refresh does not mark its background proxy as externally service-managed", () => {
     const source = cliSource();
     const refreshStart = source.indexOf("async function handleRefresh()");
