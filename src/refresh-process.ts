@@ -9,6 +9,13 @@ export type StaleProxyTerminationResult =
   | { ok: true }
   | { ok: false; error: unknown };
 
+/** Permission denial proves the PID exists even when the caller cannot signal it. */
+export function processProbeErrorMeansAlive(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && error.code === "EPERM";
+}
+
 /** Preserve watchdog ownership unless the stale process is confirmed terminated. */
 export function terminateStaleProxyForRefresh(
   pid: number,

@@ -14,6 +14,7 @@ import {
   assertSafeConfigDirWrite,
   getConfigDir,
   getWatchdogStatusPath,
+  getWatchdogPidPath,
   loadConfig,
   readPid,
   readActivePort,
@@ -28,7 +29,7 @@ import {
 import { createConfigMutationLock } from "./config-mutation-lock";
 import { generateLocalAccessSecret, hashLocalAccessSecret, sameMachineAccessHeaders } from "./local-access";
 import { findAvailablePort } from "./ports";
-import { terminateStaleProxyForRefresh } from "./refresh-process";
+import { processProbeErrorMeansAlive, terminateStaleProxyForRefresh } from "./refresh-process";
 import { createRuntimeConfigState } from "./runtime-config-state";
 
 import { maybeShowStarPrompt } from "./star-prompt";
@@ -622,6 +623,7 @@ async function handleRefresh() {
     } else {
       const existingPid = readPid();
       if (existingPid) {
+        const previousWatchdogPid = readWatchdogProcessPid();
         const terminated = terminateStaleProxyForRefresh(existingPid, {
           writeShutdownIntent,
           terminate: killProxy,
@@ -632,6 +634,19 @@ async function handleRefresh() {
         if (!replacementFailure) {
           removePid();
           removeActivePort();
+          if (previousWatchdogPid !== null) {
+            try {
+              killProxy(previousWatchdogPid);
+            } catch (error) {
+              if (isProcessAlive(previousWatchdogPid)) {
+                replacementFailure = {
+                  pid: existingPid,
+                  error: new Error(`watchdog ${previousWatchdogPid} did not release ownership: ${error instanceof Error ? error.message : String(error)}`),
+                };
+              }
+            }
+            if (!replacementFailure) clearWatchdogPidIfOwned(previousWatchdogPid);
+          }
         }
       }
     }
@@ -663,6 +678,27 @@ async function handleRefresh() {
 }
 
 
+function readWatchdogProcessPid(): number | null {
+  try {
+    const raw = readFileSync(getWatchdogPidPath(), "utf8").trim();
+    if (!/^[1-9]\d*$/.test(raw)) return null;
+    const pid = Number(raw);
+    return Number.isSafeInteger(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearWatchdogPidIfOwned(pid: number): void {
+  if (readWatchdogProcessPid() !== pid) return;
+  assertSafeConfigDirWrite("remove stale watchdog ownership");
+  try {
+    unlinkSync(getWatchdogPidPath());
+  } catch {
+    // A concurrently exiting watchdog may already have removed its own file.
+  }
+}
+
 function killProxy(pid: number): void {
   if (!isProcessAlive(pid)) return;
   if (process.platform === "win32") {
@@ -683,8 +719,8 @@ function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return processProbeErrorMeansAlive(error);
   }
 }
 

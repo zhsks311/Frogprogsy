@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { terminateStaleProxyForRefresh } from "../src/refresh-process";
+import { processProbeErrorMeansAlive, terminateStaleProxyForRefresh } from "../src/refresh-process";
+
 const cliSource = () => readFileSync(join(import.meta.dir, "..", "src", "cli.ts"), "utf8");
 
 function waitForPath(path: string): Promise<void> {
@@ -24,6 +25,55 @@ function waitForPath(path: string): Promise<void> {
   return promise;
 }
 
+function waitForPathRemoval(path: string): Promise<void> {
+  if (!existsSync(path)) return Promise.resolve();
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const watcher = watch(dirname(path), () => {
+    if (existsSync(path)) return;
+    watcher.close();
+    resolve();
+  });
+  watcher.once("error", error => {
+    watcher.close();
+    reject(error);
+  });
+  if (!existsSync(path)) {
+    watcher.close();
+    resolve();
+  }
+  return promise;
+}
+
+
+function waitForPidReplacement(path: string, previousPid: number): Promise<number> {
+  const currentPid = () => {
+    try {
+      const pid = Number(readFileSync(path, "utf8"));
+      return Number.isSafeInteger(pid) && pid > 0 && pid !== previousPid ? pid : null;
+    } catch {
+      return null;
+    }
+  };
+  const current = currentPid();
+  if (current !== null) return Promise.resolve(current);
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  const watcher = watch(dirname(path), () => {
+    const replacement = currentPid();
+    if (replacement === null) return;
+    watcher.close();
+    resolve(replacement);
+  });
+  watcher.once("error", error => {
+    watcher.close();
+    reject(error);
+  });
+  const replacement = currentPid();
+  if (replacement !== null) {
+    watcher.close();
+    resolve(replacement);
+  }
+  return promise;
+}
 describe("frogp refresh detached lifecycle", () => {
   test("refresh termination restores watchdog ownership on failure and accepts an already-dead process", () => {
     const failedEvents: string[] = [];
@@ -54,6 +104,8 @@ describe("frogp refresh detached lifecycle", () => {
     });
     expect(alreadyDead).toEqual({ ok: true });
     expect(clearedAfterDeath).toBe(false);
+    expect(processProbeErrorMeansAlive(Object.assign(new Error("denied"), { code: "EPERM" }))).toBe(true);
+    expect(processProbeErrorMeansAlive(Object.assign(new Error("gone"), { code: "ESRCH" }))).toBe(false);
   });
 
   test("refresh serializes stale replacement against a concurrent start on every platform", async () => {
@@ -63,6 +115,7 @@ describe("frogp refresh detached lifecycle", () => {
     const lockGate = join(root, "refresh-lock-gate");
     const fixturePath = join(root, "stale-server.ts");
     const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    const watchdogPidPath = join(frogHome, "watchdog.pid");
     mkdirSync(frogHome, { recursive: true });
     mkdirSync(claudeHome, { recursive: true });
     writeFileSync(fixturePath, [
@@ -85,6 +138,11 @@ describe("frogp refresh detached lifecycle", () => {
       stdout: "pipe",
       stderr: "ignore",
     });
+    const oldWatchdog = Bun.spawn(
+      [process.execPath, "-e", "await Promise.withResolvers<void>().promise"],
+      { stdout: "ignore", stderr: "ignore" },
+    );
+    let replacementWatchdogPid: number | null = null;
     const env = {
       ...process.env,
       NODE_ENV: "test",
@@ -106,11 +164,12 @@ describe("frogp refresh detached lifecycle", () => {
       writeFileSync(join(frogHome, "config.json"), JSON.stringify({
         port,
         hostname: "127.0.0.1",
-        watchdog: { enabled: false },
+        watchdog: { enabled: true, pollIntervalMs: 50 },
         providers: {},
       }, null, 2) + "\n");
       writeFileSync(join(frogHome, "frogp.pid"), String(stale.pid));
       writeFileSync(join(frogHome, "frogp.port"), String(port));
+      writeFileSync(watchdogPidPath, String(oldWatchdog.pid));
 
       const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
         cwd: join(import.meta.dir, ".."),
@@ -139,6 +198,9 @@ describe("frogp refresh detached lifecycle", () => {
       const replacementPid = Number(readFileSync(join(frogHome, "frogp.pid"), "utf8"));
       expect(replacementPid).not.toBe(stale.pid);
       if (replacementPid !== concurrent.pid) expect(await concurrent.exited).toBe(1);
+      await oldWatchdog.exited;
+      replacementWatchdogPid = await waitForPidReplacement(watchdogPidPath, oldWatchdog.pid);
+      expect(() => process.kill(replacementWatchdogPid!, 0)).not.toThrow();
       const health = await fetch(`http://127.0.0.1:${port}/healthz`).then(response => response.json()) as {
         serverBuildId?: string;
       };
@@ -157,6 +219,16 @@ describe("frogp refresh detached lifecycle", () => {
       await stale.exited;
       concurrent?.kill();
       if (concurrent) await concurrent.exited;
+      oldWatchdog.kill();
+      await oldWatchdog.exited;
+      if (replacementWatchdogPid !== null) {
+        try {
+          process.kill(replacementWatchdogPid, "SIGTERM");
+        } catch {
+          // The graceful stop may already have ended the replacement watchdog.
+        }
+        await waitForPathRemoval(watchdogPidPath);
+      }
       rmSync(root, { recursive: true, force: true });
     }
   }, 20_000);
