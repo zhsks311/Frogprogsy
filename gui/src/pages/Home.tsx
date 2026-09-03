@@ -8,6 +8,7 @@ import { parseUpdateStatus } from "../../../src/update-status-contract";
 import type { UpdateStatus } from "../../../src/update-status-contract";
 import {
   canApplyUpdatePoll,
+  copyStableUpdateCommand,
   dismissUpdateVersion,
   readDismissedUpdateVersion,
   shouldShowUpdateNotice,
@@ -203,13 +204,9 @@ export default function Home({ apiBase, navigate }: { apiBase: string; navigate:
   };
 
   const copyUpdateCommand = async () => {
-    try {
-      await navigator.clipboard?.writeText("frogp update");
-      setCopiedUpdateCommand(true);
-      window.setTimeout(() => setCopiedUpdateCommand(false), 1_800);
-    } catch {
-      setCopiedUpdateCommand(false);
-    }
+    const copied = await copyStableUpdateCommand(navigator.clipboard);
+    setCopiedUpdateCommand(copied);
+    if (copied) window.setTimeout(() => setCopiedUpdateCommand(false), 1_800);
   };
 
   const dismissCurrentUpdate = () => {

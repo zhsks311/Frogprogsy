@@ -347,6 +347,36 @@ describe("adapter reasoning and usage details", () => {
     });
   });
 
+  test("Anthropic pending usage does not terminate a later usage-free message_delta", async () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const response = new Response([
+      "event: message_start\n",
+      "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"output_tokens\":0}}}\n\n",
+      "event: message_delta\n",
+      "data: {\"type\":\"message_delta\",\"delta\":{}}\n\n",
+      "event: content_block_start\n",
+      "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n",
+      "event: content_block_delta\n",
+      "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"after intermediate delta\"}}\n\n",
+      "event: message_delta\n",
+      "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",
+      "event: message_stop\n",
+      "data: {\"type\":\"message_stop\"}\n\n",
+    ].join(""));
+
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+
+    expect(events.filter(event => event.type === "done")).toHaveLength(1);
+    expect(events).toContainEqual({ type: "text_delta", text: "after intermediate delta" });
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 20, outputTokens: 8 },
+      stopReason: "end_turn",
+      stopReasonProvenance: "approved",
+    });
+  });
+
   test("Anthropic streaming keeps each partial input bucket unavailable for exact comparison", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
     const cases = [

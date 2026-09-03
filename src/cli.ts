@@ -606,6 +606,19 @@ async function handleRefresh() {
     return;
   }
 
+  const existingPid = readPid();
+  if (existingPid) {
+    try {
+      writeShutdownIntent(existingPid);
+      killProxy(existingPid);
+      removePid();
+      removeActivePort();
+    } catch (error) {
+      console.error(`❌ Could not replace stale proxy (PID ${existingPid}): ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  }
+
   const child = spawn(process.execPath, [process.argv[1], "start"], {
     detached: true,
     stdio: "ignore",

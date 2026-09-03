@@ -43,3 +43,15 @@ export function dismissUpdateVersion(storage: Pick<Storage, "setItem">, version:
     return false;
   }
 }
+
+export async function copyStableUpdateCommand(
+  clipboard: Pick<Clipboard, "writeText"> | undefined,
+): Promise<boolean> {
+  if (!clipboard) return false;
+  try {
+    await clipboard.writeText("frogp update");
+    return true;
+  } catch {
+    return false;
+  }
+}
