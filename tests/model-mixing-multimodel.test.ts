@@ -13,7 +13,7 @@ import { scanEventsForMix } from "../src/model-mixing/scan";
 import { computeCallPlan } from "../src/model-mixing/orchestrate";
 import { buildStagePrompt, buildVerifierInstruction, resolvePipelineStages } from "../src/model-mixing/pipeline";
 import { resolveRulesTarget } from "../src/model-mixing/rules";
-import { resolveMix } from "../src/model-mixing";
+import { resolveMix, type MixTarget } from "../src/model-mixing";
 import { runWithMixing } from "../src/model-mixing/loop";
 
 
@@ -644,5 +644,149 @@ describe("rules mode", () => {
     };
     const r = await resolveMix(c, req("fix this bug"), complete);
     expect(r).toEqual({ target: { provider: "anthropic", model: "claude-opus" }, source: "coordinator" });
+  });
+});
+
+describe("user-facing mixing producer ownership", () => {
+  async function collectEvents(events: AsyncGenerator<AdapterEvent>): Promise<AdapterEvent[]> {
+    const collected: AdapterEvent[] = [];
+    for await (const event of events) collected.push(event);
+    return collected;
+  }
+
+  test("fusion selects the synthesizer on success and the panel producer on dispatch fallback", async () => {
+    async function run(finalFails: boolean) {
+      const owners: MixTarget[] = [];
+      let bufferedCalls = 0;
+      const events = await collectEvents(await runWithMixing({
+        config: cfg({
+          combine: "fusion",
+          surfaceStages: false,
+          fusion: {
+            panel: [{ provider: "codex", model: "gpt-5.5" }],
+            judge: { provider: "codex", model: "gpt-5.5" },
+            synthesizer: { provider: "anthropic", model: "claude-opus" },
+          },
+        }),
+        parsed: {
+          modelId: "frogp/mix",
+          stream: true,
+          context: { messages: [{ role: "user", content: "solve", timestamp: 1 }] },
+          options: {} as FrogParsedRequest["options"],
+        },
+        incomingHeaders: new Headers(),
+        dispatchBuffered: async (): Promise<AdapterEvent[]> => {
+          bufferedCalls += 1;
+          if (bufferedCalls === 1) {
+            return [
+              { type: "text_delta", text: "panel answer" },
+              { type: "done", usage: { inputTokens: 4, outputTokens: 1 } },
+            ];
+          }
+          return [{ type: "text_delta", text: JSON.stringify(fullAnalysis) }, { type: "done" }];
+        },
+        dispatchFinalStream: async () => {
+          if (finalFails) throw new Error("synthesizer unavailable");
+          return (async function* (): AsyncGenerator<AdapterEvent> {
+            yield { type: "text_delta", text: "synthesized answer" };
+            yield { type: "done", usage: { inputTokens: 8, outputTokens: 2 } };
+          })();
+        },
+        onUserFacingTarget: target => owners.push(target),
+      }));
+      return { events, owners };
+    }
+
+    const success = await run(false);
+    expect(success.owners).toEqual([{ provider: "anthropic", model: "claude-opus" }]);
+    expect(success.events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 8, outputTokens: 2 },
+    });
+
+    const fallback = await run(true);
+    expect(fallback.owners).toEqual([{ provider: "codex", model: "gpt-5.5" }]);
+    expect(fallback.events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 4, outputTokens: 1 },
+    });
+  });
+
+  test("pipeline selects the verifier on success and the last pre-final producer on fallback", async () => {
+    async function run(finalFails: boolean) {
+      const owners: MixTarget[] = [];
+      const events = await collectEvents(await runWithMixing({
+        config: cfg({
+          combine: "pipeline",
+          surfaceStages: false,
+          pipeline: [
+            { role: "worker", provider: "codex", model: "gpt-5.5" },
+            { role: "verifier", provider: "anthropic", model: "claude-opus" },
+          ],
+        }),
+        parsed: {
+          modelId: "frogp/mix",
+          stream: true,
+          context: { messages: [{ role: "user", content: "solve", timestamp: 1 }] },
+          options: {} as FrogParsedRequest["options"],
+        },
+        incomingHeaders: new Headers(),
+        dispatchBuffered: async (): Promise<AdapterEvent[]> => [
+          { type: "text_delta", text: "worker answer" },
+          { type: "done", usage: { inputTokens: 5, outputTokens: 1 } },
+        ],
+        dispatchFinalStream: async () => {
+          if (finalFails) throw new Error("verifier unavailable");
+          return (async function* (): AsyncGenerator<AdapterEvent> {
+            yield { type: "text_delta", text: "verified answer" };
+            yield { type: "done", usage: { inputTokens: 9, outputTokens: 2 } };
+          })();
+        },
+        onUserFacingTarget: target => owners.push(target),
+      }));
+      return { events, owners };
+    }
+
+    const success = await run(false);
+    expect(success.owners).toEqual([{ provider: "anthropic", model: "claude-opus" }]);
+    expect(success.events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 9, outputTokens: 2 },
+    });
+
+    const fallback = await run(true);
+    expect(fallback.owners).toEqual([{ provider: "codex", model: "gpt-5.5" }]);
+    expect(fallback.events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 5, outputTokens: 1 },
+    });
+  });
+
+  test("an empty pipeline records the successful plain fallback producer", async () => {
+    const owners: MixTarget[] = [];
+    const events = await collectEvents(await runWithMixing({
+      config: cfg({ combine: "pipeline", pipeline: [], surfaceStages: false }),
+      parsed: {
+        modelId: "frogp/mix",
+        stream: true,
+        context: { messages: [{ role: "user", content: "solve", timestamp: 1 }] },
+        options: {} as FrogParsedRequest["options"],
+      },
+      incomingHeaders: new Headers(),
+      dispatchBuffered: async () => {
+        throw new Error("plain fallback must not dispatch a buffered stage");
+      },
+      dispatchFinalStream: async () => (async function* (): AsyncGenerator<AdapterEvent> {
+        yield { type: "text_delta", text: "plain answer" };
+        yield { type: "done", usage: { inputTokens: 3, outputTokens: 1 } };
+      })(),
+      onUserFacingTarget: target => owners.push(target),
+    }));
+
+    expect(owners).toEqual([{ provider: "codex", model: "gpt-5.4-mini" }]);
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 3, outputTokens: 1 },
+    });
   });
 });

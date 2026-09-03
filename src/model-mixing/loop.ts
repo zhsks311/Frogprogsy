@@ -1,4 +1,4 @@
-import type { AdapterEvent, FrogConfig, FrogMessage, FrogParsedRequest, FrogTool } from "../types";
+import type { AdapterEvent, FrogConfig, FrogMessage, FrogParsedRequest, FrogTool, FrogUsage } from "../types";
 import { executeSearchEvidence as defaultExecuteSearchEvidence, type PanelSearchTier, type SearchEvidence } from "../web-search-fallback/panel-search";
 import { buildWebSearchTool, WEB_SEARCH_TOOL_NAME } from "../web-search-fallback/synthetic-tool";
 import type { MixTarget } from "./index";
@@ -17,6 +17,8 @@ export interface MixLoopDeps {
   dispatchBuffered: (target: MixTarget, messages: FrogMessage[], maxTokens: number, timeoutMs?: number, tools?: FrogTool[]) => Promise<AdapterEvent[]>;
   /** Streamed dispatch to the synthesizer: the original request context plus an appended instruction. */
   dispatchFinalStream: (target: MixTarget, systemAppend: string) => Promise<AsyncGenerator<AdapterEvent>>;
+  /** Records the target whose events become the outer user-facing response. */
+  onUserFacingTarget?: (target: MixTarget) => void;
   /** Test seam for panel synthetic web_search evidence; production uses executeSearchEvidence. */
   executeSearchEvidence?: typeof defaultExecuteSearchEvidence;
 }
@@ -25,6 +27,21 @@ function concatText(events: AdapterEvent[]): string {
   let text = "";
   for (const e of events) if (e.type === "text_delta") text += e.text;
   return text;
+}
+
+function usageFromEvents(events: AdapterEvent[]): FrogUsage | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type === "done") return event.usage;
+  }
+  return undefined;
+}
+
+interface ProducedAnswer {
+  label: string;
+  text: string;
+  target: MixTarget;
+  usage?: FrogUsage;
 }
 
 function truncate(s: string, n: number): string {
@@ -243,7 +260,7 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
 
       // (a) Panel: dispatch every roster member in parallel; survivors proceed, failures are dropped.
       const settled = await Promise.allSettled(panelTargets.map(m => dispatchPanelWithSearch(m)));
-      const panelAnswers: { label: string; text: string }[] = [];
+      const panelAnswers: ProducedAnswer[] = [];
       for (let i = 0; i < settled.length; i++) {
         const m = panelTargets[i];
         const label = `${m.provider}/${m.model}`;
@@ -253,7 +270,7 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
           continue;
         }
         const text = concatText(result.value);
-        panelAnswers.push({ label, text });
+        panelAnswers.push({ label, text, target: m, usage: usageFromEvents(result.value) });
         if (surfaceStages) {
           yield { type: "thinking_delta", thinking: `[panel ${label}]\n${truncate(text, 1500)}\n\n` };
         }
@@ -329,20 +346,23 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
             const refined = await Promise.allSettled(
               Array.from({ length: branchFactor }, async (_, index) => {
                 const variant = index + 1;
-                const text = concatText(
-                  await deps.dispatchBuffered(
-                    plan.synthesizer,
-                    buildRefinePrompt(
-                      taskText,
-                      best,
-                      scoreAnalysis ?? analysis,
-                      refineInstruction(round, variant),
-                      { contextMode: judgeContextMode, context: parsed.context },
-                    ),
-                    2048,
+                const events = await deps.dispatchBuffered(
+                  plan.synthesizer,
+                  buildRefinePrompt(
+                    taskText,
+                    best,
+                    scoreAnalysis ?? analysis,
+                    refineInstruction(round, variant),
+                    { contextMode: judgeContextMode, context: parsed.context },
                   ),
+                  2048,
                 );
-                return { label: `round${round}/refine${variant}`, text };
+                return {
+                  label: `round${round}/refine${variant}`,
+                  text: concatText(events),
+                  target: plan.synthesizer,
+                  usage: usageFromEvents(events),
+                };
               }),
             );
             budgetUsed += branchFactor;
@@ -369,9 +389,11 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
 
       // (d) Synthesizer: stream the final answer against the real request context.
       if (multiroundEnabled && !canSpend(1, "synthesizer")) {
-        if (panelAnswers.length > 0) {
-          yield { type: "text_delta", text: panelAnswers[0].text };
-          yield { type: "done" };
+        const fallback = panelAnswers[0];
+        if (fallback) {
+          deps.onUserFacingTarget?.(fallback.target);
+          yield { type: "text_delta", text: fallback.text };
+          yield { type: "done", ...(fallback.usage ? { usage: fallback.usage } : {}) };
           return;
         }
       }
@@ -379,12 +401,15 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
       const { instruction } = buildSynthesisPrompt(analysis, panelAnswers);
       try {
         const gen = await deps.dispatchFinalStream(plan.synthesizer, instruction);
+        deps.onUserFacingTarget?.(plan.synthesizer);
         yield* gen;
       } catch (err) {
         console.error(`frogprogsy: model-mixing: synthesis failed (${err instanceof Error ? err.message : String(err)}); falling back`);
-        if (panelAnswers.length > 0) {
-          yield { type: "text_delta", text: panelAnswers[0].text };
-          yield { type: "done" };
+        const fallback = panelAnswers[0];
+        if (fallback) {
+          deps.onUserFacingTarget?.(fallback.target);
+          yield { type: "text_delta", text: fallback.text };
+          yield { type: "done", ...(fallback.usage ? { usage: fallback.usage } : {}) };
         } else {
           yield { type: "error", message: "model-mixing: synthesis failed and no panel answer available" };
         }
@@ -404,6 +429,7 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
         console.error(`frogprogsy: model-mixing: falling back to plain final answer from ${fallback.provider}/${fallback.model}`);
         try {
           const gen = await deps.dispatchFinalStream({ provider: fallback.provider, model: fallback.model }, "");
+          deps.onUserFacingTarget?.({ provider: fallback.provider, model: fallback.model });
           yield* gen;
         } catch (err) {
           yield {
@@ -416,7 +442,7 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
 
       const preFinal = stages.slice(0, -1);
       const final = stages[stages.length - 1];
-      const prior: { role: string; text: string }[] = [];
+      const prior: Array<{ role: string; text: string; target: MixTarget; usage?: FrogUsage }> = [];
 
       for (const stage of preFinal) {
         const events = await deps.dispatchBuffered(
@@ -429,11 +455,17 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
           console.error(
             `frogprogsy: model-mixing: ${stage.role} emitted a tool call; pipeline finalized early, verifier deferred (stateless proxy cannot force a follow-up turn)`,
           );
+          deps.onUserFacingTarget?.({ provider: stage.provider, model: stage.model });
           for (const e of forwarded) yield e;
           return;
         }
         const text = concatText(forwarded);
-        prior.push({ role: stage.role, text });
+        prior.push({
+          role: stage.role,
+          text,
+          target: { provider: stage.provider, model: stage.model },
+          usage: usageFromEvents(forwarded),
+        });
         if (surfaceStages) {
           yield { type: "thinking_delta", thinking: `[${stage.role}]\n${truncate(text, 1500)}\n\n` };
         }
@@ -444,13 +476,15 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
           { provider: final.provider, model: final.model },
           buildVerifierInstruction(prior),
         );
+        deps.onUserFacingTarget?.({ provider: final.provider, model: final.model });
         yield* gen;
       } catch (err) {
         console.error(`frogprogsy: model-mixing: verifier failed (${err instanceof Error ? err.message : String(err)}); falling back`);
         const last = prior[prior.length - 1];
         if (last) {
+          deps.onUserFacingTarget?.(last.target);
           yield { type: "text_delta", text: last.text };
-          yield { type: "done" };
+          yield { type: "done", ...(last.usage ? { usage: last.usage } : {}) };
         } else {
           yield { type: "error", message: "model-mixing: verifier failed and no prior stage output available" };
         }

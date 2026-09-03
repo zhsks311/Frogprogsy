@@ -27,6 +27,48 @@ Management endpoints live in `src/server.ts` under `/api/*`:
 | Logs | Surface request/runtime logs for local diagnosis. |
 | Stop | `POST /api/stop` — restore native Claude Code, stop any installed service, and exit the proxy. |
 
+### Usage and prompt-cache effectiveness
+
+`GET /api/usage` derives its cache hit rate only from persisted usage with an explicit, wire-proven
+denominator contract. Anthropic-compatible usage is comparable when it preserves
+`cache_read_input_tokens`, `cache_creation_input_tokens`, and `input_tokens`; its input basis is the sum
+of those three separate buckets. Native OpenAI Chat Completions maps
+`prompt_tokens_details.cached_tokens` against `prompt_tokens`, and native OpenAI Responses maps
+`input_tokens_details.cached_tokens` against `input_tokens`. Both OpenAI totals already include cached
+tokens, so FrogProgsy never adds the cached count a second time. The normalized aggregate formula is:
+
+```text
+cache_read_input_tokens / total_input_tokens
+```
+
+`total_input_tokens` is the sum of each comparable request's provider-specific basis: read + creation +
+plain input for Anthropic, or the reported inclusive input total for native OpenAI. Streaming Anthropic
+adapters merge the input/cache buckets from `message_start` with output usage from `message_delta`;
+OpenAI Chat consumes its requested final usage chunk and OpenAI Responses consumes terminal response
+usage. A provider/model wire-protocol override supplies the effective adapter provenance. For fusion and
+pipeline mixing, only the final user-facing target owns the outer request's usage and provenance. Buffered
+panel, judge, and pre-final stages remain excluded unless a pre-final pipeline stage emits a real tool call
+and intentionally becomes the user-facing terminal response; that stage then owns the outer usage and provenance.
+
+OpenAI comparability requires the stable managed catalog provenance (`openai-apikey` or `codex`), the
+matching native adapter, and its canonical OpenAI or ChatGPT/Codex endpoint. Provider map keys and display
+labels are never evidence. Generic OpenAI-compatible and Google cached-token counters remain `unsupported`
+until their exact wire semantics and provenance establish an equivalent denominator.
+
+This is the token share served from cache, not a request-hit percentage or provider invoice. The response
+separately counts requests with a comparable breakdown, failed requests, non-equivalent or unproven
+provider semantics, and absent breakdowns. No requests means `no_data`; only unsupported rows means
+`unsupported`; a successful request with missing breakdown means `unavailable`; and when no comparable
+rows exist, any failed request makes the primary status `error`. An exact reported breakdown with zero
+cache reads remains `available` with a real zero rate. Mixed data calculates only over comparable requests
+and displays every excluded count. Historical rows remain readable: rows without proven semantics are
+unavailable rather than guessed, while cache-metric rows already marked `reported` with the exact Anthropic
+triple retain that established interpretation. The Usage page polls the local summary sequentially with
+one request in flight, then waits five seconds after it settles before starting the next. Effect cleanup
+prevents a late response from an old range or API base from changing the new snapshot, so slow responses
+remain visible without overlapping requests, stale rollback, or changes to provider routing, credentials,
+request bodies, or restore state.
+
 Provider writes must not round-trip masked API keys as real secrets. Dashboard actions that change
 model visibility or subagent selection should trigger catalog/cache sync behavior through the server
 path that owns it.

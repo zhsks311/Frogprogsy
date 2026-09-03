@@ -2,12 +2,34 @@ import { describe, expect, test } from "bun:test";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { createGoogleAdapter } from "../src/adapters/google";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { createResponsesAdapter } from "../src/adapters/openai-responses";
+import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import { buildEffectiveConfig } from "../src/model-catalog-config";
 import type { ModelCatalogProviderV1 } from "../src/model-catalog-schema";
 import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
-import type { FrogProviderConfig } from "../src/types";
+import { cacheUsageSemanticsForProvider, type FrogProviderConfig } from "../src/types";
 
 const provider = { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "key" };
+const nativeOpenAIChatProvider = { ...provider, baseUrl: "https://api.openai.com/v1", catalogProviderId: "openai-apikey" };
+const nativeOpenAIResponsesProvider = {
+  adapter: "openai-responses",
+  baseUrl: "https://api.openai.com/v1",
+  apiKey: "key",
+  catalogProviderId: "openai-apikey",
+};
+const nativeCodexResponsesProvider = {
+  ...nativeOpenAIResponsesProvider,
+  baseUrl: "https://chatgpt.com/backend-api/codex",
+  catalogProviderId: "codex",
+};
+
+const comparableRegistryProviders = PROVIDER_REGISTRY
+  .filter(entry => cacheUsageSemanticsForProvider({
+    adapter: entry.adapter,
+    baseUrl: entry.baseUrl,
+    catalogProviderId: entry.id,
+  }) !== undefined)
+  .map(entry => entry.id);
 
 function effectiveManagedProvider(
   persisted: FrogProviderConfig,
@@ -46,6 +68,17 @@ function effectiveManagedProvider(
 }
 
 describe("adapter reasoning and usage details", () => {
+  test("registry cache comparability stays limited to proven native or Anthropic wire contracts", () => {
+    expect(comparableRegistryProviders).toEqual([
+      "codex",
+      "anthropic",
+      "openai-apikey",
+      "umans",
+      "xiaomi",
+      "cloudflare-ai-gateway",
+    ]);
+  });
+
   test("effective managed restrictions constrain the actual OpenAI request", () => {
     const effectiveProvider = effectiveManagedProvider({
       adapter: "openai-chat",
@@ -94,7 +127,7 @@ describe("adapter reasoning and usage details", () => {
   });
 
   test("OpenAI-compatible non-streaming maps reasoning_content and usage details", async () => {
-    const adapter = createOpenAIChatAdapter(provider);
+    const adapter = createOpenAIChatAdapter({ ...provider, catalogProviderId: "openai-apikey" });
     const events = await adapter.parseResponse?.(new Response(JSON.stringify({
       choices: [{ message: { reasoning_content: "raw thoughts", content: "answer" } }],
       usage: {
@@ -131,6 +164,107 @@ describe("adapter reasoning and usage details", () => {
     });
   });
 
+  test("native OpenAI Chat preserves a positive cache read only with the required details and total", async () => {
+    const adapter = createOpenAIChatAdapter(nativeOpenAIChatProvider);
+    const positive = await adapter.parseResponse?.(Response.json({
+      choices: [{ message: { content: "answer" } }],
+      usage: {
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        prompt_tokens_details: { cached_tokens: 5 },
+      },
+    }));
+    const missingDetails = await adapter.parseResponse?.(Response.json({
+      choices: [{ message: { content: "answer" } }],
+      usage: { prompt_tokens: 11, completion_tokens: 7 },
+    }));
+    const missingTotal = await adapter.parseResponse?.(Response.json({
+      choices: [{ message: { content: "answer" } }],
+      usage: {
+        completion_tokens: 7,
+        prompt_tokens_details: { cached_tokens: 5 },
+      },
+    }));
+
+    expect(positive?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 11, outputTokens: 7, cachedInputTokens: 5, cacheReadInputTokens: 5 },
+    });
+    expect(missingDetails?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 11, outputTokens: 7 },
+    });
+    expect(missingTotal?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 0, outputTokens: 7, cachedInputTokens: 5 },
+    });
+  });
+
+  test("native OpenAI Chat streaming preserves an explicitly reported zero cache read", async () => {
+    const adapter = createOpenAIChatAdapter(nativeOpenAIChatProvider);
+    const response = new Response([
+      "data: {\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\n",
+      "data: [DONE]\n\n",
+    ].join(""));
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 9, outputTokens: 4, cachedInputTokens: 0, cacheReadInputTokens: 0 },
+    });
+  });
+
+  test("native OpenAI Responses preserves a positive cache read only with the required details and total", async () => {
+    const adapter = createResponsesAdapter(nativeOpenAIResponsesProvider);
+    const positive = await adapter.parseResponse?.(Response.json({
+      output: [{ type: "message", content: [{ type: "output_text", text: "answer" }] }],
+      usage: {
+        input_tokens: 13,
+        output_tokens: 5,
+        input_tokens_details: { cached_tokens: 3 },
+      },
+    }));
+    const missingDetails = await adapter.parseResponse?.(Response.json({
+      output: [{ type: "message", content: [{ type: "output_text", text: "answer" }] }],
+      usage: { input_tokens: 13, output_tokens: 5 },
+    }));
+
+    const missingTotal = await adapter.parseResponse?.(Response.json({
+      output: [{ type: "message", content: [{ type: "output_text", text: "answer" }] }],
+      usage: { output_tokens: 5, input_tokens_details: { cached_tokens: 3 } },
+    }));
+    expect(positive?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 13, outputTokens: 5, cachedInputTokens: 3, cacheReadInputTokens: 3 },
+    });
+    expect(missingDetails?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 13, outputTokens: 5 },
+    });
+    expect(missingTotal?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 0, outputTokens: 5, cachedInputTokens: 3 },
+    });
+  });
+
+  test("native OpenAI Responses streaming preserves an explicitly reported zero cache read", async () => {
+    const adapter = createResponsesAdapter(nativeCodexResponsesProvider);
+    const response = new Response([
+      "event: response.output_text.delta\n",
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n",
+      "event: response.completed\n",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":13,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":0}}}}\n\n",
+    ].join(""));
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 13, outputTokens: 5, cachedInputTokens: 0, cacheReadInputTokens: 0 },
+    });
+  });
+
   test("Anthropic usage maps cache tokens only when present", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
     const events = await adapter.parseResponse?.(new Response(JSON.stringify({
@@ -145,8 +279,107 @@ describe("adapter reasoning and usage details", () => {
 
     expect(events?.at(-1)).toEqual({
       type: "done",
-      usage: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 10 },
+      usage: {
+        inputTokens: 20,
+        outputTokens: 8,
+        cachedInputTokens: 10,
+        cacheReadInputTokens: 4,
+        cacheCreationInputTokens: 6,
+      },
     });
+  });
+
+  test("Anthropic non-streaming keeps partial cache totals unavailable for exact comparison", async () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const cases = [
+      {
+        usage: { input_tokens: 20, output_tokens: 8, cache_read_input_tokens: 4 },
+        expected: { inputTokens: 20, outputTokens: 8, cacheReadInputTokens: 4 },
+      },
+      {
+        usage: { input_tokens: 20, output_tokens: 8, cache_creation_input_tokens: 6 },
+        expected: { inputTokens: 20, outputTokens: 8, cacheCreationInputTokens: 6 },
+      },
+      {
+        usage: { output_tokens: 8, cache_read_input_tokens: 4, cache_creation_input_tokens: 6 },
+        expected: { inputTokens: 0, outputTokens: 8, cachedInputTokens: 10, cacheReadInputTokens: 4, cacheCreationInputTokens: 6 },
+      },
+    ];
+
+    for (const scenario of cases) {
+      const events = await adapter.parseResponse?.(Response.json({
+        content: [{ type: "text", text: "answer" }],
+        usage: scenario.usage,
+      }));
+      expect(events?.at(-1)).toEqual({ type: "done", usage: scenario.expected });
+    }
+  });
+
+  test("Anthropic streaming merges message_start cache input with message_delta output", async () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const response = new Response([
+      "event: message_start\n",
+      "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"output_tokens\":0,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":6}}}\n\n",
+      "event: content_block_start\n",
+      "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n",
+      "event: content_block_delta\n",
+      "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n",
+      "event: message_delta\n",
+      "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",
+      "event: message_stop\n",
+      "data: {\"type\":\"message_stop\"}\n\n",
+    ].join(""));
+
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: {
+        inputTokens: 20,
+        outputTokens: 8,
+        cachedInputTokens: 10,
+        cacheReadInputTokens: 4,
+        cacheCreationInputTokens: 6,
+      },
+      stopReason: "end_turn",
+      stopReasonProvenance: "approved",
+    });
+  });
+
+  test("Anthropic streaming keeps each partial input bucket unavailable for exact comparison", async () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const cases = [
+      {
+        usage: { input_tokens: 20, cache_read_input_tokens: 4 },
+        expected: { inputTokens: 20, outputTokens: 8, cacheReadInputTokens: 4 },
+      },
+      {
+        usage: { input_tokens: 20, cache_creation_input_tokens: 6 },
+        expected: { inputTokens: 20, outputTokens: 8, cacheCreationInputTokens: 6 },
+      },
+      {
+        usage: { cache_read_input_tokens: 4, cache_creation_input_tokens: 6 },
+        expected: { inputTokens: 0, outputTokens: 8, cachedInputTokens: 10, cacheReadInputTokens: 4, cacheCreationInputTokens: 6 },
+      },
+    ];
+
+    for (const scenario of cases) {
+      const response = new Response([
+        "event: message_start\n",
+        `data: ${JSON.stringify({ type: "message_start", message: { usage: scenario.usage } })}\n\n`,
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",
+      ].join(""));
+      const events = [];
+      for await (const event of adapter.parseStream(response)) events.push(event);
+      expect(events.at(-1)).toEqual({
+        type: "done",
+        usage: scenario.expected,
+        stopReason: "end_turn",
+        stopReasonProvenance: "approved",
+      });
+    }
   });
 
   test("Anthropic usage does not fabricate cache tokens when absent", async () => {

@@ -20,7 +20,7 @@ import { cheapMixTarget, isModelMixingRequest, resolveMix, validMixAgents, type 
 import { computeCallPlan } from "./model-mixing/orchestrate";
 import { applyModelMixingPatch, modelMixingSettingsSnapshot } from "./model-mixing/settings";
 import { runWithMixing } from "./model-mixing/loop";
-import { namespacedToolName } from "./types";
+import { cacheUsageSemanticsForProvider, namespacedToolName } from "./types";
 import { signalWithTimeout } from "./abort";
 import { debugSwallowed } from "./debug";
 import {
@@ -58,7 +58,7 @@ import {
 } from "./model-continuity";
 import { createRuntimeConfigState, type RuntimeConfigState } from "./runtime-config-state";
 import type { CatalogRuntimeStatus, SelectedModelCatalog } from "./model-catalog-runtime";
-import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, ClaudeProjectRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage, ModelContinuityAutomatic, ModelContinuityPolicy } from "./types";
+import type { AdapterDiagnostic, AdapterEvent, CacheUsageSemantics, ClaudeGrantRecord, ClaudeProfileRecord, ClaudeProjectRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage, ModelContinuityAutomatic, ModelContinuityPolicy } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
@@ -819,6 +819,16 @@ async function handleMessages(
       abortSignal: mixingAbort.signal,
       dispatchBuffered: (target, messages, maxTokens, timeoutMs, tools) =>
         runMixTurn(config, target, parsed, { messages, stream: false, maxTokens, tools }, req.headers, timeoutMs ?? mixTimeoutMs, mixingAbort.signal) as Promise<AdapterEvent[]>,
+      onUserFacingTarget: target => {
+        const finalProvider = config.providers[target.provider];
+        if (!finalProvider) return;
+        const effectiveFinalProvider = resolveWireProtocolOverride(target.provider, target.model, finalProvider);
+        setRouteLog(
+          logCtx,
+          { providerName: target.provider, modelId: target.model, provider: effectiveFinalProvider },
+          "qualified",
+        );
+      },
       dispatchFinalStream: (target, systemAppend) =>
         runMixTurn(config, target, parsed, { systemAppend, stream: true }, req.headers, mixTimeoutMs, mixingAbort.signal) as Promise<AsyncGenerator<AdapterEvent>>,
     });
@@ -1073,6 +1083,12 @@ async function handleMessages(
 
     recordLogPhase(logCtx, "adapter_build", "ok");
     const adapterProvider = resolveWireProtocolOverride(attempt.providerName, attempt.modelId, attemptProvider);
+    setRouteLog(
+      logCtx,
+      { providerName: attempt.providerName, modelId: attempt.modelId, provider: adapterProvider },
+      attempt.routeKind,
+      attempt.ambiguousCandidates,
+    );
     const adapter = resolveAdapter(adapterProvider);
     const upstream = new AbortController();
     linkAbortSignal(upstream, options.abortSignal);
@@ -1616,6 +1632,7 @@ interface RequestLogEntry {
     routedModelLabel?: string;
     provider: string;
     adapter?: string;
+    cacheUsageSemantics?: CacheUsageSemantics;
     authMode?: string;
     routeKind?: string;
     ambiguousCandidates?: string[];
@@ -1639,7 +1656,14 @@ interface RequestLogEntry {
     contentTypeFamily?: "sse" | "json" | "text" | "binary" | "unknown";
     requestBytes?: number;
     responseBytes?: number;
-    usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningOutputTokens?: number };
+    usage?: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+      cacheReadInputTokens?: number;
+      cacheCreationInputTokens?: number;
+      reasoningOutputTokens?: number;
+    };
   };
   error?: {
     kind: "validation" | "routing" | "authentication" | "origin" | "timeout" | "upstream" | "bridge" | "internal";
@@ -1702,6 +1726,7 @@ function requestLogManagementSnapshot() {
       ...(entry.route.routedModelLabel !== undefined ? { routedModelLabel: entry.route.routedModelLabel } : {}),
       provider: entry.route.provider,
       ...(entry.route.adapter !== undefined ? { adapter: entry.route.adapter } : {}),
+      ...(entry.route.cacheUsageSemantics !== undefined ? { cacheUsageSemantics: entry.route.cacheUsageSemantics } : {}),
       ...(entry.route.authMode !== undefined ? { authMode: entry.route.authMode } : {}),
       ...(entry.route.routeKind !== undefined ? { routeKind: entry.route.routeKind } : {}),
       ...(entry.route.ambiguousCandidates !== undefined ? { ambiguousCandidates: [...entry.route.ambiguousCandidates] } : {}),
@@ -2001,6 +2026,8 @@ function recordLogUsage(ctx: RequestLogContext, usage: FrogUsage | undefined): v
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+      ...(usage.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+      ...(usage.cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
       ...(usage.reasoningOutputTokens !== undefined ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
     },
   };
@@ -2138,6 +2165,9 @@ function setRouteLog(
   ctx.entry.route.provider = route.providerName;
   ctx.entry.route.routedModelLabel = route.modelId;
   ctx.entry.route.adapter = route.provider.adapter;
+  const cacheUsageSemantics = cacheUsageSemanticsForProvider(route.provider);
+  if (cacheUsageSemantics) ctx.entry.route.cacheUsageSemantics = cacheUsageSemantics;
+  else delete ctx.entry.route.cacheUsageSemantics;
   ctx.entry.route.authMode = route.provider.authMode ?? (route.provider.apiKey ? "key" : "none");
   ctx.entry.route.routeKind = routeKind;
   if (ambiguousCandidates && ambiguousCandidates.length > 0) {
@@ -2154,8 +2184,33 @@ function usageFromLogEntry(entry: RequestLogEntry): FrogUsage | undefined {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+    ...(typeof usage.cacheReadInputTokens === "number" ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+    ...(typeof usage.cacheCreationInputTokens === "number" ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
     ...(typeof usage.reasoningOutputTokens === "number" ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
   };
+}
+
+function isValidUsageCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function cacheUsageStatusForFinalLog(entry: RequestLogEntry, usage: FrogUsage | undefined): "reported" | "unsupported" | "unavailable" {
+  const semantics = entry.route.cacheUsageSemantics;
+  if (
+    semantics === "anthropic_separate_input_buckets"
+    && isValidUsageCount(usage?.cacheReadInputTokens)
+    && isValidUsageCount(usage.cacheCreationInputTokens)
+    && isValidUsageCount(usage.inputTokens)
+  ) return "reported";
+  if (
+    semantics === "openai_input_total_includes_cached"
+    && isValidUsageCount(usage?.cacheReadInputTokens)
+    && isValidUsageCount(usage.inputTokens)
+    && usage.cacheReadInputTokens <= usage.inputTokens
+  ) return "reported";
+  if (semantics) return "unavailable";
+  if (entry.route.adapter) return "unsupported";
+  return "unavailable";
 }
 
 function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
@@ -2170,6 +2225,8 @@ function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
       status: ctx.entry.status ?? 0,
       durationMs: ctx.entry.durationMs ?? 0,
       usageStatus: usageStatusForFinalLog(usage),
+      cacheUsageStatus: cacheUsageStatusForFinalLog(ctx.entry, usage),
+      ...(ctx.entry.route.cacheUsageSemantics ? { cacheUsageSemantics: ctx.entry.route.cacheUsageSemantics } : {}),
       ...(usage ? { usage, totalTokens: usageTotalTokens(usage) } : {}),
     });
   } catch (err) {
