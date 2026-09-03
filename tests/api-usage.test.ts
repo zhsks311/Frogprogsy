@@ -445,6 +445,51 @@ describe("GET /api/usage", () => {
     }
   });
 
+  test("reports mixed unsupported and missing breakdown rows as unavailable", async () => {
+    const now = Date.now();
+    const lines = [
+      {
+        requestId: "cache-unsupported",
+        timestamp: now,
+        provider: "compatible",
+        model: "gpt-shaped",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "unsupported",
+        usage: { inputTokens: 100, outputTokens: 5, cachedInputTokens: 20 },
+        totalTokens: 105,
+      },
+      {
+        requestId: "cache-breakdown-missing",
+        timestamp: now,
+        provider: "openai",
+        model: "gpt",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "unavailable",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 100, outputTokens: 5 },
+        totalTokens: 105,
+      },
+    ];
+    writeFileSync(join(testDir, "usage.jsonl"), `${lines.map(line => JSON.stringify(line)).join("\n")}\n`, { mode: 0o600 });
+    const server = await startServer(0);
+    try {
+      const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
+      expect(body.cacheHitRate).toMatchObject({
+        status: "unavailable",
+        hitRate: null,
+        reportedRequests: 0,
+        unsupportedRequests: 1,
+        unavailableRequests: 1,
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("groups usage by final successful fallback provider and model only", async () => {
     saveConfig({
       port: 0,
@@ -486,7 +531,7 @@ describe("GET /api/usage", () => {
         role: "assistant",
         model: "fallback-model",
         content: [{ type: "text", text: "fallback ok" }],
-        usage: { input_tokens: 13, output_tokens: 5, cache_read_input_tokens: 2 },
+        usage: { input_tokens: 13, output_tokens: 5, cache_read_input_tokens: 2, cache_creation_input_tokens: 0 },
       }), {
         status: 200,
         headers: { "content-type": "application/json" },

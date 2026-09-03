@@ -236,7 +236,7 @@ function summarizeCacheHitRate(entries: PersistedUsageEntry[]): UsageCacheHitRat
     ? "no_data"
     : reportedRequests > 0
       ? "available"
-      : unsupportedRequests > 0
+      : unavailableRequests === 0 && unsupportedRequests > 0
         ? "unsupported"
         : "unavailable";
   return {

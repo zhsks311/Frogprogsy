@@ -3,10 +3,11 @@ import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { createGoogleAdapter } from "../src/adapters/google";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
 import { createResponsesAdapter } from "../src/adapters/openai-responses";
+import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import { buildEffectiveConfig } from "../src/model-catalog-config";
 import type { ModelCatalogProviderV1 } from "../src/model-catalog-schema";
 import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
-import type { FrogProviderConfig } from "../src/types";
+import { cacheUsageSemanticsForProvider, type FrogProviderConfig } from "../src/types";
 
 const provider = { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "key" };
 const nativeOpenAIChatProvider = { ...provider, baseUrl: "https://api.openai.com/v1", catalogProviderId: "openai-apikey" };
@@ -21,6 +22,14 @@ const nativeCodexResponsesProvider = {
   baseUrl: "https://chatgpt.com/backend-api/codex",
   catalogProviderId: "codex",
 };
+
+const comparableRegistryProviders = PROVIDER_REGISTRY
+  .filter(entry => cacheUsageSemanticsForProvider({
+    adapter: entry.adapter,
+    baseUrl: entry.baseUrl,
+    catalogProviderId: entry.id,
+  }) !== undefined)
+  .map(entry => entry.id);
 
 function effectiveManagedProvider(
   persisted: FrogProviderConfig,
@@ -59,6 +68,17 @@ function effectiveManagedProvider(
 }
 
 describe("adapter reasoning and usage details", () => {
+  test("registry cache comparability stays limited to proven native or Anthropic wire contracts", () => {
+    expect(comparableRegistryProviders).toEqual([
+      "codex",
+      "anthropic",
+      "openai-apikey",
+      "umans",
+      "xiaomi",
+      "cloudflare-ai-gateway",
+    ]);
+  });
+
   test("effective managed restrictions constrain the actual OpenAI request", () => {
     const effectiveProvider = effectiveManagedProvider({
       adapter: "openai-chat",
@@ -269,6 +289,32 @@ describe("adapter reasoning and usage details", () => {
     });
   });
 
+  test("Anthropic non-streaming keeps partial cache totals unavailable for exact comparison", async () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const cases = [
+      {
+        usage: { input_tokens: 20, output_tokens: 8, cache_read_input_tokens: 4 },
+        expected: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 4 },
+      },
+      {
+        usage: { input_tokens: 20, output_tokens: 8, cache_creation_input_tokens: 6 },
+        expected: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 6 },
+      },
+      {
+        usage: { output_tokens: 8, cache_read_input_tokens: 4, cache_creation_input_tokens: 6 },
+        expected: { inputTokens: 0, outputTokens: 8, cachedInputTokens: 10 },
+      },
+    ];
+
+    for (const scenario of cases) {
+      const events = await adapter.parseResponse?.(Response.json({
+        content: [{ type: "text", text: "answer" }],
+        usage: scenario.usage,
+      }));
+      expect(events?.at(-1)).toEqual({ type: "done", usage: scenario.expected });
+    }
+  });
+
   test("Anthropic streaming merges message_start cache input with message_delta output", async () => {
     const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
     const response = new Response([
@@ -299,6 +345,41 @@ describe("adapter reasoning and usage details", () => {
       stopReason: "end_turn",
       stopReasonProvenance: "approved",
     });
+  });
+
+  test("Anthropic streaming keeps each partial input bucket unavailable for exact comparison", async () => {
+    const adapter = createAnthropicAdapter({ ...provider, adapter: "anthropic" });
+    const cases = [
+      {
+        usage: { input_tokens: 20, cache_read_input_tokens: 4 },
+        expected: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 4 },
+      },
+      {
+        usage: { input_tokens: 20, cache_creation_input_tokens: 6 },
+        expected: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 6 },
+      },
+      {
+        usage: { cache_read_input_tokens: 4, cache_creation_input_tokens: 6 },
+        expected: { inputTokens: 0, outputTokens: 8, cachedInputTokens: 10 },
+      },
+    ];
+
+    for (const scenario of cases) {
+      const response = new Response([
+        "event: message_start\n",
+        `data: ${JSON.stringify({ type: "message_start", message: { usage: scenario.usage } })}\n\n`,
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",
+      ].join(""));
+      const events = [];
+      for await (const event of adapter.parseStream(response)) events.push(event);
+      expect(events.at(-1)).toEqual({
+        type: "done",
+        usage: scenario.expected,
+        stopReason: "end_turn",
+        stopReasonProvenance: "approved",
+      });
+    }
   });
 
   test("Anthropic usage does not fabricate cache tokens when absent", async () => {

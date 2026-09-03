@@ -483,7 +483,7 @@ describe("privacy-safe request logs", () => {
     }
   });
 
-  test("messages preserve safe upstream usage headers and aggregate non-stream usage", async () => {
+  test("messages preserve safe upstream usage headers and keep partial cache usage unavailable", async () => {
     __requestLogTest.clear();
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({
@@ -548,6 +548,14 @@ describe("privacy-safe request logs", () => {
       });
       expect(summary.providers[0]).toMatchObject({ provider: "anthropic", totalTokens: 18 });
       expect(summary.models[0]).toMatchObject({ provider: "anthropic", model: "claude-sonnet-4-6", inputTokens: 11, outputTokens: 7 });
+      const [persisted] = readUsageEntries();
+      expect(persisted).toMatchObject({
+        cacheUsageStatus: "unavailable",
+        cacheUsageSemantics: "anthropic_separate_input_buckets",
+        usage: { inputTokens: 11, outputTokens: 7, cachedInputTokens: 3 },
+      });
+      expect(persisted.usage).not.toHaveProperty("cacheReadInputTokens");
+      expect(persisted.usage).not.toHaveProperty("cacheCreationInputTokens");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -1125,7 +1133,7 @@ describe("privacy-safe request logs", () => {
         role: "assistant",
         model: "fallback-model",
         content: [{ type: "text", text: "fallback ok" }],
-        usage: { input_tokens: 13, output_tokens: 5, cache_read_input_tokens: 2 },
+        usage: { input_tokens: 13, output_tokens: 5, cache_read_input_tokens: 2, cache_creation_input_tokens: 0 },
       }), {
         status: 200,
         headers: { "content-type": "application/json" },

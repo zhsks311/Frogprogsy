@@ -160,17 +160,23 @@ function reasoningBudget(effort: string): number {
 
 function usageFromAnthropic(usage: Record<string, number> | undefined): FrogUsage | undefined {
   if (!usage) return undefined;
-  const hasCache = usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined;
-  const cacheReadInputTokens = usage.cache_read_input_tokens ?? 0;
-  const cacheCreationInputTokens = usage.cache_creation_input_tokens ?? 0;
+  const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : undefined;
+  const outputTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : undefined;
+  const cacheReadInputTokens = typeof usage.cache_read_input_tokens === "number"
+    ? usage.cache_read_input_tokens
+    : undefined;
+  const cacheCreationInputTokens = typeof usage.cache_creation_input_tokens === "number"
+    ? usage.cache_creation_input_tokens
+    : undefined;
+  const hasCache = cacheReadInputTokens !== undefined || cacheCreationInputTokens !== undefined;
+  const hasCompleteCacheBreakdown = inputTokens !== undefined
+    && cacheReadInputTokens !== undefined
+    && cacheCreationInputTokens !== undefined;
   return {
-    inputTokens: usage.input_tokens ?? 0,
-    outputTokens: usage.output_tokens ?? 0,
-    ...(hasCache ? {
-      cachedInputTokens: cacheReadInputTokens + cacheCreationInputTokens,
-      cacheReadInputTokens,
-      cacheCreationInputTokens,
-    } : {}),
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    ...(hasCache ? { cachedInputTokens: (cacheReadInputTokens ?? 0) + (cacheCreationInputTokens ?? 0) } : {}),
+    ...(hasCompleteCacheBreakdown ? { cacheReadInputTokens, cacheCreationInputTokens } : {}),
   };
 }
 
