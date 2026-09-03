@@ -289,17 +289,16 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
   useEffect(() => {
     let cancelled = false;
     let hasSuccessfulLoad = false;
-    let requestGeneration = 0;
+    let pollTimer: number | undefined;
     setLoading(true);
     setData(null);
     setLoadError(false);
     const fetchUsage = async () => {
-      const generation = ++requestGeneration;
       try {
         const res = await fetch(`${apiBase}/api/usage?range=${range}`);
         if (!res.ok) throw new Error("fetch failed");
         const json = await res.json() as UsageResponse;
-        if (cancelled || generation !== requestGeneration) return;
+        if (cancelled) return;
         if (json.range === range) {
           setData(json);
           setLoadError(false);
@@ -308,17 +307,18 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
           setLoadError(true);
         }
       } catch {
-        if (!cancelled && generation === requestGeneration && !hasSuccessfulLoad) setLoadError(true);
+        if (!cancelled && !hasSuccessfulLoad) setLoadError(true);
       } finally {
-        if (!cancelled && generation === requestGeneration) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          pollTimer = window.setTimeout(fetchUsage, 5000);
+        }
       }
     };
-    fetchUsage();
-    const interval = window.setInterval(fetchUsage, 5000);
+    void fetchUsage();
     return () => {
       cancelled = true;
-      requestGeneration += 1;
-      window.clearInterval(interval);
+      if (pollTimer !== undefined) window.clearTimeout(pollTimer);
     };
   }, [apiBase, range]);
   useEffect(() => {

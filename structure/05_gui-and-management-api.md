@@ -63,10 +63,11 @@ rows exist, any failed request makes the primary status `error`. An exact report
 cache reads remains `available` with a real zero rate. Mixed data calculates only over comparable requests
 and displays every excluded count. Historical rows remain readable: rows without proven semantics are
 unavailable rather than guessed, while cache-metric rows already marked `reported` with the exact Anthropic
-triple retain that established interpretation. The Usage page polls the local summary, and only the newest
-in-flight poll generation may replace its snapshot, so a completed request becomes visible without an older
-overlapping response rolling the display back or changing provider routing, credentials, request bodies, or
-restore state.
+triple retain that established interpretation. The Usage page polls the local summary sequentially with
+one request in flight, then waits five seconds after it settles before starting the next. Effect cleanup
+prevents a late response from an old range or API base from changing the new snapshot, so slow responses
+remain visible without overlapping requests, stale rollback, or changes to provider routing, credentials,
+request bodies, or restore state.
 
 Provider writes must not round-trip masked API keys as real secrets. Dashboard actions that change
 model visibility or subagent selection should trigger catalog/cache sync behavior through the server
