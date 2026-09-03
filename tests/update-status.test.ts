@@ -292,8 +292,8 @@ describe("stable update status service", () => {
       schemaVersion: 1,
       lastAttemptAt: now.toISOString(),
       lastAttemptSucceeded: false,
-      checkedAt: null,
-      latestVersion: null,
+      checkedAt: new Date(now.getTime() - 60_000).toISOString(),
+      latestVersion: "1.2.4",
       failure: null,
     };
     const incompletePath = tempCachePath();
@@ -302,9 +302,14 @@ describe("stable update status service", () => {
     let incompleteRequests = 0;
     const incomplete = service(incompletePath, identity(), async () => {
       incompleteRequests += 1;
-      return Response.json({ latest: "1.2.4" });
+      throw new Error("registry unavailable");
     }, now);
-    expect((await incomplete.refresh({ force: false })).status).toBe("available");
+    expect(await incomplete.refresh({ force: false })).toMatchObject({
+      status: "available",
+      latestVersion: "1.2.4",
+      stale: true,
+      failure: "network",
+    });
     expect(incompleteRequests).toBe(1);
 
     const completedFailurePath = tempCachePath();
@@ -316,7 +321,9 @@ describe("stable update status service", () => {
       return Response.json({ latest: "1.2.4" });
     }, now);
     expect(await completedFailure.refresh({ force: false })).toMatchObject({
-      status: "unavailable",
+      status: "available",
+      latestVersion: "1.2.4",
+      stale: true,
       failure: "network",
     });
     expect(completedFailureRequests).toBe(0);
@@ -347,18 +354,27 @@ describe("stable update status service", () => {
     expect(requests).toBe(1);
   });
 
-  test("an interrupted final cache write cannot suppress the next process check", async () => {
+  test("an interrupted final cache write preserves prior history and cannot suppress the next process check", async () => {
     const cachePath = tempCachePath();
     let requests = 0;
-    let renames = 0;
-    const fetchLatest = async () => {
-      requests += 1;
-      return Response.json({ latest: "1.2.4" });
-    };
-    const first = service(
+    await service(
       cachePath,
       identity(),
-      fetchLatest,
+      async () => {
+        requests += 1;
+        return Response.json({ latest: "1.2.4" });
+      },
+      new Date("2026-08-24T00:00:00.000Z"),
+    ).refresh({ force: false });
+
+    let renames = 0;
+    const interrupted = service(
+      cachePath,
+      identity(),
+      async () => {
+        requests += 1;
+        return Response.json({ latest: "1.2.5" });
+      },
       new Date("2026-08-25T00:00:00.000Z"),
       {
         fileSystem: {
@@ -371,19 +387,34 @@ describe("stable update status service", () => {
       },
     );
 
-    expect(await first.refresh({ force: false })).toMatchObject({
+    expect(await interrupted.refresh({ force: true })).toMatchObject({
       status: "available",
+      latestVersion: "1.2.5",
       failure: "cache-write",
     });
     expect(JSON.parse(readFileSync(cachePath, "utf8"))).toMatchObject({
       schemaVersion: 2,
       attemptCompleted: false,
       lastAttemptSucceeded: false,
+      latestVersion: "1.2.4",
     });
 
-    const restarted = service(cachePath, identity(), fetchLatest);
-    expect((await restarted.refresh({ force: false })).status).toBe("available");
-    expect(requests).toBe(2);
+    const restarted = service(
+      cachePath,
+      identity(),
+      async () => {
+        requests += 1;
+        throw new Error("registry unavailable");
+      },
+      new Date("2026-08-25T00:00:00.000Z"),
+    );
+    expect(await restarted.refresh({ force: false })).toMatchObject({
+      status: "available",
+      latestVersion: "1.2.4",
+      stale: true,
+      failure: "network",
+    });
+    expect(requests).toBe(3);
   });
 
   test("opt-out stays initially disabled and retains each successful explicit result for passive polls", async () => {

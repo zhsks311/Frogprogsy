@@ -71,6 +71,7 @@ interface UpdateMemoryState {
   identity: InstallIdentity;
   lastAttemptAtMs: number | null;
   lastAttemptSucceeded: boolean;
+  attemptCompleted: boolean;
   checkedAtMs: number | null;
   latestVersion: string | null;
   failure: UpdateFailure | null;
@@ -115,6 +116,7 @@ export class UpdateStatusService {
       identity: hint,
       lastAttemptAtMs: null,
       lastAttemptSucceeded: false,
+      attemptCompleted: true,
       checkedAtMs: null,
       latestVersion: null,
       failure: null,
@@ -163,6 +165,7 @@ export class UpdateStatusService {
     const nextCheckAt = this.enabled
       && this.state.identity.kind === "bun"
       && installed !== null
+      && this.state.attemptCompleted
       && this.state.lastAttemptAtMs !== null
       ? new Date(this.state.lastAttemptAtMs + UPDATE_CHECK_TTL_MS).toISOString()
       : null;
@@ -211,14 +214,13 @@ export class UpdateStatusService {
       const parsedJson: unknown = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8"));
       const parsed = cacheSchema.safeParse(parsedJson);
       if (!parsed.success) return;
-      if (parsed.data.schemaVersion === 2 && !parsed.data.attemptCompleted) return;
-      if (parsed.data.schemaVersion === 1
-        && !parsed.data.lastAttemptSucceeded
-        && parsed.data.failure === null) return;
       const nowMs = this.now().getTime();
       const lastAttemptAtMs = timestampMs(parsed.data.lastAttemptAt, nowMs);
       const checkedAtMs = timestampMs(parsed.data.checkedAt, nowMs);
       const latestVersion = parsed.data.latestVersion;
+      const attemptCompleted = parsed.data.schemaVersion === 2
+        ? parsed.data.attemptCompleted
+        : parsed.data.lastAttemptSucceeded || parsed.data.failure !== null;
       if (parsed.data.lastAttemptAt !== null && lastAttemptAtMs === null) return;
       if (parsed.data.checkedAt !== null && checkedAtMs === null) return;
       if (latestVersion !== null && parseCanonicalStableSemVer(latestVersion) === null) return;
@@ -233,6 +235,7 @@ export class UpdateStatusService {
         && (checkedAtMs === null || latestVersion === null || parsed.data.failure !== null)) return;
       this.state.lastAttemptAtMs = lastAttemptAtMs;
       this.state.lastAttemptSucceeded = parsed.data.lastAttemptSucceeded;
+      this.state.attemptCompleted = attemptCompleted;
       this.state.checkedAtMs = checkedAtMs;
       this.state.latestVersion = latestVersion;
       this.state.failure = parsed.data.failure;
@@ -251,6 +254,7 @@ export class UpdateStatusService {
 
     const nowMs = this.now().getTime();
     if (!force
+      && this.state.attemptCompleted
       && this.state.lastAttemptAtMs !== null
       && this.state.lastAttemptAtMs <= nowMs
       && nowMs - this.state.lastAttemptAtMs < UPDATE_CHECK_TTL_MS) {
@@ -259,8 +263,9 @@ export class UpdateStatusService {
 
     this.state.lastAttemptAtMs = nowMs;
     this.state.lastAttemptSucceeded = false;
+    this.state.attemptCompleted = false;
     this.state.failure = null;
-    await this.persistCache(false);
+    await this.persistCache();
 
     const result = await this.fetchLatestStable();
     if (result.ok) {
@@ -273,7 +278,8 @@ export class UpdateStatusService {
       this.state.lastAttemptSucceeded = false;
       this.state.failure = result.failure;
     }
-    if (!await this.persistCache(true)) this.state.failure = "cache-write";
+    this.state.attemptCompleted = true;
+    if (!await this.persistCache()) this.state.failure = "cache-write";
     return this.snapshot();
   }
 
@@ -333,10 +339,10 @@ export class UpdateStatusService {
     return { ok: true, latestVersion: parsed.data.latest };
   }
 
-  private async persistCache(attemptCompleted: boolean): Promise<boolean> {
+  private async persistCache(): Promise<boolean> {
     return writeCacheAtomically(this.cachePath, JSON.stringify({
       schemaVersion: 2,
-      attemptCompleted,
+      attemptCompleted: this.state.attemptCompleted,
       lastAttemptAt: this.state.lastAttemptAtMs === null ? null : new Date(this.state.lastAttemptAtMs).toISOString(),
       lastAttemptSucceeded: this.state.lastAttemptSucceeded,
       checkedAt: this.state.checkedAtMs === null ? null : new Date(this.state.checkedAtMs).toISOString(),

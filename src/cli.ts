@@ -590,38 +590,49 @@ async function handleStart(options: { block?: boolean } = {}) {
   }
 }
 
+async function syncRunningProxyForRefresh(port: number): Promise<void> {
+  await syncModelsToClaudeCode(port).catch(error => {
+    console.error(`⚠️  Model sync skipped: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  try {
+    const { invalidateClaudeCodeModelsCache } = await import("./claude-catalog");
+    invalidateClaudeCodeModelsCache();
+  } catch (error) {
+    console.error(`⚠️  Cache invalidation skipped: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  console.log(`✅ Proxy running on port ${port}`);
+}
+
 async function handleRefresh() {
-  let config = loadConfig();
+  const config = loadConfig();
   const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
   if (await proxyHealthy(activePort)) {
-    await syncModelsToClaudeCode(activePort).catch(e => {
-      console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
-    });
-    try {
-      const { invalidateClaudeCodeModelsCache } = await import("./claude-catalog");
-      invalidateClaudeCodeModelsCache();
-    } catch (e) {
-      console.error(`⚠️  Cache invalidation skipped: ${e instanceof Error ? e.message : String(e)}`);
-    }
-    console.log(`✅ Proxy running on port ${activePort}`);
+    await syncRunningProxyForRefresh(activePort);
     return;
   }
 
   let replacementFailure: { pid: number; error: unknown } | null = null;
+  let runningPortAfterLock: number | null = null;
   const releaseConfigLock = await acquireConfigMutationLockOrExit();
   try {
-    const existingPid = readPid();
-    if (existingPid) {
-      const terminated = terminateStaleProxyForRefresh(existingPid, {
-        writeShutdownIntent,
-        terminate: killProxy,
-        isAlive: isProcessAlive,
-        clearShutdownIntent,
-      });
-      if (!terminated.ok) replacementFailure = { pid: existingPid, error: terminated.error };
-      if (!replacementFailure) {
-        removePid();
-        removeActivePort();
+    const lockedConfig = loadConfig();
+    const lockedPort = readActivePort() ?? lockedConfig.port ?? DEFAULT_PORT;
+    if (await proxyHealthy(lockedPort)) {
+      runningPortAfterLock = lockedPort;
+    } else {
+      const existingPid = readPid();
+      if (existingPid) {
+        const terminated = terminateStaleProxyForRefresh(existingPid, {
+          writeShutdownIntent,
+          terminate: killProxy,
+          isAlive: isProcessAlive,
+          clearShutdownIntent,
+        });
+        if (!terminated.ok) replacementFailure = { pid: existingPid, error: terminated.error };
+        if (!replacementFailure) {
+          removePid();
+          removeActivePort();
+        }
       }
     }
   } finally {
@@ -630,6 +641,10 @@ async function handleRefresh() {
   if (replacementFailure) {
     console.error(`❌ Could not replace stale proxy (PID ${replacementFailure.pid}): ${replacementFailure.error instanceof Error ? replacementFailure.error.message : String(replacementFailure.error)}`);
     process.exit(1);
+  }
+  if (runningPortAfterLock !== null) {
+    await syncRunningProxyForRefresh(runningPortAfterLock);
+    return;
   }
 
   const child = spawn(process.execPath, [process.argv[1], "start"], {
@@ -644,17 +659,7 @@ async function handleRefresh() {
     console.error("❌ Proxy did not become healthy after starting.");
     process.exit(1);
   }
-  config = loadConfig();
-  await syncModelsToClaudeCode(config.port ?? port).catch(e => {
-    console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
-  });
-  try {
-    const { invalidateClaudeCodeModelsCache } = await import("./claude-catalog");
-    invalidateClaudeCodeModelsCache();
-  } catch (e) {
-    console.error(`⚠️  Cache invalidation skipped: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  console.log(`✅ Proxy running on port ${config.port ?? port}`);
+  await syncRunningProxyForRefresh(port);
 }
 
 
