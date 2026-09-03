@@ -212,6 +212,9 @@ export class UpdateStatusService {
       const parsed = cacheSchema.safeParse(parsedJson);
       if (!parsed.success) return;
       if (parsed.data.schemaVersion === 2 && !parsed.data.attemptCompleted) return;
+      if (parsed.data.schemaVersion === 1
+        && !parsed.data.lastAttemptSucceeded
+        && parsed.data.failure === null) return;
       const nowMs = this.now().getTime();
       const lastAttemptAtMs = timestampMs(parsed.data.lastAttemptAt, nowMs);
       const checkedAtMs = timestampMs(parsed.data.checkedAt, nowMs);
