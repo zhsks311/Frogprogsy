@@ -2,12 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { createGoogleAdapter } from "../src/adapters/google";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { createResponsesAdapter } from "../src/adapters/openai-responses";
 import { buildEffectiveConfig } from "../src/model-catalog-config";
 import type { ModelCatalogProviderV1 } from "../src/model-catalog-schema";
 import type { SelectedModelCatalog } from "../src/model-catalog-runtime";
 import type { FrogProviderConfig } from "../src/types";
 
 const provider = { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "key" };
+const nativeOpenAIChatProvider = { ...provider, baseUrl: "https://api.openai.com/v1", catalogProviderId: "openai-apikey" };
+const nativeOpenAIResponsesProvider = {
+  adapter: "openai-responses",
+  baseUrl: "https://api.openai.com/v1",
+  apiKey: "key",
+  catalogProviderId: "openai-apikey",
+};
+const nativeCodexResponsesProvider = {
+  ...nativeOpenAIResponsesProvider,
+  baseUrl: "https://chatgpt.com/backend-api/codex",
+  catalogProviderId: "codex",
+};
 
 function effectiveManagedProvider(
   persisted: FrogProviderConfig,
@@ -94,7 +107,7 @@ describe("adapter reasoning and usage details", () => {
   });
 
   test("OpenAI-compatible non-streaming maps reasoning_content and usage details", async () => {
-    const adapter = createOpenAIChatAdapter(provider);
+    const adapter = createOpenAIChatAdapter({ ...provider, catalogProviderId: "openai-apikey" });
     const events = await adapter.parseResponse?.(new Response(JSON.stringify({
       choices: [{ message: { reasoning_content: "raw thoughts", content: "answer" } }],
       usage: {
@@ -128,6 +141,107 @@ describe("adapter reasoning and usage details", () => {
     expect(events.at(-1)).toEqual({
       type: "done",
       usage: { inputTokens: 9, outputTokens: 4, cachedInputTokens: 2, reasoningOutputTokens: 1 },
+    });
+  });
+
+  test("native OpenAI Chat preserves a positive cache read only with the required details and total", async () => {
+    const adapter = createOpenAIChatAdapter(nativeOpenAIChatProvider);
+    const positive = await adapter.parseResponse?.(Response.json({
+      choices: [{ message: { content: "answer" } }],
+      usage: {
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        prompt_tokens_details: { cached_tokens: 5 },
+      },
+    }));
+    const missingDetails = await adapter.parseResponse?.(Response.json({
+      choices: [{ message: { content: "answer" } }],
+      usage: { prompt_tokens: 11, completion_tokens: 7 },
+    }));
+    const missingTotal = await adapter.parseResponse?.(Response.json({
+      choices: [{ message: { content: "answer" } }],
+      usage: {
+        completion_tokens: 7,
+        prompt_tokens_details: { cached_tokens: 5 },
+      },
+    }));
+
+    expect(positive?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 11, outputTokens: 7, cachedInputTokens: 5, cacheReadInputTokens: 5 },
+    });
+    expect(missingDetails?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 11, outputTokens: 7 },
+    });
+    expect(missingTotal?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 0, outputTokens: 7, cachedInputTokens: 5 },
+    });
+  });
+
+  test("native OpenAI Chat streaming preserves an explicitly reported zero cache read", async () => {
+    const adapter = createOpenAIChatAdapter(nativeOpenAIChatProvider);
+    const response = new Response([
+      "data: {\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\n",
+      "data: [DONE]\n\n",
+    ].join(""));
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 9, outputTokens: 4, cachedInputTokens: 0, cacheReadInputTokens: 0 },
+    });
+  });
+
+  test("native OpenAI Responses preserves a positive cache read only with the required details and total", async () => {
+    const adapter = createResponsesAdapter(nativeOpenAIResponsesProvider);
+    const positive = await adapter.parseResponse?.(Response.json({
+      output: [{ type: "message", content: [{ type: "output_text", text: "answer" }] }],
+      usage: {
+        input_tokens: 13,
+        output_tokens: 5,
+        input_tokens_details: { cached_tokens: 3 },
+      },
+    }));
+    const missingDetails = await adapter.parseResponse?.(Response.json({
+      output: [{ type: "message", content: [{ type: "output_text", text: "answer" }] }],
+      usage: { input_tokens: 13, output_tokens: 5 },
+    }));
+
+    const missingTotal = await adapter.parseResponse?.(Response.json({
+      output: [{ type: "message", content: [{ type: "output_text", text: "answer" }] }],
+      usage: { output_tokens: 5, input_tokens_details: { cached_tokens: 3 } },
+    }));
+    expect(positive?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 13, outputTokens: 5, cachedInputTokens: 3, cacheReadInputTokens: 3 },
+    });
+    expect(missingDetails?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 13, outputTokens: 5 },
+    });
+    expect(missingTotal?.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 0, outputTokens: 5, cachedInputTokens: 3 },
+    });
+  });
+
+  test("native OpenAI Responses streaming preserves an explicitly reported zero cache read", async () => {
+    const adapter = createResponsesAdapter(nativeCodexResponsesProvider);
+    const response = new Response([
+      "event: response.output_text.delta\n",
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n",
+      "event: response.completed\n",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":13,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":0}}}}\n\n",
+    ].join(""));
+    const events = [];
+    for await (const event of adapter.parseStream(response)) events.push(event);
+
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 13, outputTokens: 5, cachedInputTokens: 0, cacheReadInputTokens: 0 },
     });
   });
 

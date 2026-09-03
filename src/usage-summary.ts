@@ -1,4 +1,5 @@
 import { baseProviderLabel } from "./provider-label";
+import type { CacheUsageSemantics } from "./types";
 import type { PersistedUsageEntry, UsageStatus } from "./usage-log";
 import { buildUsagePricing, type UsagePricingConfig, type UsagePricingSummary } from "./usage-pricing";
 
@@ -21,10 +22,13 @@ export type CacheHitRateStatus = "available" | "no_data" | "unsupported" | "unav
 
 export interface UsageCacheHitRate {
   status: CacheHitRateStatus;
-  formula: "cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)";
+  formula: "cache_read_input_tokens / total_input_tokens";
   cacheReadInputTokens: number;
+  /** Cache creation is an Anthropic-only separate bucket; native OpenAI never contributes here. */
   cacheCreationInputTokens: number;
+  /** Raw provider input counters: Anthropic plain input plus OpenAI's inclusive input total. */
   inputTokens: number;
+  /** Provenance-aware denominator used by `formula`; never reconstruct it from the other aggregate fields. */
   totalInputTokens: number;
   hitRate: number | null;
   reportedRequests: number;
@@ -167,10 +171,27 @@ function isNonNegativeFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+function cacheUsageSemantics(entry: PersistedUsageEntry): CacheUsageSemantics | undefined {
+  if (
+    entry.cacheUsageSemantics === "anthropic_separate_input_buckets"
+    || entry.cacheUsageSemantics === "openai_input_total_includes_cached"
+  ) return entry.cacheUsageSemantics;
+  // Rows written by the first cache-metric implementation predate the semantics field, but its
+  // `reported` status required all three Anthropic buckets. Preserve that exact, non-guessed contract.
+  if (
+    entry.cacheUsageStatus === "reported"
+    && isNonNegativeFinite(entry.usage?.cacheReadInputTokens)
+    && isNonNegativeFinite(entry.usage?.cacheCreationInputTokens)
+    && isNonNegativeFinite(entry.usage?.inputTokens)
+  ) return "anthropic_separate_input_buckets";
+  return undefined;
+}
+
 function summarizeCacheHitRate(entries: PersistedUsageEntry[]): UsageCacheHitRate {
   let cacheReadInputTokens = 0;
   let cacheCreationInputTokens = 0;
   let inputTokens = 0;
+  let totalInputTokens = 0;
   let reportedRequests = 0;
   let unsupportedRequests = 0;
   let unavailableRequests = 0;
@@ -179,24 +200,38 @@ function summarizeCacheHitRate(entries: PersistedUsageEntry[]): UsageCacheHitRat
     const usage = entry.usage;
     const cacheRead = usage?.cacheReadInputTokens;
     const cacheCreation = usage?.cacheCreationInputTokens;
-    const uncachedInput = usage?.inputTokens;
+    const providerInput = usage?.inputTokens;
+    const semantics = cacheUsageSemantics(entry);
     if (
-      isNonNegativeFinite(cacheRead)
+      entry.cacheUsageStatus === "reported"
+      && semantics === "anthropic_separate_input_buckets"
+      && isNonNegativeFinite(cacheRead)
       && isNonNegativeFinite(cacheCreation)
-      && isNonNegativeFinite(uncachedInput)
+      && isNonNegativeFinite(providerInput)
     ) {
       cacheReadInputTokens += cacheRead;
       cacheCreationInputTokens += cacheCreation;
-      inputTokens += uncachedInput;
+      inputTokens += providerInput;
+      totalInputTokens += cacheRead + cacheCreation + providerInput;
       reportedRequests += 1;
-    } else if (entry.cacheUsageStatus === "unsupported") {
+    } else if (
+      entry.cacheUsageStatus === "reported"
+      && semantics === "openai_input_total_includes_cached"
+      && isNonNegativeFinite(cacheRead)
+      && isNonNegativeFinite(providerInput)
+      && cacheRead <= providerInput
+    ) {
+      cacheReadInputTokens += cacheRead;
+      inputTokens += providerInput;
+      totalInputTokens += providerInput;
+      reportedRequests += 1;
+    } else if (entry.cacheUsageStatus === "unsupported" && semantics === undefined) {
       unsupportedRequests += 1;
     } else {
       unavailableRequests += 1;
     }
   }
 
-  const totalInputTokens = cacheReadInputTokens + cacheCreationInputTokens + inputTokens;
   const status: CacheHitRateStatus = entries.length === 0
     ? "no_data"
     : reportedRequests > 0
@@ -206,7 +241,7 @@ function summarizeCacheHitRate(entries: PersistedUsageEntry[]): UsageCacheHitRat
         : "unavailable";
   return {
     status,
-    formula: "cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)",
+    formula: "cache_read_input_tokens / total_input_tokens",
     cacheReadInputTokens,
     cacheCreationInputTokens,
     inputTokens,

@@ -19,7 +19,7 @@ interface UsageSummaryTotals {
 }
 interface UsageCacheHitRate {
   status: "available" | "no_data" | "unsupported" | "unavailable";
-  formula: "cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)";
+  formula: "cache_read_input_tokens / total_input_tokens";
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   inputTokens: number;

@@ -237,6 +237,10 @@ export type AdapterEvent =
   | { type: "done"; usage?: FrogUsage; stopReason?: AdapterStopReason; stopReasonProvenance?: AdapterStopReasonProvenance }
   | { type: "error"; message: string };
 
+export type CacheUsageSemantics =
+  | "anthropic_separate_input_buckets"
+  | "openai_input_total_includes_cached";
+
 export interface FrogUsage {
   inputTokens: number;
   outputTokens: number;
@@ -649,4 +653,25 @@ export interface FrogProviderConfig {
   preserveReasoningContentModels?: string[];
   /** Anthropic-compatible gateways that need custom tool names escaped on the wire. */
   escapeBuiltinToolNames?: boolean;
+}
+
+/**
+ * Return cache-token accounting semantics only when the configured adapter, canonical endpoint, and
+ * stable catalog provenance establish the provider's denominator. Provider map keys and display labels
+ * are not evidence.
+ */
+export function cacheUsageSemanticsForProvider(provider: FrogProviderConfig): CacheUsageSemantics | undefined {
+  if (provider.adapter === "anthropic") return "anthropic_separate_input_buckets";
+  const baseUrl = provider.baseUrl.replace(/\/+$/, "");
+  const nativeOpenAIAPI = provider.catalogProviderId === "openai-apikey"
+    && baseUrl === "https://api.openai.com/v1";
+  const nativeCodexBackend = provider.catalogProviderId === "codex"
+    && baseUrl === "https://chatgpt.com/backend-api/codex";
+  if (
+    (provider.adapter === "openai-chat" && nativeOpenAIAPI)
+    || (provider.adapter === "openai-responses" && (nativeOpenAIAPI || nativeCodexBackend))
+  ) {
+    return "openai_input_total_includes_cached";
+  }
+  return undefined;
 }

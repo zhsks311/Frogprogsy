@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureConfigDirForWrite, getConfigDir } from "./config";
-import type { FrogUsage } from "./types";
+import type { CacheUsageSemantics, FrogUsage } from "./types";
 
 export type UsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
 export type CacheUsageStatus = "reported" | "unsupported" | "unavailable";
@@ -17,6 +17,8 @@ export interface PersistedUsageEntry {
   usageStatus: UsageStatus;
   usage?: FrogUsage;
   cacheUsageStatus?: CacheUsageStatus;
+  /** Wire-proven denominator contract captured at routing time; absent on historical and unsupported rows. */
+  cacheUsageSemantics?: CacheUsageSemantics;
   totalTokens?: number;
   /** Primary local request by default; future shadow comparison writes can mark shadow usage for exclusion from display pricing. */
   source?: "primary" | "shadow";

@@ -1,5 +1,6 @@
 import type { IncomingMeta, ProviderAdapter } from "./base";
 import type { AdapterEvent, FrogParsedRequest, FrogProviderConfig, FrogUsage } from "../types";
+import { cacheUsageSemanticsForProvider } from "../types";
 import { debugDroppedFrame } from "../debug";
 import { codexBackendHeaders, isCodexBackendBaseUrl } from "../oauth/codex";
 import { isLocalAccessSecret } from "../local-access";
@@ -163,14 +164,22 @@ function normalizeCodexToolChoice(value: unknown, toolNames: Set<string>): unkno
   return undefined;
 }
 
-function usageFromResponses(usage: Record<string, unknown> | undefined): FrogUsage | undefined {
+function usageFromResponses(
+  usage: Record<string, unknown> | undefined,
+  preserveNativeCacheRead: boolean,
+): FrogUsage | undefined {
   if (!usage) return undefined;
+  const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : undefined;
   const inputDetails = usage.input_tokens_details as Record<string, unknown> | undefined;
+  const cachedTokens = typeof inputDetails?.cached_tokens === "number" ? inputDetails.cached_tokens : undefined;
   const outputDetails = usage.output_tokens_details as Record<string, unknown> | undefined;
   return {
-    inputTokens: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+    inputTokens: inputTokens ?? 0,
     outputTokens: typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
-    ...(typeof inputDetails?.cached_tokens === "number" ? { cachedInputTokens: inputDetails.cached_tokens } : {}),
+    ...(cachedTokens !== undefined ? { cachedInputTokens: cachedTokens } : {}),
+    ...(preserveNativeCacheRead && inputTokens !== undefined && cachedTokens !== undefined
+      ? { cacheReadInputTokens: cachedTokens }
+      : {}),
     ...(typeof outputDetails?.reasoning_tokens === "number" ? { reasoningOutputTokens: outputDetails.reasoning_tokens } : {}),
   };
 }
@@ -241,7 +250,7 @@ function hasAssistantOutput(events: AdapterEvent[]): boolean {
   );
 }
 
-function eventsFromCompletedResponse(json: Record<string, unknown>): AdapterEvent[] {
+function eventsFromCompletedResponse(json: Record<string, unknown>, preserveNativeCacheRead: boolean): AdapterEvent[] {
   const events: AdapterEvent[] = [];
   const output = Array.isArray(json.output) ? json.output : [];
   for (const raw of output) {
@@ -260,7 +269,7 @@ function eventsFromCompletedResponse(json: Record<string, unknown>): AdapterEven
     return events;
   }
 
-  events.push({ type: "done", usage: usageFromResponses(json.usage as Record<string, unknown> | undefined) });
+  events.push({ type: "done", usage: usageFromResponses(json.usage as Record<string, unknown> | undefined, preserveNativeCacheRead) });
   return events;
 }
 
@@ -283,6 +292,7 @@ function hasTerminalEvent(events: AdapterEvent[]): boolean {
  * sent as an OpenAI Responses request.
  */
 export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAdapter & { nativeRelay: true } {
+  const preserveNativeCacheRead = cacheUsageSemanticsForProvider(provider) === "openai_input_total_includes_cached";
   return {
     name: "openai-responses",
     nativeRelay: true as const,
@@ -426,11 +436,11 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
               return true;
             }
             if (!hasStreamOutput) {
-              const completedEvents = eventsFromCompletedResponse(responseObj);
+              const completedEvents = eventsFromCompletedResponse(responseObj, preserveNativeCacheRead);
               for (const event of completedEvents) yield event;
               return true;
             }
-            yield { type: "done", usage: usageFromResponses(responseObj.usage as Record<string, unknown> | undefined) };
+            yield { type: "done", usage: usageFromResponses(responseObj.usage as Record<string, unknown> | undefined, preserveNativeCacheRead) };
             return true;
           }
           case "response.failed":
@@ -479,7 +489,7 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
         return events;
       }
       const json = await response.json() as Record<string, unknown>;
-      return eventsFromCompletedResponse(json);
+      return eventsFromCompletedResponse(json, preserveNativeCacheRead);
     },
   };
 }
