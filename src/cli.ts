@@ -15,8 +15,10 @@ import {
   getConfigDir,
   getWatchdogStatusPath,
   getWatchdogPidPath,
+  getWatchdogOwnerPath,
   loadConfig,
   readPid,
+  readShutdownIntent,
   readActivePort,
   removeActivePort,
   removePid,
@@ -553,13 +555,16 @@ async function handleStart(options: { block?: boolean } = {}) {
   const shutdown = () => {
     console.log("\n🛑 Shutting down frogprogsy proxy...");
     let exitCode = 0;
-    writeShutdownIntent(process.pid); // signal watchdog: graceful stop, not a crash
+    const existingIntent = readShutdownIntent();
+    const refreshShutdown = existingIntent?.pid === process.pid && existingIntent.mode === "refresh";
+    if (!refreshShutdown) writeShutdownIntent(process.pid);
     server.stop(true);
     removePid();
     removeActivePort();
-    // Intentional shutdown restores Claude Code unless the process is kept alive by a
-    // supervisor or by a detached `frogp refresh` / FROGP_DETACHED integration.
-    if (!parseEnvFlag(process.env.FROGP_EXTERNAL_SUPERVISOR) && !process.env.FROGP_DETACHED) {
+    // Refresh replacement keeps every managed Claude/project state injected for the successor.
+    if (!refreshShutdown
+      && !parseEnvFlag(process.env.FROGP_EXTERNAL_SUPERVISOR)
+      && !process.env.FROGP_DETACHED) {
       try {
         const restored = restoreAllClaudeRouting();
         if (restored.success) {
@@ -626,6 +631,135 @@ async function syncRunningProxyForRefresh(port: number): Promise<void> {
   console.log(`✅ Proxy running on port ${port}`);
 }
 
+type FailedRefreshRollbackResult = {
+  restored: boolean;
+  message: string;
+};
+
+async function rollbackFailedRefreshReplacement(
+  expectedPid: number,
+  port: number,
+): Promise<FailedRefreshRollbackResult> {
+  const releaseConfigLock = await acquireConfigMutationLockOrExit();
+  try {
+    const recordedPid = readPid();
+    if (recordedPid !== null && recordedPid !== expectedPid) {
+      return {
+        restored: false,
+        message: `runtime ownership moved from replacement PID ${expectedPid} to PID ${recordedPid}; the newer process was left untouched`,
+      };
+    }
+
+    let targetStopped = false;
+    const probe = await probeProxyHealth(port);
+    const probeOwnsTarget = probe.status === "current"
+      && probe.processPid === expectedPid
+      && processOwnsListeningPort(expectedPid, port);
+    if (recordedPid === null) {
+      if (!isProcessAlive(expectedPid) && probe.status === "unavailable") {
+        targetStopped = true;
+      } else if (!probeOwnsTarget) {
+        return {
+          restored: false,
+          message: `replacement PID ${expectedPid} is no longer recorded and its live-process ownership is unverifiable; no process or runtime record was changed`,
+        };
+      }
+    } else if (!probeOwnsTarget) {
+      if (!isProcessAlive(expectedPid) && probe.status === "unavailable") {
+        targetStopped = true;
+      } else {
+        return {
+          restored: false,
+          message: `replacement PID ${expectedPid} no longer has verifiable ownership of port ${port}; no process or runtime record was changed`,
+        };
+      }
+    }
+
+    if (!targetStopped) {
+      const terminated = terminateStaleProxyForRefresh(expectedPid, {
+        writeShutdownIntent: ownedPid => writeShutdownIntent(ownedPid, "refresh"),
+        terminate: ownedPid => {
+          const liveRecordedPid = readPid();
+          if ((liveRecordedPid !== null && liveRecordedPid !== ownedPid)
+            || readActivePort() !== port
+            || !processOwnsListeningPort(ownedPid, port)) {
+            throw new Error(`PID ${ownedPid} no longer owns the recorded runtime on port ${port}`);
+          }
+          killProxy(ownedPid);
+        },
+        isAlive: isProcessAlive,
+        clearShutdownIntent,
+      });
+      if (!terminated.ok) {
+        return {
+          restored: false,
+          message: `could not stop replacement PID ${expectedPid}: ${terminated.error instanceof Error ? terminated.error.message : String(terminated.error)}`,
+        };
+      }
+    }
+
+    const successorPid = readPid();
+    if (successorPid !== null && successorPid !== expectedPid) {
+      return {
+        restored: false,
+        message: `runtime ownership moved to PID ${successorPid} after replacement shutdown; the newer process and its records were left untouched`,
+      };
+    }
+    const successorPort = readActivePort();
+    if (successorPort !== null && successorPort !== port) {
+      return {
+        restored: false,
+        message: `runtime ownership moved to port ${successorPort} after replacement shutdown; the newer runtime records were left untouched`,
+      };
+    }
+    if (isProcessAlive(expectedPid)) {
+      return {
+        restored: false,
+        message: `replacement PID ${expectedPid} became live again after shutdown; routing and runtime records were left untouched`,
+      };
+    }
+    const postStopProbe = await probeProxyHealth(port);
+    if (postStopProbe.status !== "unavailable") {
+      return {
+        restored: false,
+        message: `port ${port} still has a live FrogProgsy response after replacement shutdown; routing was not restored`,
+      };
+    }
+
+    if (readPid() === expectedPid) removePid();
+    if (readPid() !== null) {
+      return {
+        restored: false,
+        message: "runtime PID ownership changed during cleanup; the new record was left untouched",
+      };
+    }
+    if (readActivePort() === port) removeActivePort();
+    if (readActivePort() !== null) {
+      return {
+        restored: false,
+        message: "runtime port ownership changed during cleanup; the new record was left untouched",
+      };
+    }
+
+    try {
+      const restored = restoreAllClaudeRouting();
+      return {
+        restored: restored.success,
+        message: restored.message || (restored.success
+          ? "Claude Code routing restored."
+          : "Claude Code routing restore did not complete."),
+      };
+    } catch (error) {
+      return {
+        restored: false,
+        message: `Claude Code routing restore failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  } finally {
+    releaseConfigLock();
+  }
+}
+
 async function handleRefresh() {
   const config = loadConfig();
   const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
@@ -663,17 +797,22 @@ async function handleRefresh() {
             pid: existingPid,
             error: new Error(`health response belongs to PID ${lockedProbe.processPid}`),
           };
-        } else if (lockedProbe.processPid === null && !processOwnsListeningPort(existingPid, lockedPort)) {
+        } else if (!processOwnsListeningPort(existingPid, lockedPort)) {
           replacementFailure = {
             pid: existingPid,
-            error: new Error(`legacy health response is not owned by PID ${existingPid} on port ${lockedPort}`),
+            error: new Error(`health response is not owned by PID ${existingPid} on port ${lockedPort}`),
           };
         } else {
           const previousWatchdogPid = readWatchdogProcessPid();
           retiredWatchdogPid = previousWatchdogPid;
           const terminated = terminateStaleProxyForRefresh(existingPid, {
-            writeShutdownIntent,
-            terminate: killProxy,
+            writeShutdownIntent: pid => writeShutdownIntent(pid, "refresh"),
+            terminate: pid => {
+              if (!processOwnsListeningPort(pid, lockedPort)) {
+                throw new Error(`PID ${pid} no longer owns port ${lockedPort}`);
+              }
+              killProxy(pid);
+            },
             isAlive: isProcessAlive,
             clearShutdownIntent,
           });
@@ -725,9 +864,22 @@ async function handleRefresh() {
     process.exit(1);
   }
   const runningConfig = loadConfig();
+  const replacementProbe = await probeProxyHealth(port);
+  const recordedReplacementPid = readPid();
+  const replacementProxyPid = recordedReplacementPid
+    ?? (replacementProbe.status === "current" ? replacementProbe.processPid : null);
   if (resolveWatchdogEnabled(runningConfig, replacementEnv)
-    && !await waitForReplacementWatchdogOwnership(retiredWatchdogPid)) {
+    && (replacementProxyPid === null
+      || !await waitForReplacementWatchdogOwnership(retiredWatchdogPid, replacementProxyPid))) {
+    const rollback = replacementProxyPid === null
+      ? {
+          restored: false,
+          message: "replacement runtime PID is missing; live-process ownership is unverifiable",
+        }
+      : await rollbackFailedRefreshReplacement(replacementProxyPid, port);
     console.error("❌ Replacement proxy started without confirmed watchdog ownership.");
+    if (rollback.restored) console.error(`↩️  ${rollback.message}`);
+    else console.error(`❌ Refresh rollback failed: ${rollback.message}`);
     process.exit(1);
   }
   await syncRunningProxyForRefresh(port);
@@ -805,7 +957,15 @@ async function waitForPriorWatchdogRelease(
 
   const pollIntervalMs = watchdog?.pollIntervalMs ?? 2_000;
   const backoffMs = watchdog?.backoffMs ?? [1_000, 5_000];
-  const longestBackoffMs = backoffMs.length === 0 ? 1_000 : Math.max(...backoffMs);
+  if (!Number.isSafeInteger(pollIntervalMs)
+    || pollIntervalMs < 0
+    || pollIntervalMs > 60_000
+    || backoffMs.length > 100) return false;
+  let longestBackoffMs = backoffMs.length === 0 ? 1_000 : 0;
+  for (const delay of backoffMs) {
+    if (!Number.isSafeInteger(delay) || delay < 0 || delay > 60_000) return false;
+    if (delay > longestBackoffMs) longestBackoffMs = delay;
+  }
   const releaseWaitMs = Math.max(longestBackoffMs + pollIntervalMs + 2_000, 5_000);
   const releaseDeadline = Date.now() + releaseWaitMs;
   while (Date.now() < releaseDeadline) {
@@ -819,11 +979,45 @@ async function waitForPriorWatchdogRelease(
   return false;
 }
 
-async function waitForReplacementWatchdogOwnership(retiredPid: number | null): Promise<boolean> {
+type WatchdogOwnerRecord = {
+  schemaVersion: 1;
+  instanceId: string;
+  watchdogPid: number;
+  proxyPid: number;
+};
+
+function readWatchdogOwnerRecord(): WatchdogOwnerRecord | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(getWatchdogOwnerPath(), "utf8"));
+    if (parsed === null
+      || typeof parsed !== "object"
+      || !("schemaVersion" in parsed)
+      || parsed.schemaVersion !== 1
+      || !("instanceId" in parsed)
+      || typeof parsed.instanceId !== "string"
+      || !("watchdogPid" in parsed)
+      || !Number.isSafeInteger(parsed.watchdogPid)
+      || !("proxyPid" in parsed)
+      || !Number.isSafeInteger(parsed.proxyPid)) return null;
+    return parsed as WatchdogOwnerRecord;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForReplacementWatchdogOwnership(
+  retiredPid: number | null,
+  expectedProxyPid: number,
+): Promise<boolean> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const watchdogPid = readWatchdogProcessPid();
-    if (watchdogPid !== null && watchdogPid !== retiredPid && isProcessAlive(watchdogPid)) {
+    const owner = readWatchdogOwnerRecord();
+    if (watchdogPid !== null
+      && watchdogPid !== retiredPid
+      && isProcessAlive(watchdogPid)
+      && owner?.watchdogPid === watchdogPid
+      && owner.proxyPid === expectedProxyPid) {
       return true;
     }
     await Bun.sleep(25);
@@ -838,6 +1032,14 @@ function clearWatchdogPidIfOwned(pid: number): void {
     unlinkSync(getWatchdogPidPath());
   } catch {
     // A concurrently exiting watchdog may already have removed its own file.
+  }
+  const owner = readWatchdogOwnerRecord();
+  if (owner?.watchdogPid === pid) {
+    try {
+      unlinkSync(getWatchdogOwnerPath());
+    } catch {
+      // The owner may have removed its generation record while exiting.
+    }
   }
 }
 

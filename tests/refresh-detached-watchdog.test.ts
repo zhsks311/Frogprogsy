@@ -159,7 +159,98 @@ describe("frogp refresh detached lifecycle", () => {
     }
   }, 20_000);
 
-  test("refresh serializes stale replacement against a concurrent start on every platform", async () => {
+  test.skipIf(process.platform === "win32")("failed watchdog handoff stops only its replacement and restores native Claude routing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-watchdog-rollback-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const settingsPath = join(claudeHome, "settings.json");
+    const pidPath = join(frogHome, "frogp.pid");
+    const portPath = join(frogHome, "frogp.port");
+    const watchdogPidPath = join(frogHome, "watchdog.pid");
+    const watchdogOwnerPath = join(frogHome, "watchdog.owner.json");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    const nativeSettings = { env: { USER_SETTING: "keep-native" } };
+    writeFileSync(settingsPath, JSON.stringify(nativeSettings, null, 2) + "\n");
+    const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const port = reservation.port;
+    reservation.stop(true);
+    writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+      port,
+      hostname: "127.0.0.1",
+      watchdog: { enabled: true, pollIntervalMs: 50, backoffMs: [50] },
+      providers: {},
+      claudeProfiles: {
+        schemaVersion: 1,
+        defaultProfileId: "cp_default",
+        profiles: [{ id: "cp_default", name: "Default", claudeHome, injected: false }],
+      },
+    }, null, 2) + "\n");
+    const watchdogOwnerBlocker = Bun.spawn(
+      [process.execPath, "-e", "await Promise.withResolvers<void>().promise"],
+      { stdout: "ignore", stderr: "ignore" },
+    );
+    writeFileSync(watchdogPidPath, String(watchdogOwnerBlocker.pid));
+    const newerWatchdogOwner = {
+      schemaVersion: 1,
+      instanceId: "newer-watchdog-owner",
+      watchdogPid: watchdogOwnerBlocker.pid,
+      proxyPid: watchdogOwnerBlocker.pid,
+    };
+    writeFileSync(watchdogOwnerPath, JSON.stringify(newerWatchdogOwner) + "\n");
+    const env = {
+      ...process.env,
+      HOME: root,
+      NODE_ENV: "test",
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+      FROGP_REAL_CLAUDE: join(root, "missing-claude"),
+    };
+    delete env.FROGPROGSY_NO_CLAUDE_WRITES;
+    let replacementPid: number | null = null;
+
+    try {
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      await waitForPath(pidPath);
+      replacementPid = Number(readFileSync(pidPath, "utf8"));
+      const [stderr, exitCode] = await Promise.all([
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+      expect(stderr).toContain("Restored Claude Code settings");
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("Replacement proxy started without confirmed watchdog ownership");
+      expect(() => process.kill(watchdogOwnerBlocker.pid, 0)).not.toThrow();
+      expect(readFileSync(watchdogPidPath, "utf8")).toBe(String(watchdogOwnerBlocker.pid));
+      expect(JSON.parse(readFileSync(watchdogOwnerPath, "utf8"))).toEqual(newerWatchdogOwner);
+      expect(existsSync(pidPath)).toBe(false);
+      expect(existsSync(portPath)).toBe(false);
+      expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual(nativeSettings);
+      const restoredConfig = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8"));
+      expect(restoredConfig.claudeProfiles.profiles[0].injected).toBe(false);
+    } finally {
+      if (replacementPid !== null) {
+        try {
+          process.kill(replacementPid, "SIGTERM");
+        } catch {
+          // The rollback should already have stopped its exact replacement.
+        }
+      }
+      watchdogOwnerBlocker.kill();
+      await watchdogOwnerBlocker.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  // Windows taskkill cannot be observed safely through Bun's child-process reaper in one test process.
+  test.skipIf(process.platform === "win32")("refresh serializes stale replacement against a concurrent start", async () => {
     const root = mkdtempSync(join(tmpdir(), "frogp-refresh-stale-build-"));
     const frogHome = join(root, "frog-home");
     const claudeHome = join(root, "claude-home");
@@ -254,6 +345,12 @@ describe("frogp refresh detached lifecycle", () => {
       if (replacementPid !== concurrent.pid) expect(await concurrent.exited).toBe(1);
       replacementWatchdogPid = await waitForPidReplacement(watchdogPidPath, oldWatchdog.pid);
       expect(() => process.kill(replacementWatchdogPid!, 0)).not.toThrow();
+      const watchdogOwner = JSON.parse(readFileSync(join(frogHome, "watchdog.owner.json"), "utf8"));
+      expect(watchdogOwner).toMatchObject({
+        schemaVersion: 1,
+        watchdogPid: replacementWatchdogPid,
+        proxyPid: replacementPid,
+      });
       const health = await fetch(`http://127.0.0.1:${port}/healthz`).then(response => response.json()) as {
         serverBuildId?: string;
       };
@@ -274,14 +371,7 @@ describe("frogp refresh detached lifecycle", () => {
       if (concurrent) await concurrent.exited;
       oldWatchdog?.kill();
       if (oldWatchdog) await oldWatchdog.exited;
-      if (replacementWatchdogPid !== null) {
-        try {
-          process.kill(replacementWatchdogPid, "SIGTERM");
-        } catch {
-          // The graceful stop may already have ended the replacement watchdog.
-        }
-        await waitForPathRemoval(watchdogPidPath);
-      }
+      if (replacementWatchdogPid !== null) await waitForPathRemoval(watchdogPidPath);
       rmSync(root, { recursive: true, force: true });
     }
   }, 40_000);
@@ -372,7 +462,9 @@ describe("frogp refresh detached lifecycle", () => {
   test("detached proxies keep Claude settings injected without suppressing watchdog", () => {
     const source = cliSource();
 
-    expect(source).toContain("!parseEnvFlag(process.env.FROGP_EXTERNAL_SUPERVISOR) && !process.env.FROGP_DETACHED");
+    expect(source).toContain("if (!refreshShutdown");
+    expect(source).toContain("!parseEnvFlag(process.env.FROGP_EXTERNAL_SUPERVISOR)");
+    expect(source).toContain("&& !process.env.FROGP_DETACHED");
     expect(source).toContain("resolveWatchdogEnabled(_startConfig, process.env");
   });
 
