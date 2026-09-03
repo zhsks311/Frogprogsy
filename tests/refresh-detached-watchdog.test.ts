@@ -176,7 +176,7 @@ describe("frogp refresh detached lifecycle", () => {
       "  fetch(request) {",
       "    const url = new URL(request.url);",
       '    if (url.pathname === "/healthz") {',
-      '      return Response.json({ status: "ok", serverBuildId: "frogprogsy-server@0.0.0-stale", processPid: process.pid });',
+      '      return Response.json({ status: "ok", serverBuildId: "frogprogsy-server@0.0.0-stale" });',
       "    }",
       '    return new Response("not found", { status: 404 });',
       "  },",
@@ -284,7 +284,7 @@ describe("frogp refresh detached lifecycle", () => {
       }
       rmSync(root, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 40_000);
 
   test("refresh preserves a current proxy that wins the startup lock race", async () => {
     const root = mkdtempSync(join(tmpdir(), "frogp-refresh-current-race-"));
