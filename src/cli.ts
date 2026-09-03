@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -636,7 +636,78 @@ type FailedRefreshRollbackResult = {
   message: string;
 };
 
+function spawnedProcessExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function waitForSpawnedProcessExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (spawnedProcessExited(child)) return Promise.resolve(true);
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  let settled = false;
+  let timer: NodeJS.Timeout | undefined;
+  const finish = (exited: boolean) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    child.off("exit", onExit);
+    resolve(exited);
+  };
+  const onExit = () => finish(true);
+  child.once("exit", onExit);
+  timer = setTimeout(() => finish(false), timeoutMs);
+  if (spawnedProcessExited(child)) finish(true);
+  return promise;
+}
+
+async function terminateSpawnedRefreshReplacement(
+  child: ChildProcess,
+  expectedPid: number,
+  port: number,
+): Promise<{ ok: true } | { ok: false; error: unknown }> {
+  try {
+    const recordedPid = readPid();
+    if (child.pid !== expectedPid
+      || (recordedPid !== null && recordedPid !== expectedPid)
+      || readActivePort() !== port
+      || !processOwnsListeningPort(expectedPid, port)) {
+      throw new Error(`PID ${expectedPid} no longer owns the recorded runtime on port ${port}`);
+    }
+    writeShutdownIntent(expectedPid, "refresh");
+    const liveRecordedPid = readPid();
+    if ((liveRecordedPid !== null && liveRecordedPid !== expectedPid)
+      || readActivePort() !== port
+      || !processOwnsListeningPort(expectedPid, port)) {
+      throw new Error(`PID ${expectedPid} no longer owns the recorded runtime on port ${port}`);
+    }
+    if (!child.kill("SIGTERM") && isProcessAlive(expectedPid)) {
+      throw new Error(`could not signal process ${expectedPid}`);
+    }
+    if (!await waitForSpawnedProcessExit(child, 5_000)) {
+      const forcedRecordedPid = readPid();
+      if (child.pid !== expectedPid
+        || (forcedRecordedPid !== null && forcedRecordedPid !== expectedPid)
+        || readActivePort() !== port
+        || !processOwnsListeningPort(expectedPid, port)) {
+        throw new Error(`process ${expectedPid} did not exit and its ownership can no longer be verified`);
+      }
+      if (!child.kill("SIGKILL") && isProcessAlive(expectedPid)) {
+        throw new Error(`could not force-stop process ${expectedPid}`);
+      }
+      if (!await waitForSpawnedProcessExit(child, 5_000)) {
+        throw new Error(`process ${expectedPid} did not exit`);
+      }
+    }
+    return { ok: true };
+  } catch (error) {
+    if (spawnedProcessExited(child) || !isProcessAlive(expectedPid)) return { ok: true };
+    const intent = readShutdownIntent();
+    if (intent?.pid === expectedPid && intent.mode === "refresh") clearShutdownIntent();
+    return { ok: false, error };
+  }
+}
+
 async function rollbackFailedRefreshReplacement(
+  child: ChildProcess,
   expectedPid: number,
   port: number,
 ): Promise<FailedRefreshRollbackResult> {
@@ -676,20 +747,7 @@ async function rollbackFailedRefreshReplacement(
     }
 
     if (!targetStopped) {
-      const terminated = terminateStaleProxyForRefresh(expectedPid, {
-        writeShutdownIntent: ownedPid => writeShutdownIntent(ownedPid, "refresh"),
-        terminate: ownedPid => {
-          const liveRecordedPid = readPid();
-          if ((liveRecordedPid !== null && liveRecordedPid !== ownedPid)
-            || readActivePort() !== port
-            || !processOwnsListeningPort(ownedPid, port)) {
-            throw new Error(`PID ${ownedPid} no longer owns the recorded runtime on port ${port}`);
-          }
-          killProxy(ownedPid);
-        },
-        isAlive: isProcessAlive,
-        clearShutdownIntent,
-      });
+      const terminated = await terminateSpawnedRefreshReplacement(child, expectedPid, port);
       if (!terminated.ok) {
         return {
           restored: false,
@@ -825,9 +883,22 @@ async function handleRefresh() {
               lockedConfig.watchdog,
             );
             if (!watchdogReleased) {
+              const postStopPid = readPid();
+              const postStopProbe = await probeProxyHealth(lockedPort);
+              let rollbackDetail = "routing was left unchanged because runtime ownership could not be verified";
+              if (postStopPid === null && postStopProbe.status === "unavailable") {
+                try {
+                  const restored = restoreAllClaudeRouting();
+                  rollbackDetail = restored.success
+                    ? "native Claude routing was restored"
+                    : `Claude routing restore failed: ${restored.message}`;
+                } catch (error) {
+                  rollbackDetail = `Claude routing restore failed: ${error instanceof Error ? error.message : String(error)}`;
+                }
+              }
               replacementFailure = {
                 pid: existingPid,
-                error: new Error(`watchdog ${previousWatchdogPid ?? "unknown"} did not release ownership`),
+                error: new Error(`watchdog ${previousWatchdogPid ?? "unknown"} did not release ownership; ${rollbackDetail}`),
               };
             }
           }
@@ -860,13 +931,24 @@ async function handleRefresh() {
 
   const port = await waitForProxy();
   if (!port) {
+    const rollbackPort = readActivePort() ?? loadConfig().port ?? activePort;
+    const replacementPid = child.pid;
+    const rollback = replacementPid === undefined
+      ? {
+          restored: false,
+          message: "replacement process PID is missing; live-process ownership is unverifiable",
+        }
+      : await rollbackFailedRefreshReplacement(child, replacementPid, rollbackPort);
     console.error("❌ Proxy did not become healthy after starting.");
+    if (rollback.restored) console.error(`↩️  ${rollback.message}`);
+    else console.error(`❌ Refresh rollback failed: ${rollback.message}`);
     process.exit(1);
   }
   const runningConfig = loadConfig();
   const replacementProbe = await probeProxyHealth(port);
   const recordedReplacementPid = readPid();
-  const replacementProxyPid = recordedReplacementPid
+  const replacementProxyPid = child.pid
+    ?? recordedReplacementPid
     ?? (replacementProbe.status === "current" ? replacementProbe.processPid : null);
   if (resolveWatchdogEnabled(runningConfig, replacementEnv)
     && (replacementProxyPid === null
@@ -876,7 +958,7 @@ async function handleRefresh() {
           restored: false,
           message: "replacement runtime PID is missing; live-process ownership is unverifiable",
         }
-      : await rollbackFailedRefreshReplacement(replacementProxyPid, port);
+      : await rollbackFailedRefreshReplacement(child, replacementProxyPid, port);
     console.error("❌ Replacement proxy started without confirmed watchdog ownership.");
     if (rollback.restored) console.error(`↩️  ${rollback.message}`);
     else console.error(`❌ Refresh rollback failed: ${rollback.message}`);

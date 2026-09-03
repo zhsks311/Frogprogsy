@@ -227,6 +227,7 @@ describe("frogp refresh detached lifecycle", () => {
       expect(stderr).toContain("Restored Claude Code settings");
       expect(exitCode).toBe(1);
       expect(stderr).toContain("Replacement proxy started without confirmed watchdog ownership");
+      expect(() => process.kill(replacementPid!, 0)).toThrow();
       expect(() => process.kill(watchdogOwnerBlocker.pid, 0)).not.toThrow();
       expect(readFileSync(watchdogPidPath, "utf8")).toBe(String(watchdogOwnerBlocker.pid));
       expect(JSON.parse(readFileSync(watchdogOwnerPath, "utf8"))).toEqual(newerWatchdogOwner);
