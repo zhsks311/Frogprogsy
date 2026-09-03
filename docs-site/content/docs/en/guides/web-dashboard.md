@@ -97,8 +97,8 @@ Responses uses `input_tokens_details.cached_tokens / input_tokens`. OpenAI's inp
 cached tokens, so it is not added again. The mixed-provider panel aggregates cache reads over each
 comparable request's correctly normalized input basis. Cache creation remains an Anthropic-only value.
 Generic OpenAI-compatible and Google cache counters stay excluded unless their provenance and denominator
-are proven; missing breakdowns and upstream failures are counted separately. A reported zero is shown as
-`0%`; no data, unsupported data, unavailable breakdowns, and failed upstream requests remain distinct states.
+are proven; missing breakdowns and failed requests are counted separately. A reported zero is shown as
+`0%`; no data, unsupported data, unavailable breakdowns, and failed requests remain distinct states.
 
 Use it to answer “which route/model consumed tokens through this proxy?” For account invoices, subscription quota, or organization spend, use the provider's own metering endpoints. Those endpoints are not standardized across providers and often require separate owner credentials.
 

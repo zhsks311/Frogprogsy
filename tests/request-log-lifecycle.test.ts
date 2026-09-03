@@ -1076,6 +1076,104 @@ describe("privacy-safe request logs", () => {
     }
   });
 
+  test("a verifier dispatch failure persists the pre-final producer's native cache provenance", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (url) => {
+      calls.push(String(url));
+      if (String(url) === "https://api.openai.com/v1/responses") {
+        return Response.json({
+          output: [{ type: "message", content: [{ type: "output_text", text: "worker fallback" }] }],
+          usage: {
+            input_tokens: 12,
+            output_tokens: 3,
+            input_tokens_details: { cached_tokens: 3 },
+          },
+        });
+      }
+      throw new Error("verifier unavailable");
+    }) as typeof fetch;
+
+    try {
+      const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const response = await __requestLogTest.handleMessages(
+        new Request("http://127.0.0.1/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "frogp/mix",
+            max_tokens: 10,
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        }),
+        {
+          port: 10100,
+          defaultProvider: "worker",
+          providers: {
+            worker: {
+              adapter: "openai-responses",
+              baseUrl: "https://api.openai.com/v1",
+              apiKey: "test-key",
+              catalogProviderId: "openai-apikey",
+              defaultModel: "gpt-worker",
+              models: ["gpt-worker"],
+            },
+            verifier: {
+              adapter: "anthropic",
+              baseUrl: "https://verifier.test",
+              apiKey: "test-key",
+              defaultModel: "claude-verifier",
+              models: ["claude-verifier"],
+            },
+          },
+          modelMixing: {
+            enabled: true,
+            aliasId: "frogp/mix",
+            combine: "pipeline",
+            surfaceStages: false,
+            pipeline: [
+              { role: "worker", provider: "worker", model: "gpt-worker" },
+              { role: "verifier", provider: "verifier", model: "claude-verifier" },
+            ],
+          },
+        },
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        content: [{ type: "text", text: "worker fallback" }],
+        usage: {
+          input_tokens: 12,
+          output_tokens: 3,
+          cache_read_input_tokens: 3,
+        },
+      });
+      __requestLogTest.finalizeRequestLog(ctx, "completed", 200);
+
+      expect(calls).toEqual([
+        "https://api.openai.com/v1/responses",
+        "https://verifier.test/v1/messages",
+      ]);
+      const [requestEntry] = __requestLogTest.requestLogSnapshot();
+      expect(requestEntry.route).toMatchObject({
+        provider: "worker",
+        routedModelLabel: "gpt-worker",
+        adapter: "openai-responses",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+      });
+      expect(readUsageEntries()[0]).toMatchObject({
+        provider: "worker",
+        model: "gpt-worker",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 12, outputTokens: 3, cacheReadInputTokens: 3 },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("usage API exposes summary under Claude Code compatible aliases", async () => {
     __requestLogTest.clear();
     const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());

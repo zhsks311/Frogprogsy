@@ -96,8 +96,8 @@ Activity 的 usage section 是 local accounting，不是 provider invoice view�
 OpenAI Responses 使用 `input_tokens_details.cached_tokens / input_tokens`。OpenAI 输入总数已包含
 缓存 token，因此不会再次相加。混合 provider 汇总会按每个请求的正确输入基数计算；缓存创建仅显示
 Anthropic 值。通用 OpenAI-compatible provider 和 Google 的缓存计数会保持排除，直到 provenance
-和分母得到证实；明细缺失与上游请求失败会分别计数。已报告的真实零值显示为 `0%`；无数据、不支持、
-明细缺失和上游请求失败仍是不同状态。
+和分母得到证实；明细缺失与请求失败会分别计数。已报告的真实零值显示为 `0%`；无数据、不支持、
+明细缺失和请求失败仍是不同状态。
 
 该 tab 用于回答“通过这个 proxy，哪些 route/model 消耗了 token？”Account invoice、subscription quota、organization spend 应使用 provider 的 metering endpoint。这些 endpoint 在 provider 之间没有标准，且通常需要单独的 owner credential。
 

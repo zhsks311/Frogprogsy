@@ -7,7 +7,7 @@
 - Label-driven release automation now prepares and cancels versions, publishes previews from accepted `develop` merge SHAs, and publishes stable releases from accepted `develop` to `main` merge SHAs after channel-specific exact-SHA gates.
 - Maintainers can promote only the current exactly reconciled preview and recover partial publication only for the original prepared SHA without reusing a consumed version.
 - Bun-global stable installs now detect npm `latest` after startup without blocking the proxy, expose one cached update status across CLI/API/dashboard, and keep installation, restart, Claude state, credentials, and telemetry under explicit user control.
-- The Activity dashboard now shows a provenance-aware, coverage-labelled prompt-cache hit rate from Anthropic's separate read/creation/plain-input buckets and native OpenAI Chat/Responses cached-token details without double-counting OpenAI's inclusive input total, while separating upstream failures from missing or unsupported cache usage.
+- The Activity dashboard now shows a provenance-aware, coverage-labelled prompt-cache hit rate from Anthropic's separate read/creation/plain-input buckets and native OpenAI Chat/Responses cached-token details without double-counting OpenAI's inclusive input total, while separating failed requests from missing or unsupported cache usage.
 
 ### Changed
 

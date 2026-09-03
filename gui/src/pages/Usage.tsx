@@ -289,33 +289,35 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
   useEffect(() => {
     let cancelled = false;
     let hasSuccessfulLoad = false;
+    let requestGeneration = 0;
     setLoading(true);
     setData(null);
     setLoadError(false);
     const fetchUsage = async () => {
+      const generation = ++requestGeneration;
       try {
         const res = await fetch(`${apiBase}/api/usage?range=${range}`);
         if (!res.ok) throw new Error("fetch failed");
         const json = await res.json() as UsageResponse;
-        if (!cancelled) {
-          if (json.range === range) {
-            setData(json);
-            setLoadError(false);
-            hasSuccessfulLoad = true;
-          } else if (!hasSuccessfulLoad) {
-            setLoadError(true);
-          }
+        if (cancelled || generation !== requestGeneration) return;
+        if (json.range === range) {
+          setData(json);
+          setLoadError(false);
+          hasSuccessfulLoad = true;
+        } else if (!hasSuccessfulLoad) {
+          setLoadError(true);
         }
       } catch {
-        if (!cancelled && !hasSuccessfulLoad) setLoadError(true);
+        if (!cancelled && generation === requestGeneration && !hasSuccessfulLoad) setLoadError(true);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && generation === requestGeneration) setLoading(false);
       }
     };
     fetchUsage();
     const interval = window.setInterval(fetchUsage, 5000);
     return () => {
       cancelled = true;
+      requestGeneration += 1;
       window.clearInterval(interval);
     };
   }, [apiBase, range]);
