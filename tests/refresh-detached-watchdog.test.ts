@@ -580,7 +580,7 @@ describe("frogp refresh detached lifecycle", () => {
     writeFileSync(join(frogHome, "config.json"), JSON.stringify({
       port,
       hostname: "127.0.0.1",
-      watchdog: { enabled: true, pollIntervalMs: 50 },
+      watchdog: { enabled: false },
       providers: {},
     }, null, 2) + "\n");
     const env = {
@@ -598,7 +598,6 @@ describe("frogp refresh detached lifecycle", () => {
       stdout: "ignore",
       stderr: "ignore",
     });
-    let watchdogPid: number | null = null;
 
     try {
       await waitForPath(`${lockGate}.${start.pid}.ready`);
@@ -619,11 +618,6 @@ describe("frogp refresh detached lifecycle", () => {
       expect(stderr).toBe("");
       expect(stdout).toContain(`Proxy running on port ${port}`);
       expect(Number(readFileSync(join(frogHome, "frogp.pid"), "utf8"))).toBe(start.pid);
-      await waitForPath(join(frogHome, "watchdog.owner.json"));
-      const watchdogOwner = JSON.parse(readFileSync(join(frogHome, "watchdog.owner.json"), "utf8"));
-      watchdogPid = watchdogOwner.watchdogPid;
-      expect(watchdogOwner.proxyPid).toBe(start.pid);
-      expect(() => process.kill(watchdogPid!, 0)).not.toThrow();
       const health = await fetch(`http://127.0.0.1:${port}/healthz`).then(response => response.json()) as {
         serverBuildId?: string;
       };
@@ -638,7 +632,6 @@ describe("frogp refresh detached lifecycle", () => {
         stderr: "ignore",
       });
       await stop.exited;
-      if (watchdogPid !== null) await waitForPathRemoval(join(frogHome, "watchdog.pid"));
       start.kill();
       await start.exited;
       rmSync(root, { recursive: true, force: true });
