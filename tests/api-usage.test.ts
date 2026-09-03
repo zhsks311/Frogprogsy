@@ -201,6 +201,7 @@ describe("GET /api/usage", () => {
         reportedRequests: 0,
         unsupportedRequests: 0,
         unavailableRequests: 0,
+        failedRequests: 0,
       });
       expectUsageSourceState(body);
       expectNoDerivedUsageEstimates(body);
@@ -377,6 +378,7 @@ describe("GET /api/usage", () => {
         reportedRequests: 6,
         unsupportedRequests: 2,
         unavailableRequests: 3,
+        failedRequests: 0,
       });
     } finally {
       await server.stop(true);
@@ -439,13 +441,14 @@ describe("GET /api/usage", () => {
         reportedRequests: 0,
         unsupportedRequests: 1,
         unavailableRequests: 0,
+        failedRequests: 0,
       });
     } finally {
       await server.stop(true);
     }
   });
 
-  test("reports mixed unsupported and missing breakdown rows as unavailable", async () => {
+  test("surfaces failures while retaining unsupported and missing-breakdown counts", async () => {
     const now = Date.now();
     const lines = [
       {
@@ -473,17 +476,29 @@ describe("GET /api/usage", () => {
         usage: { inputTokens: 100, outputTokens: 5 },
         totalTokens: 105,
       },
+      {
+        requestId: "upstream-failed",
+        timestamp: now,
+        provider: "openai",
+        model: "gpt",
+        status: 502,
+        durationMs: 10,
+        usageStatus: "unreported",
+        cacheUsageStatus: "unavailable",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+      },
     ];
     writeFileSync(join(testDir, "usage.jsonl"), `${lines.map(line => JSON.stringify(line)).join("\n")}\n`, { mode: 0o600 });
     const server = await startServer(0);
     try {
       const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
       expect(body.cacheHitRate).toMatchObject({
-        status: "unavailable",
+        status: "error",
         hitRate: null,
         reportedRequests: 0,
         unsupportedRequests: 1,
         unavailableRequests: 1,
+        failedRequests: 1,
       });
     } finally {
       await server.stop(true);

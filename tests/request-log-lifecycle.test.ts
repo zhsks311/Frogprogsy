@@ -543,7 +543,7 @@ describe("privacy-safe request logs", () => {
         unreportedRequests: 0,
         inputTokens: 11,
         outputTokens: 7,
-        cachedInputTokens: 3,
+        cachedInputTokens: 0,
         totalTokens: 18,
       });
       expect(summary.providers[0]).toMatchObject({ provider: "anthropic", totalTokens: 18 });
@@ -552,9 +552,9 @@ describe("privacy-safe request logs", () => {
       expect(persisted).toMatchObject({
         cacheUsageStatus: "unavailable",
         cacheUsageSemantics: "anthropic_separate_input_buckets",
-        usage: { inputTokens: 11, outputTokens: 7, cachedInputTokens: 3 },
+        usage: { inputTokens: 11, outputTokens: 7, cacheReadInputTokens: 3 },
       });
-      expect(persisted.usage).not.toHaveProperty("cacheReadInputTokens");
+      expect(persisted.usage).not.toHaveProperty("cachedInputTokens");
       expect(persisted.usage).not.toHaveProperty("cacheCreationInputTokens");
     } finally {
       globalThis.fetch = originalFetch;
@@ -735,12 +735,14 @@ describe("privacy-safe request logs", () => {
         { semantics: "openai_input_total_includes_cached", status: "unavailable" },
       ]);
       expect(__requestLogTest.usageSummarySnapshot().cacheHitRate).toMatchObject({
+        status: "available",
         cacheReadInputTokens: 5,
         cacheCreationInputTokens: 0,
         totalInputTokens: 24,
         hitRate: 5 / 24,
         reportedRequests: 2,
-        unavailableRequests: 2,
+        unavailableRequests: 1,
+        failedRequests: 1,
       });
     } finally {
       globalThis.fetch = originalFetch;
@@ -975,6 +977,105 @@ describe("privacy-safe request logs", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("an early pipeline tool-call response persists the stage's effective cache provenance", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (url) => {
+      calls.push(String(url));
+      return Response.json({
+        id: "msg_tool_stage",
+        type: "message",
+        role: "assistant",
+        model: "tool-model",
+        content: [{
+          type: "tool_use",
+          id: "toolu_1",
+          name: "read_file",
+          input: { path: "README.md" },
+        }],
+        stop_reason: "tool_use",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 3,
+          cache_read_input_tokens: 4,
+          cache_creation_input_tokens: 2,
+        },
+      });
+    }) as typeof fetch;
+
+    try {
+      const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const response = await __requestLogTest.handleMessages(
+        new Request("http://127.0.0.1/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "frogp/mix",
+            max_tokens: 10,
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        }),
+        {
+          port: 10100,
+          defaultProvider: "tool-stage",
+          providers: {
+            "tool-stage": {
+              adapter: "anthropic",
+              baseUrl: "https://tool-stage.test",
+              apiKey: "test-key",
+              defaultModel: "tool-model",
+              models: ["tool-model"],
+            },
+            final: {
+              adapter: "anthropic",
+              baseUrl: "https://final.test",
+              apiKey: "test-key",
+              defaultModel: "final-model",
+              models: ["final-model"],
+            },
+          },
+          modelMixing: {
+            enabled: true,
+            aliasId: "frogp/mix",
+            combine: "pipeline",
+            pipeline: [
+              { role: "worker", provider: "tool-stage", model: "tool-model" },
+              { role: "verifier", provider: "final", model: "final-model" },
+            ],
+          },
+        },
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      expect((await response.json()).content).toContainEqual({
+        type: "tool_use",
+        id: "toolu_1",
+        name: "read_file",
+        input: { path: "README.md" },
+      });
+      __requestLogTest.finalizeRequestLog(ctx, "completed", 200);
+
+      expect(calls).toEqual(["https://tool-stage.test/v1/messages"]);
+      const [requestEntry] = __requestLogTest.requestLogSnapshot();
+      expect(requestEntry.route).toMatchObject({
+        provider: "tool-stage",
+        routedModelLabel: "tool-model",
+        adapter: "anthropic",
+        cacheUsageSemantics: "anthropic_separate_input_buckets",
+      });
+      expect(readUsageEntries()[0]).toMatchObject({
+        provider: "tool-stage",
+        model: "tool-model",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "anthropic_separate_input_buckets",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("usage API exposes summary under Claude Code compatible aliases", async () => {
     __requestLogTest.clear();
     const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());

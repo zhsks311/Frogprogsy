@@ -46,8 +46,9 @@ plain input for Anthropic, or the reported inclusive input total for native Open
 adapters merge the input/cache buckets from `message_start` with output usage from `message_delta`;
 OpenAI Chat consumes its requested final usage chunk and OpenAI Responses consumes terminal response
 usage. A provider/model wire-protocol override supplies the effective adapter provenance. For fusion and
-pipeline mixing, only the final user-facing target owns the outer request's usage and provenance;
-buffered panel, judge, and pre-final stages remain excluded.
+pipeline mixing, only the final user-facing target owns the outer request's usage and provenance. Buffered
+panel, judge, and pre-final stages remain excluded unless a pre-final pipeline stage emits a real tool call
+and intentionally becomes the user-facing terminal response; that stage then owns the outer provenance.
 
 OpenAI comparability requires the stable managed catalog provenance (`openai-apikey` or `codex`), the
 matching native adapter, and its canonical OpenAI or ChatGPT/Codex endpoint. Provider map keys and display
@@ -55,14 +56,15 @@ labels are never evidence. Generic OpenAI-compatible and Google cached-token cou
 until their exact wire semantics and provenance establish an equivalent denominator.
 
 This is the token share served from cache, not a request-hit percentage or provider invoice. The response
-separately counts requests with a comparable breakdown, non-equivalent or unproven provider semantics,
-and absent breakdowns. No requests means `no_data`; only unsupported rows means `unsupported`; an exact
-reported breakdown with zero cache reads remains `available` with a real zero rate. Mixed data calculates
-only over comparable requests and displays the excluded counts. Historical rows remain readable: rows
-without proven semantics are unavailable rather than guessed, while cache-metric rows already marked
-`reported` with the exact Anthropic triple retain that established interpretation. The Usage page polls
-the local summary so a completed request becomes visible without changing provider routing, credentials,
-request bodies, or restore state.
+separately counts requests with a comparable breakdown, upstream failures, non-equivalent or unproven
+provider semantics, and absent breakdowns. No requests means `no_data`; only unsupported rows means
+`unsupported`; a successful request with missing breakdown means `unavailable`; and when no comparable
+rows exist, any failed request makes the primary status `error`. An exact reported breakdown with zero
+cache reads remains `available` with a real zero rate. Mixed data calculates only over comparable requests
+and displays every excluded count. Historical rows remain readable: rows without proven semantics are
+unavailable rather than guessed, while cache-metric rows already marked `reported` with the exact Anthropic
+triple retain that established interpretation. The Usage page polls the local summary so a completed
+request becomes visible without changing provider routing, credentials, request bodies, or restore state.
 
 Provider writes must not round-trip masked API keys as real secrets. Dashboard actions that change
 model visibility or subagent selection should trigger catalog/cache sync behavior through the server

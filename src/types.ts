@@ -244,10 +244,11 @@ export type CacheUsageSemantics =
 export interface FrogUsage {
   inputTokens: number;
   outputTokens: number;
+  /** Exact combined cache read + creation count when both buckets are known. */
   cachedInputTokens?: number;
-  /** Exact provider-reported prompt-cache reads when the adapter can preserve a comparable input breakdown. */
+  /** Exact provider-reported prompt-cache reads; denominator completeness is evaluated separately. */
   cacheReadInputTokens?: number;
-  /** Exact provider-reported prompt-cache writes when the adapter can preserve a comparable input breakdown. */
+  /** Exact provider-reported prompt-cache writes; denominator completeness is evaluated separately. */
   cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
 }
@@ -656,9 +657,9 @@ export interface FrogProviderConfig {
 }
 
 /**
- * Return cache-token accounting semantics only when the configured adapter, canonical endpoint, and
- * stable catalog provenance establish the provider's denominator. Provider map keys and display labels
- * are not evidence.
+ * Anthropic-wire adapters define separate input buckets as part of that wire contract. OpenAI-shaped
+ * totals are comparable only when the native adapter, canonical endpoint, and stable catalog provenance
+ * establish that cached tokens are already included. Provider map keys and display labels are not evidence.
  */
 export function cacheUsageSemanticsForProvider(provider: FrogProviderConfig): CacheUsageSemantics | undefined {
   if (provider.adapter === "anthropic") return "anthropic_separate_input_buckets";

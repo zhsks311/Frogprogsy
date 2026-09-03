@@ -18,7 +18,7 @@ export interface UsageSummaryTotals {
   totalTokens: number;
   coverageRatio: number;
 }
-export type CacheHitRateStatus = "available" | "no_data" | "unsupported" | "unavailable";
+export type CacheHitRateStatus = "available" | "no_data" | "unsupported" | "unavailable" | "error";
 
 export interface UsageCacheHitRate {
   status: CacheHitRateStatus;
@@ -34,6 +34,7 @@ export interface UsageCacheHitRate {
   reportedRequests: number;
   unsupportedRequests: number;
   unavailableRequests: number;
+  failedRequests: number;
 }
 
 
@@ -195,8 +196,13 @@ function summarizeCacheHitRate(entries: PersistedUsageEntry[]): UsageCacheHitRat
   let reportedRequests = 0;
   let unsupportedRequests = 0;
   let unavailableRequests = 0;
+  let failedRequests = 0;
 
   for (const entry of entries) {
+    if (entry.status < 200 || entry.status >= 300) {
+      failedRequests += 1;
+      continue;
+    }
     const usage = entry.usage;
     const cacheRead = usage?.cacheReadInputTokens;
     const cacheCreation = usage?.cacheCreationInputTokens;
@@ -236,9 +242,11 @@ function summarizeCacheHitRate(entries: PersistedUsageEntry[]): UsageCacheHitRat
     ? "no_data"
     : reportedRequests > 0
       ? "available"
-      : unavailableRequests === 0 && unsupportedRequests > 0
-        ? "unsupported"
-        : "unavailable";
+      : failedRequests > 0
+        ? "error"
+        : unavailableRequests > 0
+          ? "unavailable"
+          : "unsupported";
   return {
     status,
     formula: "cache_read_input_tokens / total_input_tokens",
@@ -250,6 +258,7 @@ function summarizeCacheHitRate(entries: PersistedUsageEntry[]): UsageCacheHitRat
     reportedRequests,
     unsupportedRequests,
     unavailableRequests,
+    failedRequests,
   };
 }
 

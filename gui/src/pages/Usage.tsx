@@ -18,7 +18,7 @@ interface UsageSummaryTotals {
   coverageRatio: number;
 }
 interface UsageCacheHitRate {
-  status: "available" | "no_data" | "unsupported" | "unavailable";
+  status: "available" | "no_data" | "unsupported" | "unavailable" | "error";
   formula: "cache_read_input_tokens / total_input_tokens";
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
@@ -28,6 +28,7 @@ interface UsageCacheHitRate {
   reportedRequests: number;
   unsupportedRequests: number;
   unavailableRequests: number;
+  failedRequests: number;
 }
 
 
@@ -345,9 +346,11 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
     ? t("usage.cache.status.available")
     : cacheHitRate?.status === "no_data"
       ? t("usage.cache.status.noData")
-      : cacheHitRate?.status === "unsupported"
-        ? t("usage.cache.status.unsupported")
-        : t("usage.cache.status.unavailable");
+      : cacheHitRate?.status === "error"
+        ? t("usage.cache.status.error")
+        : cacheHitRate?.status === "unsupported"
+          ? t("usage.cache.status.unsupported")
+          : t("usage.cache.status.unavailable");
 
   return (
     <>
@@ -478,6 +481,7 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
                   reported: cacheHitRate.reportedRequests,
                   unsupported: cacheHitRate.unsupportedRequests,
                   unavailable: cacheHitRate.unavailableRequests,
+                  failed: cacheHitRate.failedRequests,
                 })}
               </p>
             )}

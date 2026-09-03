@@ -89,7 +89,7 @@ shortcut. A reviewer 404/429 can make Claude Code fall back to the current main 
 
 ## Usage accounting
 
-The Activity usage section is local accounting, not a provider invoice view. FrogProgsy records completed `/v1/messages` requests to `~/.frogprogsy/usage.jsonl` when the upstream response includes usage data. Requests without provider-reported usage are counted as `unreported` instead of being displayed as zero tokens.
+The Activity usage section is local accounting, not a provider invoice view. FrogProgsy records every finalized `/v1/messages` request in `~/.frogprogsy/usage.jsonl`, including provider-reported usage when present and a failure status when the request did not complete successfully. Requests without provider-reported usage are counted as `unreported` instead of being displayed as zero tokens.
 Prompt cache effectiveness uses only requests with a wire-proven comparable denominator. Anthropic uses
 `cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)`.
 Native OpenAI Chat Completions uses `prompt_tokens_details.cached_tokens / prompt_tokens`; native OpenAI
@@ -97,8 +97,8 @@ Responses uses `input_tokens_details.cached_tokens / input_tokens`. OpenAI's inp
 cached tokens, so it is not added again. The mixed-provider panel aggregates cache reads over each
 comparable request's correctly normalized input basis. Cache creation remains an Anthropic-only value.
 Generic OpenAI-compatible and Google cache counters stay excluded unless their provenance and denominator
-are proven; missing breakdowns are counted separately. A reported zero is shown as `0%`; no data,
-unsupported data, and unavailable breakdowns remain distinct states.
+are proven; missing breakdowns and upstream failures are counted separately. A reported zero is shown as
+`0%`; no data, unsupported data, unavailable breakdowns, and failed upstream requests remain distinct states.
 
 Use it to answer “which route/model consumed tokens through this proxy?” For account invoices, subscription quota, or organization spend, use the provider's own metering endpoints. Those endpoints are not standardized across providers and often require separate owner credentials.
 

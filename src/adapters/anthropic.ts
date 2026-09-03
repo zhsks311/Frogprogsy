@@ -168,15 +168,14 @@ function usageFromAnthropic(usage: Record<string, number> | undefined): FrogUsag
   const cacheCreationInputTokens = typeof usage.cache_creation_input_tokens === "number"
     ? usage.cache_creation_input_tokens
     : undefined;
-  const hasCache = cacheReadInputTokens !== undefined || cacheCreationInputTokens !== undefined;
-  const hasCompleteCacheBreakdown = inputTokens !== undefined
-    && cacheReadInputTokens !== undefined
+  const hasCompleteCacheTotal = cacheReadInputTokens !== undefined
     && cacheCreationInputTokens !== undefined;
   return {
     inputTokens: inputTokens ?? 0,
     outputTokens: outputTokens ?? 0,
-    ...(hasCache ? { cachedInputTokens: (cacheReadInputTokens ?? 0) + (cacheCreationInputTokens ?? 0) } : {}),
-    ...(hasCompleteCacheBreakdown ? { cacheReadInputTokens, cacheCreationInputTokens } : {}),
+    ...(hasCompleteCacheTotal ? { cachedInputTokens: cacheReadInputTokens + cacheCreationInputTokens } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
   };
 }
 

@@ -819,18 +819,18 @@ async function handleMessages(
       abortSignal: mixingAbort.signal,
       dispatchBuffered: (target, messages, maxTokens, timeoutMs, tools) =>
         runMixTurn(config, target, parsed, { messages, stream: false, maxTokens, tools }, req.headers, timeoutMs ?? mixTimeoutMs, mixingAbort.signal) as Promise<AdapterEvent[]>,
-      dispatchFinalStream: (target, systemAppend) => {
+      onUserFacingTarget: target => {
         const finalProvider = config.providers[target.provider];
-        if (finalProvider) {
-          const effectiveFinalProvider = resolveWireProtocolOverride(target.provider, target.model, finalProvider);
-          setRouteLog(
-            logCtx,
-            { providerName: target.provider, modelId: target.model, provider: effectiveFinalProvider },
-            "qualified",
-          );
-        }
-        return runMixTurn(config, target, parsed, { systemAppend, stream: true }, req.headers, mixTimeoutMs, mixingAbort.signal) as Promise<AsyncGenerator<AdapterEvent>>;
+        if (!finalProvider) return;
+        const effectiveFinalProvider = resolveWireProtocolOverride(target.provider, target.model, finalProvider);
+        setRouteLog(
+          logCtx,
+          { providerName: target.provider, modelId: target.model, provider: effectiveFinalProvider },
+          "qualified",
+        );
       },
+      dispatchFinalStream: (target, systemAppend) =>
+        runMixTurn(config, target, parsed, { systemAppend, stream: true }, req.headers, mixTimeoutMs, mixingAbort.signal) as Promise<AsyncGenerator<AdapterEvent>>,
     });
 
     if (parsed.stream) {

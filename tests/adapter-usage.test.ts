@@ -294,15 +294,15 @@ describe("adapter reasoning and usage details", () => {
     const cases = [
       {
         usage: { input_tokens: 20, output_tokens: 8, cache_read_input_tokens: 4 },
-        expected: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 4 },
+        expected: { inputTokens: 20, outputTokens: 8, cacheReadInputTokens: 4 },
       },
       {
         usage: { input_tokens: 20, output_tokens: 8, cache_creation_input_tokens: 6 },
-        expected: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 6 },
+        expected: { inputTokens: 20, outputTokens: 8, cacheCreationInputTokens: 6 },
       },
       {
         usage: { output_tokens: 8, cache_read_input_tokens: 4, cache_creation_input_tokens: 6 },
-        expected: { inputTokens: 0, outputTokens: 8, cachedInputTokens: 10 },
+        expected: { inputTokens: 0, outputTokens: 8, cachedInputTokens: 10, cacheReadInputTokens: 4, cacheCreationInputTokens: 6 },
       },
     ];
 
@@ -352,15 +352,15 @@ describe("adapter reasoning and usage details", () => {
     const cases = [
       {
         usage: { input_tokens: 20, cache_read_input_tokens: 4 },
-        expected: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 4 },
+        expected: { inputTokens: 20, outputTokens: 8, cacheReadInputTokens: 4 },
       },
       {
         usage: { input_tokens: 20, cache_creation_input_tokens: 6 },
-        expected: { inputTokens: 20, outputTokens: 8, cachedInputTokens: 6 },
+        expected: { inputTokens: 20, outputTokens: 8, cacheCreationInputTokens: 6 },
       },
       {
         usage: { cache_read_input_tokens: 4, cache_creation_input_tokens: 6 },
-        expected: { inputTokens: 0, outputTokens: 8, cachedInputTokens: 10 },
+        expected: { inputTokens: 0, outputTokens: 8, cachedInputTokens: 10, cacheReadInputTokens: 4, cacheCreationInputTokens: 6 },
       },
     ];
 

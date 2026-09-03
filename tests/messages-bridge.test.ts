@@ -57,6 +57,44 @@ describe("Anthropic Messages bridge", () => {
     ]);
   });
 
+  test("non-streaming JSON preserves partial Anthropic cache buckets without inventing siblings", () => {
+    const creationOnly = buildMessageJSON([
+      { type: "done", usage: { inputTokens: 8, outputTokens: 5, cacheCreationInputTokens: 6 } },
+    ], "model");
+    const readOnly = buildMessageJSON([
+      { type: "done", usage: { inputTokens: 8, outputTokens: 5, cacheReadInputTokens: 2 } },
+    ], "model");
+    const bothWithoutInput = buildMessageJSON([
+      {
+        type: "done",
+        usage: {
+          inputTokens: 0,
+          outputTokens: 5,
+          cachedInputTokens: 8,
+          cacheReadInputTokens: 2,
+          cacheCreationInputTokens: 6,
+        },
+      },
+    ], "model");
+
+    expect(creationOnly.usage).toEqual({
+      input_tokens: 8,
+      output_tokens: 5,
+      cache_creation_input_tokens: 6,
+    });
+    expect(readOnly.usage).toEqual({
+      input_tokens: 8,
+      output_tokens: 5,
+      cache_read_input_tokens: 2,
+    });
+    expect(bothWithoutInput.usage).toEqual({
+      input_tokens: 0,
+      output_tokens: 5,
+      cache_read_input_tokens: 2,
+      cache_creation_input_tokens: 6,
+    });
+  });
+
   test("streaming emits Anthropic message/content lifecycle and input_json_delta chunks", async () => {
     const frames = await collectSse(bridgeToMessagesSSE(replay([
       { type: "text_delta", text: "before" },

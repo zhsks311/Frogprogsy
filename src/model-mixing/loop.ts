@@ -17,6 +17,8 @@ export interface MixLoopDeps {
   dispatchBuffered: (target: MixTarget, messages: FrogMessage[], maxTokens: number, timeoutMs?: number, tools?: FrogTool[]) => Promise<AdapterEvent[]>;
   /** Streamed dispatch to the synthesizer: the original request context plus an appended instruction. */
   dispatchFinalStream: (target: MixTarget, systemAppend: string) => Promise<AsyncGenerator<AdapterEvent>>;
+  /** Records the target whose events become the outer user-facing response. */
+  onUserFacingTarget?: (target: MixTarget) => void;
   /** Test seam for panel synthetic web_search evidence; production uses executeSearchEvidence. */
   executeSearchEvidence?: typeof defaultExecuteSearchEvidence;
 }
@@ -377,6 +379,7 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
       }
       budgetUsed += multiroundEnabled ? 1 : 0;
       const { instruction } = buildSynthesisPrompt(analysis, panelAnswers);
+      deps.onUserFacingTarget?.(plan.synthesizer);
       try {
         const gen = await deps.dispatchFinalStream(plan.synthesizer, instruction);
         yield* gen;
@@ -402,6 +405,7 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
           return;
         }
         console.error(`frogprogsy: model-mixing: falling back to plain final answer from ${fallback.provider}/${fallback.model}`);
+        deps.onUserFacingTarget?.({ provider: fallback.provider, model: fallback.model });
         try {
           const gen = await deps.dispatchFinalStream({ provider: fallback.provider, model: fallback.model }, "");
           yield* gen;
@@ -429,6 +433,7 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
           console.error(
             `frogprogsy: model-mixing: ${stage.role} emitted a tool call; pipeline finalized early, verifier deferred (stateless proxy cannot force a follow-up turn)`,
           );
+          deps.onUserFacingTarget?.({ provider: stage.provider, model: stage.model });
           for (const e of forwarded) yield e;
           return;
         }
@@ -439,6 +444,7 @@ export async function runWithMixing(deps: MixLoopDeps): Promise<AsyncGenerator<A
         }
       }
 
+      deps.onUserFacingTarget?.({ provider: final.provider, model: final.model });
       try {
         const gen = await deps.dispatchFinalStream(
           { provider: final.provider, model: final.model },
