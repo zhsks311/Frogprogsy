@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { suggestClosest } from "./cli-suggest";
@@ -637,6 +637,7 @@ async function handleRefresh() {
 
   let replacementFailure: { pid: number | null; error: unknown } | null = null;
   let runningPortAfterLock: number | null = null;
+  let retiredWatchdogPid: number | null = null;
   const releaseConfigLock = await acquireConfigMutationLockOrExit();
   try {
     const lockedConfig = loadConfig();
@@ -662,8 +663,14 @@ async function handleRefresh() {
             pid: existingPid,
             error: new Error(`health response belongs to PID ${lockedProbe.processPid}`),
           };
+        } else if (lockedProbe.processPid === null && !processOwnsListeningPort(existingPid, lockedPort)) {
+          replacementFailure = {
+            pid: existingPid,
+            error: new Error(`legacy health response is not owned by PID ${existingPid} on port ${lockedPort}`),
+          };
         } else {
           const previousWatchdogPid = readWatchdogProcessPid();
+          retiredWatchdogPid = previousWatchdogPid;
           const terminated = terminateStaleProxyForRefresh(existingPid, {
             writeShutdownIntent,
             terminate: killProxy,
@@ -700,10 +707,15 @@ async function handleRefresh() {
     return;
   }
 
+  const replacementEnv = {
+    ...process.env,
+    FROGP_DETACHED: "1",
+    FROGP_EXTERNAL_SUPERVISOR: undefined,
+  };
   const child = spawn(process.execPath, [process.argv[1], "start"], {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, FROGP_DETACHED: "1", FROGP_EXTERNAL_SUPERVISOR: undefined },
+    env: replacementEnv,
   });
   child.unref();
 
@@ -712,8 +724,60 @@ async function handleRefresh() {
     console.error("❌ Proxy did not become healthy after starting.");
     process.exit(1);
   }
+  const runningConfig = loadConfig();
+  if (resolveWatchdogEnabled(runningConfig, replacementEnv)
+    && !await waitForReplacementWatchdogOwnership(retiredWatchdogPid)) {
+    console.error("❌ Replacement proxy started without confirmed watchdog ownership.");
+    process.exit(1);
+  }
   await syncRunningProxyForRefresh(port);
 }
+function processOwnsListeningPort(pid: number, port: number): boolean {
+  try {
+    if (process.platform === "win32") {
+      const powershell = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+      const command = `(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess) -join [Environment]::NewLine`;
+      const output = execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", command], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      return output.trim().split(/\s+/).some(value => Number(value) === pid);
+    }
+    if (process.platform === "darwin") {
+      const lsof = existsSync("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof";
+      const output = execFileSync(lsof, ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+        encoding: "utf8",
+      });
+      return output.trim().split(/\s+/).some(value => Number(value) === pid);
+    }
+    if (process.platform === "linux") {
+      const listeningInodes = new Set<string>();
+      for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+        if (!existsSync(table)) continue;
+        for (const line of readFileSync(table, "utf8").trim().split(/\r?\n/).slice(1)) {
+          const columns = line.trim().split(/\s+/);
+          const localAddress = columns[1];
+          if (columns[3] !== "0A" || !localAddress) continue;
+          const portHex = localAddress.slice(localAddress.lastIndexOf(":") + 1);
+          if (Number.parseInt(portHex, 16) === port && columns[9]) listeningInodes.add(columns[9]);
+        }
+      }
+      for (const descriptor of readdirSync(`/proc/${pid}/fd`)) {
+        try {
+          const target = readlinkSync(`/proc/${pid}/fd/${descriptor}`);
+          const match = /^socket:\[(\d+)\]$/.exec(target);
+          if (match && listeningInodes.has(match[1])) return true;
+        } catch {
+          // Descriptor may close while the process is inspected.
+        }
+      }
+    }
+  } catch {
+    // Missing platform tooling or inaccessible process metadata fails closed.
+  }
+  return false;
+}
+
 
 
 function readWatchdogProcessPid(): number | null {
@@ -742,10 +806,7 @@ async function waitForPriorWatchdogRelease(
   const pollIntervalMs = watchdog?.pollIntervalMs ?? 2_000;
   const backoffMs = watchdog?.backoffMs ?? [1_000, 5_000];
   const longestBackoffMs = backoffMs.length === 0 ? 1_000 : Math.max(...backoffMs);
-  const releaseWaitMs = Math.min(
-    Math.max(longestBackoffMs + pollIntervalMs + 2_000, 5_000),
-    60_000,
-  );
+  const releaseWaitMs = Math.max(longestBackoffMs + pollIntervalMs + 2_000, 5_000);
   const releaseDeadline = Date.now() + releaseWaitMs;
   while (Date.now() < releaseDeadline) {
     if (readWatchdogProcessPid() !== watchdogPid) return true;
@@ -754,6 +815,18 @@ async function waitForPriorWatchdogRelease(
       return true;
     }
     await Bun.sleep(50);
+  }
+  return false;
+}
+
+async function waitForReplacementWatchdogOwnership(retiredPid: number | null): Promise<boolean> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const watchdogPid = readWatchdogProcessPid();
+    if (watchdogPid !== null && watchdogPid !== retiredPid && isProcessAlive(watchdogPid)) {
+      return true;
+    }
+    await Bun.sleep(25);
   }
   return false;
 }
