@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -662,35 +663,21 @@ function waitForSpawnedProcessExit(child: ChildProcess, timeoutMs: number): Prom
 async function terminateSpawnedRefreshReplacement(
   child: ChildProcess,
   expectedPid: number,
-  port: number,
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
   try {
-    const recordedPid = readPid();
-    if (child.pid !== expectedPid
-      || (recordedPid !== null && recordedPid !== expectedPid)
-      || readActivePort() !== port
-      || !processOwnsListeningPort(expectedPid, port)) {
-      throw new Error(`PID ${expectedPid} no longer owns the recorded runtime on port ${port}`);
+    if (child.pid !== expectedPid) {
+      throw new Error(`spawned replacement identity changed from PID ${expectedPid}`);
     }
+    if (spawnedProcessExited(child)) return { ok: true };
     writeShutdownIntent(expectedPid, "refresh");
-    const liveRecordedPid = readPid();
-    if ((liveRecordedPid !== null && liveRecordedPid !== expectedPid)
-      || readActivePort() !== port
-      || !processOwnsListeningPort(expectedPid, port)) {
-      throw new Error(`PID ${expectedPid} no longer owns the recorded runtime on port ${port}`);
-    }
-    if (!child.kill("SIGTERM") && isProcessAlive(expectedPid)) {
+    if (!child.kill("SIGTERM") && !spawnedProcessExited(child) && isProcessAlive(expectedPid)) {
       throw new Error(`could not signal process ${expectedPid}`);
     }
     if (!await waitForSpawnedProcessExit(child, 5_000)) {
-      const forcedRecordedPid = readPid();
-      if (child.pid !== expectedPid
-        || (forcedRecordedPid !== null && forcedRecordedPid !== expectedPid)
-        || readActivePort() !== port
-        || !processOwnsListeningPort(expectedPid, port)) {
-        throw new Error(`process ${expectedPid} did not exit and its ownership can no longer be verified`);
+      if (child.pid !== expectedPid) {
+        throw new Error(`spawned replacement identity changed from PID ${expectedPid}`);
       }
-      if (!child.kill("SIGKILL") && isProcessAlive(expectedPid)) {
+      if (!child.kill("SIGKILL") && !spawnedProcessExited(child) && isProcessAlive(expectedPid)) {
         throw new Error(`could not force-stop process ${expectedPid}`);
       }
       if (!await waitForSpawnedProcessExit(child, 5_000)) {
@@ -699,7 +686,7 @@ async function terminateSpawnedRefreshReplacement(
     }
     return { ok: true };
   } catch (error) {
-    if (spawnedProcessExited(child) || !isProcessAlive(expectedPid)) return { ok: true };
+    if (spawnedProcessExited(child)) return { ok: true };
     const intent = readShutdownIntent();
     if (intent?.pid === expectedPid && intent.mode === "refresh") clearShutdownIntent();
     return { ok: false, error };
@@ -711,51 +698,24 @@ async function rollbackFailedRefreshReplacement(
   expectedPid: number,
   port: number,
 ): Promise<FailedRefreshRollbackResult> {
-  const releaseConfigLock = await acquireConfigMutationLockOrExit();
-  try {
-    const recordedPid = readPid();
-    if (recordedPid !== null && recordedPid !== expectedPid) {
+  if (child.pid !== expectedPid) {
+    return {
+      restored: false,
+      message: `spawned replacement identity changed from PID ${expectedPid}; no process or runtime record was changed`,
+    };
+  }
+  if (!spawnedProcessExited(child)) {
+    const terminated = await terminateSpawnedRefreshReplacement(child, expectedPid);
+    if (!terminated.ok) {
       return {
         restored: false,
-        message: `runtime ownership moved from replacement PID ${expectedPid} to PID ${recordedPid}; the newer process was left untouched`,
+        message: `could not stop replacement PID ${expectedPid}: ${terminated.error instanceof Error ? terminated.error.message : String(terminated.error)}`,
       };
     }
+  }
 
-    let targetStopped = false;
-    const probe = await probeProxyHealth(port);
-    const probeOwnsTarget = probe.status === "current"
-      && probe.processPid === expectedPid
-      && processOwnsListeningPort(expectedPid, port);
-    if (recordedPid === null) {
-      if (!isProcessAlive(expectedPid) && probe.status === "unavailable") {
-        targetStopped = true;
-      } else if (!probeOwnsTarget) {
-        return {
-          restored: false,
-          message: `replacement PID ${expectedPid} is no longer recorded and its live-process ownership is unverifiable; no process or runtime record was changed`,
-        };
-      }
-    } else if (!probeOwnsTarget) {
-      if (!isProcessAlive(expectedPid) && probe.status === "unavailable") {
-        targetStopped = true;
-      } else {
-        return {
-          restored: false,
-          message: `replacement PID ${expectedPid} no longer has verifiable ownership of port ${port}; no process or runtime record was changed`,
-        };
-      }
-    }
-
-    if (!targetStopped) {
-      const terminated = await terminateSpawnedRefreshReplacement(child, expectedPid, port);
-      if (!terminated.ok) {
-        return {
-          restored: false,
-          message: `could not stop replacement PID ${expectedPid}: ${terminated.error instanceof Error ? terminated.error.message : String(terminated.error)}`,
-        };
-      }
-    }
-
+  const releaseConfigLock = await acquireConfigMutationLockOrExit();
+  try {
     const successorPid = readPid();
     if (successorPid !== null && successorPid !== expectedPid) {
       return {
@@ -768,12 +728,6 @@ async function rollbackFailedRefreshReplacement(
       return {
         restored: false,
         message: `runtime ownership moved to port ${successorPort} after replacement shutdown; the newer runtime records were left untouched`,
-      };
-    }
-    if (isProcessAlive(expectedPid)) {
-      return {
-        restored: false,
-        message: `replacement PID ${expectedPid} became live again after shutdown; routing and runtime records were left untouched`,
       };
     }
     const postStopProbe = await probeProxyHealth(port);
@@ -834,6 +788,7 @@ async function handleRefresh() {
   try {
     const lockedConfig = loadConfig();
     const lockedPort = readActivePort() ?? lockedConfig.port ?? DEFAULT_PORT;
+    const listenerAddressKeys = await resolveListenerAddressKeys(lockedConfig.hostname);
     const lockedProbe = await probeProxyHealth(lockedPort);
     if (lockedProbe.status === "current") {
       runningPortAfterLock = lockedPort;
@@ -855,7 +810,7 @@ async function handleRefresh() {
             pid: existingPid,
             error: new Error(`health response belongs to PID ${lockedProbe.processPid}`),
           };
-        } else if (!processOwnsListeningPort(existingPid, lockedPort)) {
+        } else if (!processOwnsListeningPort(existingPid, lockedPort, listenerAddressKeys)) {
           replacementFailure = {
             pid: existingPid,
             error: new Error(`health response is not owned by PID ${existingPid} on port ${lockedPort}`),
@@ -866,8 +821,8 @@ async function handleRefresh() {
           const terminated = terminateStaleProxyForRefresh(existingPid, {
             writeShutdownIntent: pid => writeShutdownIntent(pid, "refresh"),
             terminate: pid => {
-              if (!processOwnsListeningPort(pid, lockedPort)) {
-                throw new Error(`PID ${pid} no longer owns port ${lockedPort}`);
+              if (!processOwnsListeningPort(pid, lockedPort, listenerAddressKeys)) {
+                throw new Error(`PID ${pid} no longer owns the configured listener on port ${lockedPort}`);
               }
               killProxy(pid);
             },
@@ -921,6 +876,9 @@ async function handleRefresh() {
     ...process.env,
     FROGP_DETACHED: "1",
     FROGP_EXTERNAL_SUPERVISOR: undefined,
+    ...(process.env.NODE_ENV === "test" && process.env.FROGP_TEST_REFRESH_CHILD_CONFIG_LOCK_GATE
+      ? { FROGP_TEST_CONFIG_LOCK_GATE: process.env.FROGP_TEST_REFRESH_CHILD_CONFIG_LOCK_GATE }
+      : {}),
   };
   const child = spawn(process.execPath, [process.argv[1], "start"], {
     detached: true,
@@ -947,9 +905,28 @@ async function handleRefresh() {
   const runningConfig = loadConfig();
   const replacementProbe = await probeProxyHealth(port);
   const recordedReplacementPid = readPid();
-  const replacementProxyPid = child.pid
-    ?? recordedReplacementPid
-    ?? (replacementProbe.status === "current" ? replacementProbe.processPid : null);
+  const spawnedReplacementPid = child.pid ?? null;
+  const authenticatedRuntimePid = replacementProbe.status === "current"
+    && replacementProbe.processPid !== null
+    && recordedReplacementPid === replacementProbe.processPid
+    ? replacementProbe.processPid
+    : null;
+  if (authenticatedRuntimePid !== null
+    && spawnedReplacementPid !== null
+    && authenticatedRuntimePid !== spawnedReplacementPid
+    && !spawnedProcessExited(child)) {
+    const stoppedLosingChild = await terminateSpawnedRefreshReplacement(child, spawnedReplacementPid);
+    if (!stoppedLosingChild.ok) {
+      console.error(`❌ Could not stop losing refresh child PID ${spawnedReplacementPid}: ${stoppedLosingChild.error instanceof Error ? stoppedLosingChild.error.message : String(stoppedLosingChild.error)}`);
+      process.exit(1);
+    }
+    const intent = readShutdownIntent();
+    if (intent?.pid === spawnedReplacementPid && intent.mode === "refresh") clearShutdownIntent();
+  }
+  const replacementProxyPid = authenticatedRuntimePid
+    ?? (!spawnedProcessExited(child) && recordedReplacementPid === spawnedReplacementPid
+      ? spawnedReplacementPid
+      : null);
   if (resolveWatchdogEnabled(runningConfig, replacementEnv)
     && (replacementProxyPid === null
       || !await waitForReplacementWatchdogOwnership(retiredWatchdogPid, replacementProxyPid))) {
@@ -958,7 +935,12 @@ async function handleRefresh() {
           restored: false,
           message: "replacement runtime PID is missing; live-process ownership is unverifiable",
         }
-      : await rollbackFailedRefreshReplacement(child, replacementProxyPid, port);
+      : replacementProxyPid !== spawnedReplacementPid
+        ? {
+            restored: false,
+            message: `concurrent runtime PID ${replacementProxyPid} was left untouched because it was not spawned by this refresh`,
+          }
+        : await rollbackFailedRefreshReplacement(child, replacementProxyPid, port);
     console.error("❌ Replacement proxy started without confirmed watchdog ownership.");
     if (rollback.restored) console.error(`↩️  ${rollback.message}`);
     else console.error(`❌ Refresh rollback failed: ${rollback.message}`);
@@ -966,23 +948,136 @@ async function handleRefresh() {
   }
   await syncRunningProxyForRefresh(port);
 }
-function processOwnsListeningPort(pid: number, port: number): boolean {
+function addressKey(address: string): string | null {
+  let value = address.trim().toLowerCase();
+  if (value.startsWith("[") && value.endsWith("]")) value = value.slice(1, -1);
+  const zoneIndex = value.indexOf("%");
+  if (zoneIndex !== -1) value = value.slice(0, zoneIndex);
+  if (value === "*") return "*";
+  if (value === "0.0.0.0") return "4:*";
+  if (value === "::") return "6:*";
+
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(value)) {
+    const octets = value.split(".").map(Number);
+    if (octets.length !== 4 || octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+      return null;
+    }
+    return `4:${octets.join(".")}`;
+  }
+
+  if (!value.includes(":")) return null;
+  if (value.includes(".")) {
+    const lastColon = value.lastIndexOf(":");
+    const ipv4Key = addressKey(value.slice(lastColon + 1));
+    if (!ipv4Key?.startsWith("4:")) return null;
+    const octets = ipv4Key.slice(2).split(".").map(Number);
+    value = `${value.slice(0, lastColon)}:${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+  const halves = value.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null;
+  const groups = [
+    ...left,
+    ...Array.from({ length: missing }, () => "0"),
+    ...right,
+  ];
+  if (groups.length !== 8 || groups.some(group => !/^[0-9a-f]{1,4}$/.test(group))) return null;
+  const expanded = groups.map(group => group.padStart(4, "0"));
+  if (expanded.slice(0, 5).every(group => group === "0000") && expanded[5] === "ffff") {
+    const high = Number.parseInt(expanded[6], 16);
+    const low = Number.parseInt(expanded[7], 16);
+    return `4:${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+  }
+  return `6:${expanded.join(":")}`;
+}
+
+async function resolveListenerAddressKeys(hostname?: string): Promise<ReadonlySet<string>> {
+  const probeHost = healthHost(hostname).replace(/^\[|\]$/g, "");
+  try {
+    const addresses = await lookup(probeHost, { all: true, verbatim: true });
+    const keys = new Set(addresses.flatMap(({ address }) => {
+      const key = addressKey(address);
+      return key === null ? [] : [key];
+    }));
+    return keys.size === 1 ? keys : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function procListenerAddressKey(encodedAddress: string): string | null {
+  if (!/^[0-9A-Fa-f]+$/.test(encodedAddress)) return null;
+  if (encodedAddress.length === 8) {
+    const octets = encodedAddress.match(/../g)?.reverse().map(value => Number.parseInt(value, 16));
+    return octets?.length === 4 ? addressKey(octets.join(".")) : null;
+  }
+  if (encodedAddress.length === 32) {
+    const bytes = encodedAddress.match(/.{8}/g)
+      ?.flatMap(word => word.match(/../g)?.reverse() ?? []);
+    if (bytes?.length !== 16) return null;
+    const groups = Array.from({ length: 8 }, (_, index) => `${bytes[index * 2]}${bytes[index * 2 + 1]}`);
+    return addressKey(groups.join(":"));
+  }
+  return null;
+}
+
+function listenerAddressMatches(
+  address: string,
+  expectedAddressKeys: ReadonlySet<string>,
+  wildcardFamily?: "4" | "6",
+): boolean {
+  const key = addressKey(address);
+  if (key === "*") {
+    return wildcardFamily !== undefined
+      && [...expectedAddressKeys].some(expected => expected.startsWith(`${wildcardFamily}:`));
+  }
+  if (key === "4:*" || key === "6:*") {
+    return [...expectedAddressKeys].some(expected => expected.startsWith(key.slice(0, 2)));
+  }
+  return key !== null && expectedAddressKeys.has(key);
+}
+
+function processOwnsListeningPort(
+  pid: number,
+  port: number,
+  expectedAddressKeys: ReadonlySet<string>,
+): boolean {
+  if (expectedAddressKeys.size === 0) return false;
   try {
     if (process.platform === "win32") {
       const powershell = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-      const command = `(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess) -join [Environment]::NewLine`;
+      const command = `(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.LocalAddress)|$($_.OwningProcess)" }) -join [Environment]::NewLine`;
       const output = execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", command], {
         encoding: "utf8",
         windowsHide: true,
       });
-      return output.trim().split(/\s+/).some(value => Number(value) === pid);
+      return output.trim().split(/\r?\n/).some(line => {
+        const separator = line.lastIndexOf("|");
+        return separator !== -1
+          && Number(line.slice(separator + 1)) === pid
+          && listenerAddressMatches(line.slice(0, separator), expectedAddressKeys);
+      });
     }
     if (process.platform === "darwin") {
       const lsof = existsSync("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof";
-      const output = execFileSync(lsof, ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+      const expectedAddress = [...expectedAddressKeys][0];
+      const family = expectedAddress?.startsWith("4:")
+        ? "4"
+        : expectedAddress?.startsWith("6:")
+          ? "6"
+          : null;
+      if (family === null) return false;
+      const output = execFileSync(lsof, ["-nP", "-a", "-p", String(pid), `-i${family}TCP:${port}`, "-sTCP:LISTEN", "-Fn"], {
         encoding: "utf8",
       });
-      return output.trim().split(/\s+/).some(value => Number(value) === pid);
+      const suffix = `:${port}`;
+      return output.trim().split(/\r?\n/).some(line => {
+        if (!line.startsWith("n") || !line.endsWith(suffix)) return false;
+        return listenerAddressMatches(line.slice(1, -suffix.length), expectedAddressKeys, family);
+      });
     }
     if (process.platform === "linux") {
       const listeningInodes = new Set<string>();
@@ -992,8 +1087,15 @@ function processOwnsListeningPort(pid: number, port: number): boolean {
           const columns = line.trim().split(/\s+/);
           const localAddress = columns[1];
           if (columns[3] !== "0A" || !localAddress) continue;
-          const portHex = localAddress.slice(localAddress.lastIndexOf(":") + 1);
-          if (Number.parseInt(portHex, 16) === port && columns[9]) listeningInodes.add(columns[9]);
+          const separator = localAddress.lastIndexOf(":");
+          const address = procListenerAddressKey(localAddress.slice(0, separator));
+          const socketPort = Number.parseInt(localAddress.slice(separator + 1), 16);
+          if (socketPort === port
+            && address !== null
+            && listenerAddressMatches(address.slice(2), expectedAddressKeys, address.startsWith("4:") ? "4" : "6")
+            && columns[9]) {
+            listeningInodes.add(columns[9]);
+          }
         }
       }
       for (const descriptor of readdirSync(`/proc/${pid}/fd`)) {
