@@ -138,10 +138,7 @@ describe("frogp refresh detached lifecycle", () => {
       stdout: "pipe",
       stderr: "ignore",
     });
-    const oldWatchdog = Bun.spawn(
-      [process.execPath, "-e", "await Promise.withResolvers<void>().promise"],
-      { stdout: "ignore", stderr: "ignore" },
-    );
+    let oldWatchdog: { pid: number; exited: Promise<number>; kill: () => void } | undefined;
     let replacementWatchdogPid: number | null = null;
     const env = {
       ...process.env,
@@ -169,7 +166,12 @@ describe("frogp refresh detached lifecycle", () => {
       }, null, 2) + "\n");
       writeFileSync(join(frogHome, "frogp.pid"), String(stale.pid));
       writeFileSync(join(frogHome, "frogp.port"), String(port));
-      writeFileSync(watchdogPidPath, String(oldWatchdog.pid));
+      oldWatchdog = Bun.spawn(
+        [process.execPath, cliPath, "__watchdog", "--parent", String(stale.pid), "--port", String(port)],
+        { cwd: join(import.meta.dir, ".."), env, stdout: "ignore", stderr: "ignore" },
+      );
+      await waitForPath(watchdogPidPath);
+      expect(Number(readFileSync(watchdogPidPath, "utf8"))).toBe(oldWatchdog.pid);
 
       const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
         cwd: join(import.meta.dir, ".."),
@@ -219,8 +221,8 @@ describe("frogp refresh detached lifecycle", () => {
       await stale.exited;
       concurrent?.kill();
       if (concurrent) await concurrent.exited;
-      oldWatchdog.kill();
-      await oldWatchdog.exited;
+      oldWatchdog?.kill();
+      if (oldWatchdog) await oldWatchdog.exited;
       if (replacementWatchdogPid !== null) {
         try {
           process.kill(replacementWatchdogPid, "SIGTERM");

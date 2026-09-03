@@ -634,18 +634,15 @@ async function handleRefresh() {
         if (!replacementFailure) {
           removePid();
           removeActivePort();
-          if (previousWatchdogPid !== null) {
-            try {
-              killProxy(previousWatchdogPid);
-            } catch (error) {
-              if (isProcessAlive(previousWatchdogPid)) {
-                replacementFailure = {
-                  pid: existingPid,
-                  error: new Error(`watchdog ${previousWatchdogPid} did not release ownership: ${error instanceof Error ? error.message : String(error)}`),
-                };
-              }
-            }
-            if (!replacementFailure) clearWatchdogPidIfOwned(previousWatchdogPid);
+          const watchdogReleased = await waitForPriorWatchdogRelease(
+            previousWatchdogPid,
+            lockedConfig.watchdog?.pollIntervalMs,
+          );
+          if (!watchdogReleased) {
+            replacementFailure = {
+              pid: existingPid,
+              error: new Error(`watchdog ${previousWatchdogPid ?? "unknown"} did not release ownership`),
+            };
           }
         }
       }
@@ -687,6 +684,30 @@ function readWatchdogProcessPid(): number | null {
   } catch {
     return null;
   }
+}
+
+async function waitForPriorWatchdogRelease(
+  initialPid: number | null,
+  pollIntervalMs = 2_000,
+): Promise<boolean> {
+  let watchdogPid = initialPid;
+  const discoveryDeadline = Date.now() + 250;
+  while (watchdogPid === null && Date.now() < discoveryDeadline) {
+    await Bun.sleep(25);
+    watchdogPid = readWatchdogProcessPid();
+  }
+  if (watchdogPid === null) return true;
+
+  const releaseDeadline = Date.now() + Math.min(Math.max(pollIntervalMs * 3, 5_000), 30_000);
+  while (Date.now() < releaseDeadline) {
+    if (readWatchdogProcessPid() !== watchdogPid) return true;
+    if (!isProcessAlive(watchdogPid)) {
+      clearWatchdogPidIfOwned(watchdogPid);
+      return true;
+    }
+    await Bun.sleep(50);
+  }
+  return false;
 }
 
 function clearWatchdogPidIfOwned(pid: number): void {
