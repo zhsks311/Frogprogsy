@@ -28,6 +28,7 @@ import {
 import { createConfigMutationLock } from "./config-mutation-lock";
 import { generateLocalAccessSecret, hashLocalAccessSecret, sameMachineAccessHeaders } from "./local-access";
 import { findAvailablePort } from "./ports";
+import { terminateStaleProxyForRefresh } from "./refresh-process";
 import { createRuntimeConfigState } from "./runtime-config-state";
 
 import { maybeShowStarPrompt } from "./star-prompt";
@@ -606,17 +607,29 @@ async function handleRefresh() {
     return;
   }
 
-  const existingPid = readPid();
-  if (existingPid) {
-    try {
-      writeShutdownIntent(existingPid);
-      killProxy(existingPid);
-      removePid();
-      removeActivePort();
-    } catch (error) {
-      console.error(`❌ Could not replace stale proxy (PID ${existingPid}): ${error instanceof Error ? error.message : String(error)}`);
-      process.exit(1);
+  let replacementFailure: { pid: number; error: unknown } | null = null;
+  const releaseConfigLock = await acquireConfigMutationLockOrExit();
+  try {
+    const existingPid = readPid();
+    if (existingPid) {
+      const terminated = terminateStaleProxyForRefresh(existingPid, {
+        writeShutdownIntent,
+        terminate: killProxy,
+        isAlive: isProcessAlive,
+        clearShutdownIntent,
+      });
+      if (!terminated.ok) replacementFailure = { pid: existingPid, error: terminated.error };
+      if (!replacementFailure) {
+        removePid();
+        removeActivePort();
+      }
     }
+  } finally {
+    releaseConfigLock();
+  }
+  if (replacementFailure) {
+    console.error(`❌ Could not replace stale proxy (PID ${replacementFailure.pid}): ${replacementFailure.error instanceof Error ? replacementFailure.error.message : String(replacementFailure.error)}`);
+    process.exit(1);
   }
 
   const child = spawn(process.execPath, [process.argv[1], "start"], {

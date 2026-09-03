@@ -286,6 +286,42 @@ describe("stable update status service", () => {
     }
   });
 
+  test("legacy v1 migration retries incomplete attempts but retains completed failure throttles", async () => {
+    const now = new Date("2026-08-25T00:00:00.000Z");
+    const legacyRecord = {
+      schemaVersion: 1,
+      lastAttemptAt: now.toISOString(),
+      lastAttemptSucceeded: false,
+      checkedAt: null,
+      latestVersion: null,
+      failure: null,
+    };
+    const incompletePath = tempCachePath();
+    mkdirSync(join(incompletePath, ".."), { recursive: true });
+    writeFileSync(incompletePath, JSON.stringify(legacyRecord));
+    let incompleteRequests = 0;
+    const incomplete = service(incompletePath, identity(), async () => {
+      incompleteRequests += 1;
+      return Response.json({ latest: "1.2.4" });
+    }, now);
+    expect((await incomplete.refresh({ force: false })).status).toBe("available");
+    expect(incompleteRequests).toBe(1);
+
+    const completedFailurePath = tempCachePath();
+    mkdirSync(join(completedFailurePath, ".."), { recursive: true });
+    writeFileSync(completedFailurePath, JSON.stringify({ ...legacyRecord, failure: "network" }));
+    let completedFailureRequests = 0;
+    const completedFailure = service(completedFailurePath, identity(), async () => {
+      completedFailureRequests += 1;
+      return Response.json({ latest: "1.2.4" });
+    }, now);
+    expect(await completedFailure.refresh({ force: false })).toMatchObject({
+      status: "unavailable",
+      failure: "network",
+    });
+    expect(completedFailureRequests).toBe(0);
+  });
+
   test("unwritable cache reports degradation and keeps the in-process throttle", async () => {
     let requests = 0;
     const update = service(
