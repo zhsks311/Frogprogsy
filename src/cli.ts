@@ -349,24 +349,46 @@ function parsePortOption(): number | undefined {
 }
 
 
-async function proxyHealthy(port?: number): Promise<boolean> {
+type ProxyHealthProbe = {
+  status: "current" | "stale" | "unavailable";
+  processPid: number | null;
+};
+
+async function probeProxyHealth(port?: number): Promise<ProxyHealthProbe> {
   const config = loadConfig();
   const p = port ?? config.port ?? DEFAULT_PORT;
   try {
     const response = await fetch(`http://${healthHost(config.hostname)}:${p}/healthz`, {
       signal: AbortSignal.timeout(750),
     });
-    if (!response.ok) return false;
+    if (!response.ok) return { status: "unavailable", processPid: null };
     const payload = await readBoundedJson(response, 4 * 1024);
-    return payload !== null
-      && typeof payload === "object"
-      && "status" in payload
-      && payload.status === "ok"
-      && "serverBuildId" in payload
-      && payload.serverBuildId === `frogprogsy-server@${installedPackageVersion()}`;
+    if (payload === null
+      || typeof payload !== "object"
+      || !("status" in payload)
+      || payload.status !== "ok"
+      || !("serverBuildId" in payload)
+      || typeof payload.serverBuildId !== "string"
+      || !payload.serverBuildId.startsWith("frogprogsy-server@")) {
+      return { status: "unavailable", processPid: null };
+    }
+    const processPid = "processPid" in payload
+      && typeof payload.processPid === "number"
+      && Number.isSafeInteger(payload.processPid)
+      && payload.processPid > 0
+      ? payload.processPid
+      : null;
+    return {
+      status: payload.serverBuildId === `frogprogsy-server@${installedPackageVersion()}` ? "current" : "stale",
+      processPid,
+    };
   } catch {
-    return false;
+    return { status: "unavailable", processPid: null };
   }
+}
+
+async function proxyHealthy(port?: number): Promise<boolean> {
+  return (await probeProxyHealth(port)).status === "current";
 }
 
 async function refreshClaudeProfileThroughRunningProxy(
@@ -607,42 +629,61 @@ async function syncRunningProxyForRefresh(port: number): Promise<void> {
 async function handleRefresh() {
   const config = loadConfig();
   const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
-  if (await proxyHealthy(activePort)) {
+  const initialProbe = await probeProxyHealth(activePort);
+  if (initialProbe.status === "current") {
     await syncRunningProxyForRefresh(activePort);
     return;
   }
 
-  let replacementFailure: { pid: number; error: unknown } | null = null;
+  let replacementFailure: { pid: number | null; error: unknown } | null = null;
   let runningPortAfterLock: number | null = null;
   const releaseConfigLock = await acquireConfigMutationLockOrExit();
   try {
     const lockedConfig = loadConfig();
     const lockedPort = readActivePort() ?? lockedConfig.port ?? DEFAULT_PORT;
-    if (await proxyHealthy(lockedPort)) {
+    const lockedProbe = await probeProxyHealth(lockedPort);
+    if (lockedProbe.status === "current") {
       runningPortAfterLock = lockedPort;
     } else {
       const existingPid = readPid();
-      if (existingPid) {
-        const previousWatchdogPid = readWatchdogProcessPid();
-        const terminated = terminateStaleProxyForRefresh(existingPid, {
-          writeShutdownIntent,
-          terminate: killProxy,
-          isAlive: isProcessAlive,
-          clearShutdownIntent,
-        });
-        if (!terminated.ok) replacementFailure = { pid: existingPid, error: terminated.error };
-        if (!replacementFailure) {
-          removePid();
-          removeActivePort();
-          const watchdogReleased = await waitForPriorWatchdogRelease(
-            previousWatchdogPid,
-            lockedConfig.watchdog?.pollIntervalMs,
-          );
-          if (!watchdogReleased) {
-            replacementFailure = {
-              pid: existingPid,
-              error: new Error(`watchdog ${previousWatchdogPid ?? "unknown"} did not release ownership`),
-            };
+      if (lockedProbe.status === "unavailable" && existingPid !== null) {
+        replacementFailure = {
+          pid: existingPid,
+          error: new Error("the live PID is not authenticated by a FrogProgsy health response"),
+        };
+      } else if (lockedProbe.status === "stale" && existingPid === null) {
+        replacementFailure = {
+          pid: null,
+          error: new Error("a stale FrogProgsy server answered without an owned live PID"),
+        };
+      } else if (lockedProbe.status === "stale" && existingPid !== null) {
+        if (lockedProbe.processPid !== null && lockedProbe.processPid !== existingPid) {
+          replacementFailure = {
+            pid: existingPid,
+            error: new Error(`health response belongs to PID ${lockedProbe.processPid}`),
+          };
+        } else {
+          const previousWatchdogPid = readWatchdogProcessPid();
+          const terminated = terminateStaleProxyForRefresh(existingPid, {
+            writeShutdownIntent,
+            terminate: killProxy,
+            isAlive: isProcessAlive,
+            clearShutdownIntent,
+          });
+          if (!terminated.ok) replacementFailure = { pid: existingPid, error: terminated.error };
+          if (!replacementFailure) {
+            removePid();
+            removeActivePort();
+            const watchdogReleased = await waitForPriorWatchdogRelease(
+              previousWatchdogPid,
+              lockedConfig.watchdog,
+            );
+            if (!watchdogReleased) {
+              replacementFailure = {
+                pid: existingPid,
+                error: new Error(`watchdog ${previousWatchdogPid ?? "unknown"} did not release ownership`),
+              };
+            }
           }
         }
       }
@@ -651,7 +692,7 @@ async function handleRefresh() {
     releaseConfigLock();
   }
   if (replacementFailure) {
-    console.error(`❌ Could not replace stale proxy (PID ${replacementFailure.pid}): ${replacementFailure.error instanceof Error ? replacementFailure.error.message : String(replacementFailure.error)}`);
+    console.error(`❌ Could not replace stale proxy (PID ${replacementFailure.pid ?? "unknown"}): ${replacementFailure.error instanceof Error ? replacementFailure.error.message : String(replacementFailure.error)}`);
     process.exit(1);
   }
   if (runningPortAfterLock !== null) {
@@ -688,7 +729,7 @@ function readWatchdogProcessPid(): number | null {
 
 async function waitForPriorWatchdogRelease(
   initialPid: number | null,
-  pollIntervalMs = 2_000,
+  watchdog: FrogConfig["watchdog"],
 ): Promise<boolean> {
   let watchdogPid = initialPid;
   const discoveryDeadline = Date.now() + 250;
@@ -698,7 +739,14 @@ async function waitForPriorWatchdogRelease(
   }
   if (watchdogPid === null) return true;
 
-  const releaseDeadline = Date.now() + Math.min(Math.max(pollIntervalMs * 3, 5_000), 30_000);
+  const pollIntervalMs = watchdog?.pollIntervalMs ?? 2_000;
+  const backoffMs = watchdog?.backoffMs ?? [1_000, 5_000];
+  const longestBackoffMs = backoffMs.length === 0 ? 1_000 : Math.max(...backoffMs);
+  const releaseWaitMs = Math.min(
+    Math.max(longestBackoffMs + pollIntervalMs + 2_000, 5_000),
+    60_000,
+  );
+  const releaseDeadline = Date.now() + releaseWaitMs;
   while (Date.now() < releaseDeadline) {
     if (readWatchdogProcessPid() !== watchdogPid) return true;
     if (!isProcessAlive(watchdogPid)) {
