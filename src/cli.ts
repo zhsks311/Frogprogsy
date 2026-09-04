@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { lookup } from "node:dns/promises";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { suggestClosest } from "./cli-suggest";
@@ -14,8 +15,11 @@ import {
   assertSafeConfigDirWrite,
   getConfigDir,
   getWatchdogStatusPath,
+  getWatchdogPidPath,
+  getWatchdogOwnerPath,
   loadConfig,
   readPid,
+  readShutdownIntent,
   readActivePort,
   removeActivePort,
   removePid,
@@ -28,6 +32,7 @@ import {
 import { createConfigMutationLock } from "./config-mutation-lock";
 import { generateLocalAccessSecret, hashLocalAccessSecret, sameMachineAccessHeaders } from "./local-access";
 import { findAvailablePort } from "./ports";
+import { processProbeErrorMeansAlive, terminateStaleProxyForRefresh } from "./refresh-process";
 import { createRuntimeConfigState } from "./runtime-config-state";
 
 import { maybeShowStarPrompt } from "./star-prompt";
@@ -347,24 +352,46 @@ function parsePortOption(): number | undefined {
 }
 
 
-async function proxyHealthy(port?: number): Promise<boolean> {
+type ProxyHealthProbe = {
+  status: "current" | "stale" | "unavailable";
+  processPid: number | null;
+};
+
+async function probeProxyHealth(port?: number): Promise<ProxyHealthProbe> {
   const config = loadConfig();
   const p = port ?? config.port ?? DEFAULT_PORT;
   try {
     const response = await fetch(`http://${healthHost(config.hostname)}:${p}/healthz`, {
       signal: AbortSignal.timeout(750),
     });
-    if (!response.ok) return false;
+    if (!response.ok) return { status: "unavailable", processPid: null };
     const payload = await readBoundedJson(response, 4 * 1024);
-    return payload !== null
-      && typeof payload === "object"
-      && "status" in payload
-      && payload.status === "ok"
-      && "serverBuildId" in payload
-      && payload.serverBuildId === `frogprogsy-server@${installedPackageVersion()}`;
+    if (payload === null
+      || typeof payload !== "object"
+      || !("status" in payload)
+      || payload.status !== "ok"
+      || !("serverBuildId" in payload)
+      || typeof payload.serverBuildId !== "string"
+      || !payload.serverBuildId.startsWith("frogprogsy-server@")) {
+      return { status: "unavailable", processPid: null };
+    }
+    const processPid = "processPid" in payload
+      && typeof payload.processPid === "number"
+      && Number.isSafeInteger(payload.processPid)
+      && payload.processPid > 0
+      ? payload.processPid
+      : null;
+    return {
+      status: payload.serverBuildId === `frogprogsy-server@${installedPackageVersion()}` ? "current" : "stale",
+      processPid,
+    };
   } catch {
-    return false;
+    return { status: "unavailable", processPid: null };
   }
+}
+
+async function proxyHealthy(port?: number): Promise<boolean> {
+  return (await probeProxyHealth(port)).status === "current";
 }
 
 async function refreshClaudeProfileThroughRunningProxy(
@@ -529,13 +556,16 @@ async function handleStart(options: { block?: boolean } = {}) {
   const shutdown = () => {
     console.log("\n🛑 Shutting down frogprogsy proxy...");
     let exitCode = 0;
-    writeShutdownIntent(process.pid); // signal watchdog: graceful stop, not a crash
+    const existingIntent = readShutdownIntent();
+    const refreshShutdown = existingIntent?.pid === process.pid && existingIntent.mode === "refresh";
+    if (!refreshShutdown) writeShutdownIntent(process.pid);
     server.stop(true);
     removePid();
     removeActivePort();
-    // Intentional shutdown restores Claude Code unless the process is kept alive by a
-    // supervisor or by a detached `frogp refresh` / FROGP_DETACHED integration.
-    if (!parseEnvFlag(process.env.FROGP_EXTERNAL_SUPERVISOR) && !process.env.FROGP_DETACHED) {
+    // Refresh replacement keeps every managed Claude/project state injected for the successor.
+    if (!refreshShutdown
+      && !parseEnvFlag(process.env.FROGP_EXTERNAL_SUPERVISOR)
+      && !process.env.FROGP_DETACHED) {
       try {
         const restored = restoreAllClaudeRouting();
         if (restored.success) {
@@ -589,48 +619,613 @@ async function handleStart(options: { block?: boolean } = {}) {
   }
 }
 
-async function handleRefresh() {
-  let config = loadConfig();
-  const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
-  if (await proxyHealthy(activePort)) {
-    await syncModelsToClaudeCode(activePort).catch(e => {
-      console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
-    });
-    try {
-      const { invalidateClaudeCodeModelsCache } = await import("./claude-catalog");
-      invalidateClaudeCodeModelsCache();
-    } catch (e) {
-      console.error(`⚠️  Cache invalidation skipped: ${e instanceof Error ? e.message : String(e)}`);
+async function syncRunningProxyForRefresh(port: number): Promise<void> {
+  await syncModelsToClaudeCode(port).catch(error => {
+    console.error(`⚠️  Model sync skipped: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  try {
+    const { invalidateClaudeCodeModelsCache } = await import("./claude-catalog");
+    invalidateClaudeCodeModelsCache();
+  } catch (error) {
+    console.error(`⚠️  Cache invalidation skipped: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  console.log(`✅ Proxy running on port ${port}`);
+}
+
+type FailedRefreshRollbackResult = {
+  restored: boolean;
+  message: string;
+};
+
+function spawnedProcessExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function waitForSpawnedProcessExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (spawnedProcessExited(child)) return Promise.resolve(true);
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  let settled = false;
+  let timer: NodeJS.Timeout | undefined;
+  const finish = (exited: boolean) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    child.off("exit", onExit);
+    resolve(exited);
+  };
+  const onExit = () => finish(true);
+  child.once("exit", onExit);
+  timer = setTimeout(() => finish(false), timeoutMs);
+  if (spawnedProcessExited(child)) finish(true);
+  return promise;
+}
+
+async function terminateSpawnedRefreshReplacement(
+  child: ChildProcess,
+  expectedPid: number,
+): Promise<{ ok: true } | { ok: false; error: unknown }> {
+  try {
+    if (child.pid !== expectedPid) {
+      throw new Error(`spawned replacement identity changed from PID ${expectedPid}`);
     }
-    console.log(`✅ Proxy running on port ${activePort}`);
+    if (spawnedProcessExited(child)) return { ok: true };
+    writeShutdownIntent(expectedPid, "refresh");
+    if (!child.kill("SIGTERM") && !spawnedProcessExited(child) && isProcessAlive(expectedPid)) {
+      throw new Error(`could not signal process ${expectedPid}`);
+    }
+    if (!await waitForSpawnedProcessExit(child, 5_000)) {
+      if (child.pid !== expectedPid) {
+        throw new Error(`spawned replacement identity changed from PID ${expectedPid}`);
+      }
+      if (!child.kill("SIGKILL") && !spawnedProcessExited(child) && isProcessAlive(expectedPid)) {
+        throw new Error(`could not force-stop process ${expectedPid}`);
+      }
+      if (!await waitForSpawnedProcessExit(child, 5_000)) {
+        throw new Error(`process ${expectedPid} did not exit`);
+      }
+    }
+    return { ok: true };
+  } catch (error) {
+    if (spawnedProcessExited(child)) return { ok: true };
+    const intent = readShutdownIntent();
+    if (intent?.pid === expectedPid && intent.mode === "refresh") clearShutdownIntent();
+    return { ok: false, error };
+  }
+}
+
+async function rollbackFailedRefreshReplacement(
+  child: ChildProcess,
+  expectedPid: number,
+  port: number,
+): Promise<FailedRefreshRollbackResult> {
+  if (child.pid !== expectedPid) {
+    return {
+      restored: false,
+      message: `spawned replacement identity changed from PID ${expectedPid}; no process or runtime record was changed`,
+    };
+  }
+  if (!spawnedProcessExited(child)) {
+    const terminated = await terminateSpawnedRefreshReplacement(child, expectedPid);
+    if (!terminated.ok) {
+      return {
+        restored: false,
+        message: `could not stop replacement PID ${expectedPid}: ${terminated.error instanceof Error ? terminated.error.message : String(terminated.error)}`,
+      };
+    }
+  }
+
+  const releaseConfigLock = await acquireConfigMutationLockOrExit();
+  try {
+    const successorPid = readPid();
+    if (successorPid !== null && successorPid !== expectedPid) {
+      return {
+        restored: false,
+        message: `runtime ownership moved to PID ${successorPid} after replacement shutdown; the newer process and its records were left untouched`,
+      };
+    }
+    const successorPort = readActivePort();
+    if (successorPort !== null && successorPort !== port) {
+      return {
+        restored: false,
+        message: `runtime ownership moved to port ${successorPort} after replacement shutdown; the newer runtime records were left untouched`,
+      };
+    }
+    const postStopProbe = await probeProxyHealth(port);
+    if (postStopProbe.status !== "unavailable") {
+      return {
+        restored: false,
+        message: `port ${port} still has a live FrogProgsy response after replacement shutdown; routing was not restored`,
+      };
+    }
+
+    if (readPid() === expectedPid) removePid();
+    if (readPid() !== null) {
+      return {
+        restored: false,
+        message: "runtime PID ownership changed during cleanup; the new record was left untouched",
+      };
+    }
+    if (readActivePort() === port) removeActivePort();
+    if (readActivePort() !== null) {
+      return {
+        restored: false,
+        message: "runtime port ownership changed during cleanup; the new record was left untouched",
+      };
+    }
+
+    try {
+      const restored = restoreAllClaudeRouting();
+      return {
+        restored: restored.success,
+        message: restored.message || (restored.success
+          ? "Claude Code routing restored."
+          : "Claude Code routing restore did not complete."),
+      };
+    } catch (error) {
+      return {
+        restored: false,
+        message: `Claude Code routing restore failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  } finally {
+    releaseConfigLock();
+  }
+}
+
+async function handleRefresh() {
+  const config = loadConfig();
+  const activePort = readActivePort() ?? config.port ?? DEFAULT_PORT;
+  const initialProbe = await probeProxyHealth(activePort);
+  if (initialProbe.status === "current") {
+    await syncRunningProxyForRefresh(activePort);
     return;
   }
 
+  let replacementFailure: { pid: number | null; error: unknown } | null = null;
+  let runningPortAfterLock: number | null = null;
+  let retiredWatchdogPid: number | null = null;
+  const releaseConfigLock = await acquireConfigMutationLockOrExit();
+  try {
+    const lockedConfig = loadConfig();
+    const lockedPort = readActivePort() ?? lockedConfig.port ?? DEFAULT_PORT;
+    const listenerAddressKeys = await resolveListenerAddressKeys(lockedConfig.hostname);
+    const lockedProbe = await probeProxyHealth(lockedPort);
+    if (lockedProbe.status === "current") {
+      runningPortAfterLock = lockedPort;
+    } else {
+      const existingPid = readPid();
+      if (lockedProbe.status === "unavailable" && existingPid !== null) {
+        replacementFailure = {
+          pid: existingPid,
+          error: new Error("the live PID is not authenticated by a FrogProgsy health response"),
+        };
+      } else if (lockedProbe.status === "stale" && existingPid === null) {
+        replacementFailure = {
+          pid: null,
+          error: new Error("a stale FrogProgsy server answered without an owned live PID"),
+        };
+      } else if (lockedProbe.status === "stale" && existingPid !== null) {
+        if (lockedProbe.processPid !== null && lockedProbe.processPid !== existingPid) {
+          replacementFailure = {
+            pid: existingPid,
+            error: new Error(`health response belongs to PID ${lockedProbe.processPid}`),
+          };
+        } else if (!processOwnsListeningPort(existingPid, lockedPort, listenerAddressKeys)) {
+          replacementFailure = {
+            pid: existingPid,
+            error: new Error(`health response is not owned by PID ${existingPid} on port ${lockedPort}`),
+          };
+        } else {
+          const previousWatchdogPid = readWatchdogProcessPid();
+          retiredWatchdogPid = previousWatchdogPid;
+          const terminated = terminateStaleProxyForRefresh(existingPid, {
+            writeShutdownIntent: pid => writeShutdownIntent(pid, "refresh"),
+            terminate: pid => {
+              if (!processOwnsListeningPort(pid, lockedPort, listenerAddressKeys)) {
+                throw new Error(`PID ${pid} no longer owns the configured listener on port ${lockedPort}`);
+              }
+              killProxy(pid);
+            },
+            isAlive: isProcessAlive,
+            clearShutdownIntent,
+          });
+          if (!terminated.ok) replacementFailure = { pid: existingPid, error: terminated.error };
+          if (!replacementFailure) {
+            removePid();
+            removeActivePort();
+            const watchdogReleased = await waitForPriorWatchdogRelease(
+              previousWatchdogPid,
+              lockedConfig.watchdog,
+            );
+            if (!watchdogReleased) {
+              const postStopPid = readPid();
+              const postStopProbe = await probeProxyHealth(lockedPort);
+              let rollbackDetail = "routing was left unchanged because runtime ownership could not be verified";
+              if (postStopPid === null && postStopProbe.status === "unavailable") {
+                try {
+                  const restored = restoreAllClaudeRouting();
+                  rollbackDetail = restored.success
+                    ? "native Claude routing was restored"
+                    : `Claude routing restore failed: ${restored.message}`;
+                } catch (error) {
+                  rollbackDetail = `Claude routing restore failed: ${error instanceof Error ? error.message : String(error)}`;
+                }
+              }
+              replacementFailure = {
+                pid: existingPid,
+                error: new Error(`watchdog ${previousWatchdogPid ?? "unknown"} did not release ownership; ${rollbackDetail}`),
+              };
+            }
+          }
+        }
+      }
+    }
+  } finally {
+    releaseConfigLock();
+  }
+  if (replacementFailure) {
+    console.error(`❌ Could not replace stale proxy (PID ${replacementFailure.pid ?? "unknown"}): ${replacementFailure.error instanceof Error ? replacementFailure.error.message : String(replacementFailure.error)}`);
+    process.exit(1);
+  }
+  if (runningPortAfterLock !== null) {
+    await syncRunningProxyForRefresh(runningPortAfterLock);
+    return;
+  }
+
+  const replacementEnv = {
+    ...process.env,
+    FROGP_DETACHED: "1",
+    FROGP_EXTERNAL_SUPERVISOR: undefined,
+    ...(process.env.NODE_ENV === "test" && process.env.FROGP_TEST_REFRESH_CHILD_CONFIG_LOCK_GATE
+      ? { FROGP_TEST_CONFIG_LOCK_GATE: process.env.FROGP_TEST_REFRESH_CHILD_CONFIG_LOCK_GATE }
+      : {}),
+  };
   const child = spawn(process.execPath, [process.argv[1], "start"], {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, FROGP_DETACHED: "1", FROGP_EXTERNAL_SUPERVISOR: undefined },
+    env: replacementEnv,
   });
   child.unref();
 
   const port = await waitForProxy();
   if (!port) {
+    const rollbackPort = readActivePort() ?? loadConfig().port ?? activePort;
+    const replacementPid = child.pid;
+    const rollback = replacementPid === undefined
+      ? {
+          restored: false,
+          message: "replacement process PID is missing; live-process ownership is unverifiable",
+        }
+      : await rollbackFailedRefreshReplacement(child, replacementPid, rollbackPort);
     console.error("❌ Proxy did not become healthy after starting.");
+    if (rollback.restored) console.error(`↩️  ${rollback.message}`);
+    else console.error(`❌ Refresh rollback failed: ${rollback.message}`);
     process.exit(1);
   }
-  config = loadConfig();
-  await syncModelsToClaudeCode(config.port ?? port).catch(e => {
-    console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
-  });
-  try {
-    const { invalidateClaudeCodeModelsCache } = await import("./claude-catalog");
-    invalidateClaudeCodeModelsCache();
-  } catch (e) {
-    console.error(`⚠️  Cache invalidation skipped: ${e instanceof Error ? e.message : String(e)}`);
+  const runningConfig = loadConfig();
+  const replacementProbe = await probeProxyHealth(port);
+  const recordedReplacementPid = readPid();
+  const spawnedReplacementPid = child.pid ?? null;
+  const authenticatedRuntimePid = replacementProbe.status === "current"
+    && replacementProbe.processPid !== null
+    && recordedReplacementPid === replacementProbe.processPid
+    ? replacementProbe.processPid
+    : null;
+  if (authenticatedRuntimePid !== null
+    && spawnedReplacementPid !== null
+    && authenticatedRuntimePid !== spawnedReplacementPid
+    && !spawnedProcessExited(child)) {
+    const stoppedLosingChild = await terminateSpawnedRefreshReplacement(child, spawnedReplacementPid);
+    if (!stoppedLosingChild.ok) {
+      console.error(`❌ Could not stop losing refresh child PID ${spawnedReplacementPid}: ${stoppedLosingChild.error instanceof Error ? stoppedLosingChild.error.message : String(stoppedLosingChild.error)}`);
+      process.exit(1);
+    }
+    const intent = readShutdownIntent();
+    if (intent?.pid === spawnedReplacementPid && intent.mode === "refresh") clearShutdownIntent();
   }
-  console.log(`✅ Proxy running on port ${config.port ?? port}`);
+  const replacementProxyPid = authenticatedRuntimePid
+    ?? (!spawnedProcessExited(child) && recordedReplacementPid === spawnedReplacementPid
+      ? spawnedReplacementPid
+      : null);
+  if (resolveWatchdogEnabled(runningConfig, replacementEnv)
+    && (replacementProxyPid === null
+      || !await waitForReplacementWatchdogOwnership(retiredWatchdogPid, replacementProxyPid))) {
+    const rollback = replacementProxyPid === null
+      ? {
+          restored: false,
+          message: "replacement runtime PID is missing; live-process ownership is unverifiable",
+        }
+      : replacementProxyPid !== spawnedReplacementPid
+        ? {
+            restored: false,
+            message: `concurrent runtime PID ${replacementProxyPid} was left untouched because it was not spawned by this refresh`,
+          }
+        : await rollbackFailedRefreshReplacement(child, replacementProxyPid, port);
+    console.error("❌ Replacement proxy started without confirmed watchdog ownership.");
+    if (rollback.restored) console.error(`↩️  ${rollback.message}`);
+    else console.error(`❌ Refresh rollback failed: ${rollback.message}`);
+    process.exit(1);
+  }
+  await syncRunningProxyForRefresh(port);
+}
+function addressKey(address: string): string | null {
+  let value = address.trim().toLowerCase();
+  if (value.startsWith("[") && value.endsWith("]")) value = value.slice(1, -1);
+  const zoneIndex = value.indexOf("%");
+  if (zoneIndex !== -1) value = value.slice(0, zoneIndex);
+  if (value === "*") return "*";
+  if (value === "0.0.0.0") return "4:*";
+  if (value === "::") return "6:*";
+
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(value)) {
+    const octets = value.split(".").map(Number);
+    if (octets.length !== 4 || octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+      return null;
+    }
+    return `4:${octets.join(".")}`;
+  }
+
+  if (!value.includes(":")) return null;
+  if (value.includes(".")) {
+    const lastColon = value.lastIndexOf(":");
+    const ipv4Key = addressKey(value.slice(lastColon + 1));
+    if (!ipv4Key?.startsWith("4:")) return null;
+    const octets = ipv4Key.slice(2).split(".").map(Number);
+    value = `${value.slice(0, lastColon)}:${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+  const halves = value.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null;
+  const groups = [
+    ...left,
+    ...Array.from({ length: missing }, () => "0"),
+    ...right,
+  ];
+  if (groups.length !== 8 || groups.some(group => !/^[0-9a-f]{1,4}$/.test(group))) return null;
+  const expanded = groups.map(group => group.padStart(4, "0"));
+  if (expanded.slice(0, 5).every(group => group === "0000") && expanded[5] === "ffff") {
+    const high = Number.parseInt(expanded[6], 16);
+    const low = Number.parseInt(expanded[7], 16);
+    return `4:${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+  }
+  return `6:${expanded.join(":")}`;
 }
 
+async function resolveListenerAddressKeys(hostname?: string): Promise<ReadonlySet<string>> {
+  const probeHost = healthHost(hostname).replace(/^\[|\]$/g, "");
+  try {
+    const addresses = await lookup(probeHost, { all: true, verbatim: true });
+    const keys = new Set(addresses.flatMap(({ address }) => {
+      const key = addressKey(address);
+      return key === null ? [] : [key];
+    }));
+    return keys.size === 1 ? keys : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function procListenerAddressKey(encodedAddress: string): string | null {
+  if (!/^[0-9A-Fa-f]+$/.test(encodedAddress)) return null;
+  if (encodedAddress.length === 8) {
+    const octets = encodedAddress.match(/../g)?.reverse().map(value => Number.parseInt(value, 16));
+    return octets?.length === 4 ? addressKey(octets.join(".")) : null;
+  }
+  if (encodedAddress.length === 32) {
+    const bytes = encodedAddress.match(/.{8}/g)
+      ?.flatMap(word => word.match(/../g)?.reverse() ?? []);
+    if (bytes?.length !== 16) return null;
+    const groups = Array.from({ length: 8 }, (_, index) => `${bytes[index * 2]}${bytes[index * 2 + 1]}`);
+    return addressKey(groups.join(":"));
+  }
+  return null;
+}
+
+function listenerAddressMatches(
+  address: string,
+  expectedAddressKeys: ReadonlySet<string>,
+  wildcardFamily?: "4" | "6",
+): boolean {
+  const key = addressKey(address);
+  if (key === "*") {
+    return wildcardFamily !== undefined
+      && [...expectedAddressKeys].some(expected => expected.startsWith(`${wildcardFamily}:`));
+  }
+  if (key === "4:*" || key === "6:*") {
+    return [...expectedAddressKeys].some(expected => expected.startsWith(key.slice(0, 2)));
+  }
+  return key !== null && expectedAddressKeys.has(key);
+}
+
+function processOwnsListeningPort(
+  pid: number,
+  port: number,
+  expectedAddressKeys: ReadonlySet<string>,
+): boolean {
+  if (expectedAddressKeys.size === 0) return false;
+  try {
+    if (process.platform === "win32") {
+      const powershell = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+      const command = `(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.LocalAddress)|$($_.OwningProcess)" }) -join [Environment]::NewLine`;
+      const output = execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", command], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      return output.trim().split(/\r?\n/).some(line => {
+        const separator = line.lastIndexOf("|");
+        return separator !== -1
+          && Number(line.slice(separator + 1)) === pid
+          && listenerAddressMatches(line.slice(0, separator), expectedAddressKeys);
+      });
+    }
+    if (process.platform === "darwin") {
+      const lsof = existsSync("/usr/sbin/lsof") ? "/usr/sbin/lsof" : "lsof";
+      const expectedAddress = [...expectedAddressKeys][0];
+      const family = expectedAddress?.startsWith("4:")
+        ? "4"
+        : expectedAddress?.startsWith("6:")
+          ? "6"
+          : null;
+      if (family === null) return false;
+      const output = execFileSync(lsof, ["-nP", "-a", "-p", String(pid), `-i${family}TCP:${port}`, "-sTCP:LISTEN", "-Fn"], {
+        encoding: "utf8",
+      });
+      const suffix = `:${port}`;
+      return output.trim().split(/\r?\n/).some(line => {
+        if (!line.startsWith("n") || !line.endsWith(suffix)) return false;
+        return listenerAddressMatches(line.slice(1, -suffix.length), expectedAddressKeys, family);
+      });
+    }
+    if (process.platform === "linux") {
+      const listeningInodes = new Set<string>();
+      for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+        if (!existsSync(table)) continue;
+        for (const line of readFileSync(table, "utf8").trim().split(/\r?\n/).slice(1)) {
+          const columns = line.trim().split(/\s+/);
+          const localAddress = columns[1];
+          if (columns[3] !== "0A" || !localAddress) continue;
+          const separator = localAddress.lastIndexOf(":");
+          const address = procListenerAddressKey(localAddress.slice(0, separator));
+          const socketPort = Number.parseInt(localAddress.slice(separator + 1), 16);
+          if (socketPort === port
+            && address !== null
+            && listenerAddressMatches(address.slice(2), expectedAddressKeys, address.startsWith("4:") ? "4" : "6")
+            && columns[9]) {
+            listeningInodes.add(columns[9]);
+          }
+        }
+      }
+      for (const descriptor of readdirSync(`/proc/${pid}/fd`)) {
+        try {
+          const target = readlinkSync(`/proc/${pid}/fd/${descriptor}`);
+          const match = /^socket:\[(\d+)\]$/.exec(target);
+          if (match && listeningInodes.has(match[1])) return true;
+        } catch {
+          // Descriptor may close while the process is inspected.
+        }
+      }
+    }
+  } catch {
+    // Missing platform tooling or inaccessible process metadata fails closed.
+  }
+  return false;
+}
+
+
+
+function readWatchdogProcessPid(): number | null {
+  try {
+    const raw = readFileSync(getWatchdogPidPath(), "utf8").trim();
+    if (!/^[1-9]\d*$/.test(raw)) return null;
+    const pid = Number(raw);
+    return Number.isSafeInteger(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForPriorWatchdogRelease(
+  initialPid: number | null,
+  watchdog: FrogConfig["watchdog"],
+): Promise<boolean> {
+  let watchdogPid = initialPid;
+  const discoveryDeadline = Date.now() + 250;
+  while (watchdogPid === null && Date.now() < discoveryDeadline) {
+    await Bun.sleep(25);
+    watchdogPid = readWatchdogProcessPid();
+  }
+  if (watchdogPid === null) return true;
+
+  const pollIntervalMs = watchdog?.pollIntervalMs ?? 2_000;
+  const backoffMs = watchdog?.backoffMs ?? [1_000, 5_000];
+  if (!Number.isSafeInteger(pollIntervalMs)
+    || pollIntervalMs < 0
+    || pollIntervalMs > 60_000
+    || backoffMs.length > 100) return false;
+  let longestBackoffMs = backoffMs.length === 0 ? 1_000 : 0;
+  for (const delay of backoffMs) {
+    if (!Number.isSafeInteger(delay) || delay < 0 || delay > 60_000) return false;
+    if (delay > longestBackoffMs) longestBackoffMs = delay;
+  }
+  const releaseWaitMs = Math.max(longestBackoffMs + pollIntervalMs + 2_000, 5_000);
+  const releaseDeadline = Date.now() + releaseWaitMs;
+  while (Date.now() < releaseDeadline) {
+    if (readWatchdogProcessPid() !== watchdogPid) return true;
+    if (!isProcessAlive(watchdogPid)) {
+      clearWatchdogPidIfOwned(watchdogPid);
+      return true;
+    }
+    await Bun.sleep(50);
+  }
+  return false;
+}
+
+type WatchdogOwnerRecord = {
+  schemaVersion: 1;
+  instanceId: string;
+  watchdogPid: number;
+  proxyPid: number;
+};
+
+function readWatchdogOwnerRecord(): WatchdogOwnerRecord | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(getWatchdogOwnerPath(), "utf8"));
+    if (parsed === null
+      || typeof parsed !== "object"
+      || !("schemaVersion" in parsed)
+      || parsed.schemaVersion !== 1
+      || !("instanceId" in parsed)
+      || typeof parsed.instanceId !== "string"
+      || !("watchdogPid" in parsed)
+      || !Number.isSafeInteger(parsed.watchdogPid)
+      || !("proxyPid" in parsed)
+      || !Number.isSafeInteger(parsed.proxyPid)) return null;
+    return parsed as WatchdogOwnerRecord;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForReplacementWatchdogOwnership(
+  retiredPid: number | null,
+  expectedProxyPid: number,
+): Promise<boolean> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const watchdogPid = readWatchdogProcessPid();
+    const owner = readWatchdogOwnerRecord();
+    if (watchdogPid !== null
+      && watchdogPid !== retiredPid
+      && isProcessAlive(watchdogPid)
+      && owner?.watchdogPid === watchdogPid
+      && owner.proxyPid === expectedProxyPid) {
+      return true;
+    }
+    await Bun.sleep(25);
+  }
+  return false;
+}
+
+function clearWatchdogPidIfOwned(pid: number): void {
+  if (readWatchdogProcessPid() !== pid) return;
+  assertSafeConfigDirWrite("remove stale watchdog ownership");
+  try {
+    unlinkSync(getWatchdogPidPath());
+  } catch {
+    // A concurrently exiting watchdog may already have removed its own file.
+  }
+  const owner = readWatchdogOwnerRecord();
+  if (owner?.watchdogPid === pid) {
+    try {
+      unlinkSync(getWatchdogOwnerPath());
+    } catch {
+      // The owner may have removed its generation record while exiting.
+    }
+  }
+}
 
 function killProxy(pid: number): void {
   if (!isProcessAlive(pid)) return;
@@ -652,8 +1247,8 @@ function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return processProbeErrorMeansAlive(error);
   }
 }
 

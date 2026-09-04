@@ -88,7 +88,7 @@ limit은 설정할 수 없습니다. Credential, prompt, provider config, Claude
 - config에는 key의 `sha256:<hex>`만 저장됩니다. 평문은 `frogp local-key add`가 생성할 때 한 번만 출력되고 이후에는 복구할 수 없습니다.
 - `requestLimit`은 relay process에서 적용되는 key별 sliding window이며, 한도를 넘으면 `Retry-After`와 함께 `429`를 반환합니다.
 - 제시된 key는 upstream으로 전달되지 않으므로, `forward` lane은 실제 호출자 provider credential만 계속 전달합니다.
-- 같은 머신의 도구는 설정 key가 필요하지 않습니다. 실행 중인 relay가 시작마다 `~/.frogprogsy/local-access.token`(mode `0600`)에 token을 씁니다. CLI는 이 제한 없는 token을 loopback 대상으로만 보내며 wildcard bind는 loopback으로 접근합니다. 정확한 non-loopback `hostname`에서는 token이 포함된 management 호출을 거부합니다. Token은 config에 저장되지 않으며 재시작 후에는 남지 않습니다.
+- 같은 머신의 도구는 설정 key가 필요하지 않습니다. 실행 중인 relay가 시작마다 `~/.frogprogsy/local-access.token`(mode `0600`)에 token을 씁니다. CLI는 이 제한 없는 token을 loopback 대상으로만 보내며 wildcard bind는 loopback으로 접근합니다. Token은 config에 저장되지 않으며 재시작 후에는 남지 않습니다.
 - Loopback이 아닌 `hostname`은 최소 한 개의 key를 요구합니다. Docker를 처음 시작할 때 container environment 또는 secret 설정으로 `FROGP_LOCAL_ACCESS_KEY`를 전달하세요. Entrypoint는 hash만 저장하고 평문을 출력하지 않습니다. Enabled key가 저장된 volume은 이후 환경 변수 없이 다시 시작할 수 있습니다.
 - key별 `providers`/`models` scope는 아직 적용되지 않습니다. 이를 선언한 key는 조용히 무시되지 않고 시작 시 거부됩니다.
 

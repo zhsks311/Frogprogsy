@@ -16,14 +16,14 @@ description: "安装 FrogProgsy local relay command，并检查进入首次成�
 
 ## 安装
 
-默认安装使用 registry 的稳定版 `latest` 渠道，当前版本是 `0.0.1`：
+默认安装使用 registry 的稳定版 `latest` 渠道：
 
 ```bash
 bun add -g frogprogsy
 frogp --version
 ```
 
-要测试当前预览版 `0.0.2-preview.1`，请明确选择 `preview` 渠道：
+要测试当前预览版，请明确选择 `preview` 渠道：
 
 ```bash
 bun add -g frogprogsy@preview

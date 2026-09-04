@@ -15,14 +15,14 @@ description: "FrogProgsy 명령을 설치하고, 첫 실행 전 필요한 준비
 
 ## 설치
 
-기본 설치는 레지스트리의 안정판 `latest` 채널을 사용하며, 현재 버전은 `0.0.1`입니다.
+기본 설치는 레지스트리의 안정판 `latest` 채널을 사용합니다.
 
 ```bash
 bun add -g frogprogsy
 frogp --version
 ```
 
-현재 시험판 `0.0.2-preview.1`을 사용하려면 `preview` 채널을 명시하세요.
+현재 시험판을 사용하려면 `preview` 채널을 명시하세요.
 
 ```bash
 bun add -g frogprogsy@preview

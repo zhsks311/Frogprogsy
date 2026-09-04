@@ -43,15 +43,21 @@ export interface UpdateStatusServiceDeps {
   timeoutSignal?: (milliseconds: number) => AbortSignal;
 }
 
-const failureSchema = z.enum(["timeout", "network", "http", "oversized", "invalid-response", "cache-write"]);
-const cacheSchema = z.strictObject({
-  schemaVersion: z.literal(1),
+const cacheRecordFields = {
   lastAttemptAt: z.iso.datetime({ offset: true }).nullable(),
   lastAttemptSucceeded: z.boolean(),
   checkedAt: z.iso.datetime({ offset: true }).nullable(),
   latestVersion: z.string().nullable(),
-  failure: failureSchema.nullable(),
-});
+  failure: z.enum(["timeout", "network", "http", "oversized", "invalid-response", "cache-write"]).nullable(),
+};
+const cacheSchema = z.union([
+  z.strictObject({ schemaVersion: z.literal(1), ...cacheRecordFields }),
+  z.strictObject({
+    schemaVersion: z.literal(2),
+    attemptCompleted: z.boolean(),
+    ...cacheRecordFields,
+  }),
+]);
 const distTagsSchema = z.object({ latest: z.string() });
 
 const defaultFileSystem: UpdateStatusFileSystem = {
@@ -65,6 +71,7 @@ interface UpdateMemoryState {
   identity: InstallIdentity;
   lastAttemptAtMs: number | null;
   lastAttemptSucceeded: boolean;
+  attemptCompleted: boolean;
   checkedAtMs: number | null;
   latestVersion: string | null;
   failure: UpdateFailure | null;
@@ -109,6 +116,7 @@ export class UpdateStatusService {
       identity: hint,
       lastAttemptAtMs: null,
       lastAttemptSucceeded: false,
+      attemptCompleted: true,
       checkedAtMs: null,
       latestVersion: null,
       failure: null,
@@ -157,6 +165,7 @@ export class UpdateStatusService {
     const nextCheckAt = this.enabled
       && this.state.identity.kind === "bun"
       && installed !== null
+      && this.state.attemptCompleted
       && this.state.lastAttemptAtMs !== null
       ? new Date(this.state.lastAttemptAtMs + UPDATE_CHECK_TTL_MS).toISOString()
       : null;
@@ -209,6 +218,9 @@ export class UpdateStatusService {
       const lastAttemptAtMs = timestampMs(parsed.data.lastAttemptAt, nowMs);
       const checkedAtMs = timestampMs(parsed.data.checkedAt, nowMs);
       const latestVersion = parsed.data.latestVersion;
+      const attemptCompleted = parsed.data.schemaVersion === 2
+        ? parsed.data.attemptCompleted
+        : parsed.data.lastAttemptSucceeded || parsed.data.failure !== null;
       if (parsed.data.lastAttemptAt !== null && lastAttemptAtMs === null) return;
       if (parsed.data.checkedAt !== null && checkedAtMs === null) return;
       if (latestVersion !== null && parseCanonicalStableSemVer(latestVersion) === null) return;
@@ -223,6 +235,7 @@ export class UpdateStatusService {
         && (checkedAtMs === null || latestVersion === null || parsed.data.failure !== null)) return;
       this.state.lastAttemptAtMs = lastAttemptAtMs;
       this.state.lastAttemptSucceeded = parsed.data.lastAttemptSucceeded;
+      this.state.attemptCompleted = attemptCompleted;
       this.state.checkedAtMs = checkedAtMs;
       this.state.latestVersion = latestVersion;
       this.state.failure = parsed.data.failure;
@@ -241,6 +254,7 @@ export class UpdateStatusService {
 
     const nowMs = this.now().getTime();
     if (!force
+      && this.state.attemptCompleted
       && this.state.lastAttemptAtMs !== null
       && this.state.lastAttemptAtMs <= nowMs
       && nowMs - this.state.lastAttemptAtMs < UPDATE_CHECK_TTL_MS) {
@@ -249,6 +263,7 @@ export class UpdateStatusService {
 
     this.state.lastAttemptAtMs = nowMs;
     this.state.lastAttemptSucceeded = false;
+    this.state.attemptCompleted = false;
     this.state.failure = null;
     await this.persistCache();
 
@@ -263,6 +278,7 @@ export class UpdateStatusService {
       this.state.lastAttemptSucceeded = false;
       this.state.failure = result.failure;
     }
+    this.state.attemptCompleted = true;
     if (!await this.persistCache()) this.state.failure = "cache-write";
     return this.snapshot();
   }
@@ -325,7 +341,8 @@ export class UpdateStatusService {
 
   private async persistCache(): Promise<boolean> {
     return writeCacheAtomically(this.cachePath, JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      attemptCompleted: this.state.attemptCompleted,
       lastAttemptAt: this.state.lastAttemptAtMs === null ? null : new Date(this.state.lastAttemptAtMs).toISOString(),
       lastAttemptSucceeded: this.state.lastAttemptSucceeded,
       checkedAt: this.state.checkedAtMs === null ? null : new Date(this.state.checkedAtMs).toISOString(),

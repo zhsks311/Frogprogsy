@@ -288,6 +288,7 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
 
   useEffect(() => {
     let cancelled = false;
+    const abortController = new AbortController();
     let hasSuccessfulLoad = false;
     let pollTimer: number | undefined;
     setLoading(true);
@@ -295,7 +296,9 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
     setLoadError(false);
     const fetchUsage = async () => {
       try {
-        const res = await fetch(`${apiBase}/api/usage?range=${range}`);
+        const res = await fetch(`${apiBase}/api/usage?range=${range}`, {
+          signal: abortController.signal,
+        });
         if (!res.ok) throw new Error("fetch failed");
         const json = await res.json() as UsageResponse;
         if (cancelled) return;
@@ -318,6 +321,7 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
     void fetchUsage();
     return () => {
       cancelled = true;
+      abortController.abort();
       if (pollTimer !== undefined) window.clearTimeout(pollTimer);
     };
   }, [apiBase, range]);

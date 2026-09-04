@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rename as renameFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -70,7 +71,8 @@ describe("stable update status service", () => {
     expect((await restarted.refresh({ force: true })).status).toBe("available");
     expect(requests).toBe(2);
     expect(JSON.parse(readFileSync(cachePath, "utf8"))).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      attemptCompleted: true,
       lastAttemptAt: "2026-08-25T00:00:00.000Z",
       lastAttemptSucceeded: true,
       checkedAt: "2026-08-25T00:00:00.000Z",
@@ -284,6 +286,49 @@ describe("stable update status service", () => {
     }
   });
 
+  test("legacy v1 migration retries incomplete attempts but retains completed failure throttles", async () => {
+    const now = new Date("2026-08-25T00:00:00.000Z");
+    const legacyRecord = {
+      schemaVersion: 1,
+      lastAttemptAt: now.toISOString(),
+      lastAttemptSucceeded: false,
+      checkedAt: new Date(now.getTime() - 60_000).toISOString(),
+      latestVersion: "1.2.4",
+      failure: null,
+    };
+    const incompletePath = tempCachePath();
+    mkdirSync(join(incompletePath, ".."), { recursive: true });
+    writeFileSync(incompletePath, JSON.stringify(legacyRecord));
+    let incompleteRequests = 0;
+    const incomplete = service(incompletePath, identity(), async () => {
+      incompleteRequests += 1;
+      throw new Error("registry unavailable");
+    }, now);
+    expect(await incomplete.refresh({ force: false })).toMatchObject({
+      status: "available",
+      latestVersion: "1.2.4",
+      stale: true,
+      failure: "network",
+    });
+    expect(incompleteRequests).toBe(1);
+
+    const completedFailurePath = tempCachePath();
+    mkdirSync(join(completedFailurePath, ".."), { recursive: true });
+    writeFileSync(completedFailurePath, JSON.stringify({ ...legacyRecord, failure: "network" }));
+    let completedFailureRequests = 0;
+    const completedFailure = service(completedFailurePath, identity(), async () => {
+      completedFailureRequests += 1;
+      return Response.json({ latest: "1.2.4" });
+    }, now);
+    expect(await completedFailure.refresh({ force: false })).toMatchObject({
+      status: "available",
+      latestVersion: "1.2.4",
+      stale: true,
+      failure: "network",
+    });
+    expect(completedFailureRequests).toBe(0);
+  });
+
   test("unwritable cache reports degradation and keeps the in-process throttle", async () => {
     let requests = 0;
     const update = service(
@@ -307,6 +352,69 @@ describe("stable update status service", () => {
     expect(snapshot.failure).toBe("cache-write");
     expect((await update.refresh({ force: false })).status).toBe("available");
     expect(requests).toBe(1);
+  });
+
+  test("an interrupted final cache write preserves prior history and cannot suppress the next process check", async () => {
+    const cachePath = tempCachePath();
+    let requests = 0;
+    await service(
+      cachePath,
+      identity(),
+      async () => {
+        requests += 1;
+        return Response.json({ latest: "1.2.4" });
+      },
+      new Date("2026-08-24T00:00:00.000Z"),
+    ).refresh({ force: false });
+
+    let renames = 0;
+    const interrupted = service(
+      cachePath,
+      identity(),
+      async () => {
+        requests += 1;
+        return Response.json({ latest: "1.2.5" });
+      },
+      new Date("2026-08-25T00:00:00.000Z"),
+      {
+        fileSystem: {
+          rename: async (oldPath, newPath) => {
+            renames += 1;
+            if (renames === 2) throw new Error("final cache replacement failed");
+            await renameFile(oldPath, newPath);
+          },
+        },
+      },
+    );
+
+    expect(await interrupted.refresh({ force: true })).toMatchObject({
+      status: "available",
+      latestVersion: "1.2.5",
+      failure: "cache-write",
+    });
+    expect(JSON.parse(readFileSync(cachePath, "utf8"))).toMatchObject({
+      schemaVersion: 2,
+      attemptCompleted: false,
+      lastAttemptSucceeded: false,
+      latestVersion: "1.2.4",
+    });
+
+    const restarted = service(
+      cachePath,
+      identity(),
+      async () => {
+        requests += 1;
+        throw new Error("registry unavailable");
+      },
+      new Date("2026-08-25T00:00:00.000Z"),
+    );
+    expect(await restarted.refresh({ force: false })).toMatchObject({
+      status: "available",
+      latestVersion: "1.2.4",
+      stale: true,
+      failure: "network",
+    });
+    expect(requests).toBe(3);
   });
 
   test("opt-out stays initially disabled and retains each successful explicit result for passive polls", async () => {

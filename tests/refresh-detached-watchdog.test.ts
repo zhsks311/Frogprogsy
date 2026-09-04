@@ -1,10 +1,643 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, watch, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { processProbeErrorMeansAlive, terminateStaleProxyForRefresh } from "../src/refresh-process";
 
 const cliSource = () => readFileSync(join(import.meta.dir, "..", "src", "cli.ts"), "utf8");
 
+function waitForPath(path: string): Promise<void> {
+  if (existsSync(path)) return Promise.resolve();
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const watcher = watch(dirname(path), () => {
+    if (!existsSync(path)) return;
+    watcher.close();
+    resolve();
+  });
+  watcher.once("error", error => {
+    watcher.close();
+    reject(error);
+  });
+  if (existsSync(path)) {
+    watcher.close();
+    resolve();
+  }
+  return promise;
+}
+
+function waitForPathRemoval(path: string): Promise<void> {
+  if (!existsSync(path)) return Promise.resolve();
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const watcher = watch(dirname(path), () => {
+    if (existsSync(path)) return;
+    watcher.close();
+    resolve();
+  });
+  watcher.once("error", error => {
+    watcher.close();
+    reject(error);
+  });
+  if (!existsSync(path)) {
+    watcher.close();
+    resolve();
+  }
+  return promise;
+}
+
+
+function waitForPidReplacement(path: string, previousPid: number): Promise<number> {
+  const currentPid = () => {
+    try {
+      const pid = Number(readFileSync(path, "utf8"));
+      return Number.isSafeInteger(pid) && pid > 0 && pid !== previousPid ? pid : null;
+    } catch {
+      return null;
+    }
+  };
+  const current = currentPid();
+  if (current !== null) return Promise.resolve(current);
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  const watcher = watch(dirname(path), () => {
+    const replacement = currentPid();
+    if (replacement === null) return;
+    watcher.close();
+    resolve(replacement);
+  });
+  watcher.once("error", error => {
+    watcher.close();
+    reject(error);
+  });
+  const replacement = currentPid();
+  if (replacement !== null) {
+    watcher.close();
+    resolve(replacement);
+  }
+  return promise;
+}
+
+function waitForGateChildPid(gatePath: string): Promise<number> {
+  const directory = dirname(gatePath);
+  const prefix = `${basename(gatePath)}.`;
+  const currentPid = () => {
+    for (const name of readdirSync(directory)) {
+      if (!name.startsWith(prefix) || !name.endsWith(".ready")) continue;
+      const pid = Number(name.slice(prefix.length, -".ready".length));
+      if (Number.isSafeInteger(pid) && pid > 0) return pid;
+    }
+    return null;
+  };
+  const current = currentPid();
+  if (current !== null) return Promise.resolve(current);
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  const watcher = watch(directory, () => {
+    const pid = currentPid();
+    if (pid === null) return;
+    watcher.close();
+    resolve(pid);
+  });
+  watcher.once("error", error => {
+    watcher.close();
+    reject(error);
+  });
+  return promise;
+}
 describe("frogp refresh detached lifecycle", () => {
+  test("refresh termination restores watchdog ownership on failure and accepts an already-dead process", () => {
+    const failedEvents: string[] = [];
+    const failed = terminateStaleProxyForRefresh(101, {
+      writeShutdownIntent: pid => failedEvents.push(`intent:${pid}`),
+      terminate: () => {
+        failedEvents.push("terminate");
+        throw new Error("permission denied");
+      },
+      isAlive: () => true,
+      clearShutdownIntent: () => {
+        failedEvents.push("clear-intent");
+      },
+    });
+    expect(failed).toMatchObject({ ok: false, error: new Error("permission denied") });
+    expect(failedEvents).toEqual(["intent:101", "terminate", "clear-intent"]);
+
+    let clearedAfterDeath = false;
+    const alreadyDead = terminateStaleProxyForRefresh(102, {
+      writeShutdownIntent: () => undefined,
+      terminate: () => {
+        throw new Error("process disappeared during termination");
+      },
+      isAlive: () => false,
+      clearShutdownIntent: () => {
+        clearedAfterDeath = true;
+      },
+    });
+    expect(alreadyDead).toEqual({ ok: true });
+    expect(clearedAfterDeath).toBe(false);
+    expect(processProbeErrorMeansAlive(Object.assign(new Error("denied"), { code: "EPERM" }))).toBe(true);
+    expect(processProbeErrorMeansAlive(Object.assign(new Error("gone"), { code: "ESRCH" }))).toBe(false);
+  });
+
+  test("refresh never signals a live PID without a FrogProgsy health identity", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-unverified-pid-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const port = reservation.port;
+    reservation.stop(true);
+    const unrelated = Bun.spawn(
+      [process.execPath, "-e", "await Promise.withResolvers<void>().promise"],
+      { stdout: "ignore", stderr: "ignore" },
+    );
+    writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+      port,
+      hostname: "127.0.0.1",
+      watchdog: { enabled: false },
+      providers: {},
+    }, null, 2) + "\n");
+    writeFileSync(join(frogHome, "frogp.pid"), String(unrelated.pid));
+    const env = {
+      ...process.env,
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+      FROGPROGSY_NO_CLAUDE_WRITES: "1",
+    };
+
+    try {
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stderr, exitCode] = await Promise.all([
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("live PID is not authenticated by a FrogProgsy health response");
+      expect(() => process.kill(unrelated.pid, 0)).not.toThrow();
+      expect(readFileSync(join(frogHome, "frogp.pid"), "utf8")).toBe(String(unrelated.pid));
+    } finally {
+      unrelated.kill();
+      await unrelated.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("legacy health ownership is bound to the configured listen address before signaling", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-address-owner-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const unrelatedFixture = join(root, "unrelated-listener.ts");
+    const staleFixture = join(root, "stale-listener.ts");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(unrelatedFixture, [
+      'const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("unrelated") });',
+      "console.log(server.port);",
+      "await Promise.withResolvers<void>().promise;",
+    ].join("\n"));
+    writeFileSync(staleFixture, [
+      'const server = Bun.serve({ hostname: "::1", port: Number(process.argv[2]), fetch(request) {',
+      "  return new URL(request.url).pathname === \"/healthz\"",
+      '    ? Response.json({ status: "ok", serverBuildId: "frogprogsy-server@0.0.0-stale" })',
+      '    : new Response("not found", { status: 404 });',
+      "} });",
+      'console.log("ready");',
+      "await Promise.withResolvers<void>().promise;",
+    ].join("\n"));
+    const unrelated = Bun.spawn([process.execPath, unrelatedFixture], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    let stale: { pid: number; exited: Promise<number>; kill: () => void } | undefined;
+
+    try {
+      const unrelatedOutput = unrelated.stdout.getReader();
+      const announced = await unrelatedOutput.read();
+      unrelatedOutput.releaseLock();
+      const port = Number(new TextDecoder().decode(announced.value).trim());
+      expect(Number.isInteger(port) && port > 0).toBe(true);
+      stale = Bun.spawn([process.execPath, staleFixture, String(port)], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const staleOutput = stale.stdout.getReader();
+      const ready = await staleOutput.read();
+      staleOutput.releaseLock();
+      expect(new TextDecoder().decode(ready.value).trim()).toBe("ready");
+      writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+        port,
+        hostname: "::1",
+        watchdog: { enabled: false },
+        providers: {},
+      }, null, 2) + "\n");
+      writeFileSync(join(frogHome, "frogp.pid"), String(unrelated.pid));
+      writeFileSync(join(frogHome, "frogp.port"), String(port));
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          ...process.env,
+          NODE_ENV: "test",
+          FROGPROGSY_HOME: frogHome,
+          CLAUDE_HOME: claudeHome,
+          CLAUDE_CONFIG_DIR: claudeHome,
+          FROGPROGSY_NO_CLAUDE_WRITES: "1",
+        },
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      const [stderr, exitCode] = await Promise.all([
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain(`health response is not owned by PID ${unrelated.pid}`);
+      expect(() => process.kill(unrelated.pid, 0)).not.toThrow();
+      expect(() => process.kill(stale!.pid, 0)).not.toThrow();
+      expect(readFileSync(join(frogHome, "frogp.pid"), "utf8")).toBe(String(unrelated.pid));
+    } finally {
+      stale?.kill();
+      if (stale) await stale.exited;
+      unrelated.kill();
+      await unrelated.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test.skipIf(process.platform === "win32")("refresh terminates a spawned child stalled before listener publication and restores native routing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-pre-listener-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const settingsPath = join(claudeHome, "settings.json");
+    const gate = join(root, "replacement-start-gate");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const port = reservation.port;
+    reservation.stop(true);
+    const nativeSettings = { env: { USER_SETTING: "keep-native" } };
+    writeFileSync(settingsPath, JSON.stringify({
+      env: {
+        ...nativeSettings.env,
+        ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+        ANTHROPIC_AUTH_TOKEN: "local-frogprogsy",
+        CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
+      },
+    }, null, 2) + "\n");
+    writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+      port,
+      hostname: "127.0.0.1",
+      watchdog: { enabled: false },
+      providers: {},
+      claudeProfiles: {
+        schemaVersion: 1,
+        defaultProfileId: "cp_default",
+        profiles: [{ id: "cp_default", name: "Default", claudeHome, injected: true }],
+      },
+    }, null, 2) + "\n");
+    const env = {
+      ...process.env,
+      HOME: root,
+      NODE_ENV: "test",
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+      FROGP_TEST_REFRESH_CHILD_CONFIG_LOCK_GATE: gate,
+    };
+    delete env.FROGPROGSY_NO_CLAUDE_WRITES;
+    let childPid: number | null = null;
+
+    try {
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      childPid = await waitForGateChildPid(gate);
+      const [stderr, exitCode] = await Promise.all([
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("Proxy did not become healthy after starting");
+      expect(stderr).toContain("Removed orphaned frogprogsy Claude Code settings");
+      expect(() => process.kill(childPid!, 0)).toThrow();
+      expect(existsSync(join(frogHome, "frogp.pid"))).toBe(false);
+      expect(existsSync(join(frogHome, "frogp.port"))).toBe(false);
+      expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual(nativeSettings);
+      const restoredConfig = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8"));
+      expect(restoredConfig.claudeProfiles.profiles[0].injected).toBe(false);
+    } finally {
+      writeFileSync(gate, "release");
+      if (childPid !== null) {
+        try {
+          process.kill(childPid, "SIGKILL");
+        } catch {
+          // Rollback should already have reaped the exact spawned child.
+        }
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test.skipIf(process.platform === "win32")("failed watchdog handoff stops only its replacement and restores native Claude routing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-watchdog-rollback-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const settingsPath = join(claudeHome, "settings.json");
+    const pidPath = join(frogHome, "frogp.pid");
+    const portPath = join(frogHome, "frogp.port");
+    const watchdogPidPath = join(frogHome, "watchdog.pid");
+    const watchdogOwnerPath = join(frogHome, "watchdog.owner.json");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    const nativeSettings = { env: { USER_SETTING: "keep-native" } };
+    writeFileSync(settingsPath, JSON.stringify(nativeSettings, null, 2) + "\n");
+    const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const port = reservation.port;
+    reservation.stop(true);
+    writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+      port,
+      hostname: "127.0.0.1",
+      watchdog: { enabled: true, pollIntervalMs: 50, backoffMs: [50] },
+      providers: {},
+      claudeProfiles: {
+        schemaVersion: 1,
+        defaultProfileId: "cp_default",
+        profiles: [{ id: "cp_default", name: "Default", claudeHome, injected: false }],
+      },
+    }, null, 2) + "\n");
+    const watchdogOwnerBlocker = Bun.spawn(
+      [process.execPath, "-e", "await Promise.withResolvers<void>().promise"],
+      { stdout: "ignore", stderr: "ignore" },
+    );
+    writeFileSync(watchdogPidPath, String(watchdogOwnerBlocker.pid));
+    const newerWatchdogOwner = {
+      schemaVersion: 1,
+      instanceId: "newer-watchdog-owner",
+      watchdogPid: watchdogOwnerBlocker.pid,
+      proxyPid: watchdogOwnerBlocker.pid,
+    };
+    writeFileSync(watchdogOwnerPath, JSON.stringify(newerWatchdogOwner) + "\n");
+    const env = {
+      ...process.env,
+      HOME: root,
+      NODE_ENV: "test",
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+      FROGP_REAL_CLAUDE: join(root, "missing-claude"),
+    };
+    delete env.FROGPROGSY_NO_CLAUDE_WRITES;
+    let replacementPid: number | null = null;
+
+    try {
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      await waitForPath(pidPath);
+      replacementPid = Number(readFileSync(pidPath, "utf8"));
+      const [stderr, exitCode] = await Promise.all([
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+      expect(stderr).toContain("Restored Claude Code settings");
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("Replacement proxy started without confirmed watchdog ownership");
+      expect(() => process.kill(replacementPid!, 0)).toThrow();
+      expect(() => process.kill(watchdogOwnerBlocker.pid, 0)).not.toThrow();
+      expect(readFileSync(watchdogPidPath, "utf8")).toBe(String(watchdogOwnerBlocker.pid));
+      expect(JSON.parse(readFileSync(watchdogOwnerPath, "utf8"))).toEqual(newerWatchdogOwner);
+      expect(existsSync(pidPath)).toBe(false);
+      expect(existsSync(portPath)).toBe(false);
+      expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual(nativeSettings);
+      const restoredConfig = JSON.parse(readFileSync(join(frogHome, "config.json"), "utf8"));
+      expect(restoredConfig.claudeProfiles.profiles[0].injected).toBe(false);
+    } finally {
+      if (replacementPid !== null) {
+        try {
+          process.kill(replacementPid, "SIGTERM");
+        } catch {
+          // The rollback should already have stopped its exact replacement.
+        }
+      }
+      watchdogOwnerBlocker.kill();
+      await watchdogOwnerBlocker.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  // Windows taskkill cannot be observed safely through Bun's child-process reaper in one test process.
+  test.skipIf(process.platform === "win32")("refresh serializes stale replacement against a concurrent start", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-stale-build-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const lockGate = join(root, "refresh-lock-gate");
+    const fixturePath = join(root, "stale-server.ts");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    const watchdogPidPath = join(frogHome, "watchdog.pid");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(fixturePath, [
+      "const server = Bun.serve({",
+      '  hostname: "127.0.0.1",',
+      "  port: 0,",
+      "  fetch(request) {",
+      "    const url = new URL(request.url);",
+      '    if (url.pathname === "/healthz") {',
+      '      return Response.json({ status: "ok", serverBuildId: "frogprogsy-server@0.0.0-stale" });',
+      "    }",
+      '    return new Response("not found", { status: 404 });',
+      "  },",
+      "});",
+      "console.log(server.port);",
+      "await Promise.withResolvers<void>().promise;",
+    ].join("\n"));
+
+    const stale = Bun.spawn([process.execPath, fixturePath], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    let oldWatchdog: { pid: number; exited: Promise<number>; kill: () => void } | undefined;
+    let replacementWatchdogPid: number | null = null;
+    const env = {
+      ...process.env,
+      NODE_ENV: "test",
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+      FROGPROGSY_NO_CLAUDE_WRITES: "1",
+      FROGP_TEST_CONFIG_LOCK_GATE: lockGate,
+    };
+    let concurrent: { pid: number; exited: Promise<number>; kill: () => void } | undefined;
+
+    try {
+      const staleOutput = stale.stdout.getReader();
+      const announced = await staleOutput.read();
+      staleOutput.releaseLock();
+      const port = Number(new TextDecoder().decode(announced.value).trim());
+      expect(announced.done).toBe(false);
+      expect(Number.isInteger(port) && port > 0).toBe(true);
+      writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+        port,
+        hostname: "127.0.0.1",
+        watchdog: { enabled: true, pollIntervalMs: 50 },
+        providers: {},
+      }, null, 2) + "\n");
+      writeFileSync(join(frogHome, "frogp.pid"), String(stale.pid));
+      writeFileSync(join(frogHome, "frogp.port"), String(port));
+      oldWatchdog = Bun.spawn(
+        [process.execPath, cliPath, "__watchdog", "--parent", String(stale.pid), "--port", String(port)],
+        { cwd: join(import.meta.dir, ".."), env, stdout: "ignore", stderr: "ignore" },
+      );
+      await waitForPath(watchdogPidPath);
+      expect(Number(readFileSync(watchdogPidPath, "utf8"))).toBe(oldWatchdog.pid);
+
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      await waitForPath(`${lockGate}.${refresh.pid}.ready`);
+      concurrent = Bun.spawn([process.execPath, cliPath, "start"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      writeFileSync(lockGate, "release");
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(refresh.stdout).text(),
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+        stale.exited,
+        oldWatchdog.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout).toContain(`Proxy running on port ${port}`);
+      const replacementPid = Number(readFileSync(join(frogHome, "frogp.pid"), "utf8"));
+      expect(replacementPid).not.toBe(stale.pid);
+      if (replacementPid !== concurrent.pid) expect(await concurrent.exited).toBe(1);
+      replacementWatchdogPid = await waitForPidReplacement(watchdogPidPath, oldWatchdog.pid);
+      expect(() => process.kill(replacementWatchdogPid!, 0)).not.toThrow();
+      const watchdogOwner = JSON.parse(readFileSync(join(frogHome, "watchdog.owner.json"), "utf8"));
+      expect(watchdogOwner).toMatchObject({
+        schemaVersion: 1,
+        watchdogPid: replacementWatchdogPid,
+        proxyPid: replacementPid,
+      });
+      const health = await fetch(`http://127.0.0.1:${port}/healthz`).then(response => response.json()) as {
+        serverBuildId?: string;
+      };
+      const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version;
+      expect(health.serverBuildId).toBe(`frogprogsy-server@${version}`);
+    } finally {
+      writeFileSync(lockGate, "release");
+      const stop = Bun.spawn([process.execPath, cliPath, "stop"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      await stop.exited;
+      stale.kill();
+      await stale.exited;
+      concurrent?.kill();
+      if (concurrent) await concurrent.exited;
+      oldWatchdog?.kill();
+      if (oldWatchdog) await oldWatchdog.exited;
+      if (replacementWatchdogPid !== null) await waitForPathRemoval(watchdogPidPath);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  test("refresh preserves a current proxy that wins the startup lock race", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-current-race-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const lockGate = join(root, "start-lock-gate");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const port = reservation.port;
+    reservation.stop(true);
+    writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+      port,
+      hostname: "127.0.0.1",
+      watchdog: { enabled: false },
+      providers: {},
+    }, null, 2) + "\n");
+    const env = {
+      ...process.env,
+      NODE_ENV: "test",
+      FROGPROGSY_HOME: frogHome,
+      CLAUDE_HOME: claudeHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
+      FROGPROGSY_NO_CLAUDE_WRITES: "1",
+      FROGP_TEST_CONFIG_LOCK_GATE: lockGate,
+    };
+    const start = Bun.spawn([process.execPath, cliPath, "start"], {
+      cwd: join(import.meta.dir, ".."),
+      env,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+
+    try {
+      await waitForPath(`${lockGate}.${start.pid}.ready`);
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      writeFileSync(lockGate, "release");
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(refresh.stdout).text(),
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout).toContain(`Proxy running on port ${port}`);
+      expect(Number(readFileSync(join(frogHome, "frogp.pid"), "utf8"))).toBe(start.pid);
+      const health = await fetch(`http://127.0.0.1:${port}/healthz`).then(response => response.json()) as {
+        serverBuildId?: string;
+      };
+      const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version;
+      expect(health.serverBuildId).toBe(`frogprogsy-server@${version}`);
+    } finally {
+      writeFileSync(lockGate, "release");
+      const stop = Bun.spawn([process.execPath, cliPath, "stop"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      await stop.exited;
+      start.kill();
+      await start.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test("refresh does not mark its background proxy as externally service-managed", () => {
     const source = cliSource();
     const refreshStart = source.indexOf("async function handleRefresh()");
@@ -19,7 +652,9 @@ describe("frogp refresh detached lifecycle", () => {
   test("detached proxies keep Claude settings injected without suppressing watchdog", () => {
     const source = cliSource();
 
-    expect(source).toContain("!parseEnvFlag(process.env.FROGP_EXTERNAL_SUPERVISOR) && !process.env.FROGP_DETACHED");
+    expect(source).toContain("if (!refreshShutdown");
+    expect(source).toContain("!parseEnvFlag(process.env.FROGP_EXTERNAL_SUPERVISOR)");
+    expect(source).toContain("&& !process.env.FROGP_DETACHED");
     expect(source).toContain("resolveWatchdogEnabled(_startConfig, process.env");
   });
 

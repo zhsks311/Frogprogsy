@@ -88,7 +88,7 @@ A transient failure opens a 30-second, memory-only circuit for the exact primary
 - Config stores only `sha256:<hex>` of a key. The plaintext is printed once, when `frogp local-key add` creates it, and cannot be recovered afterwards.
 - `requestLimit` is a per-key sliding window enforced in the relay process; an exhausted window answers `429` with `Retry-After`.
 - A presented key is never relayed upstream, so a `forward` lane still forwards only a real caller provider credential.
-- Same-machine tooling does not need the configured key: the running relay writes a per-start token to `~/.frogprogsy/local-access.token` (mode `0600`). The CLI sends that unrestricted token only to a loopback destination; wildcard binds are reached through loopback, while an exact non-loopback `hostname` refuses token-bearing management calls. The token is not stored in config and does not survive a restart.
+- Same-machine tooling does not need the configured key: the running relay writes a per-start token to `~/.frogprogsy/local-access.token` (mode `0600`). The CLI sends that unrestricted token only to a loopback destination; wildcard binds are reached through loopback. The token is not stored in config and does not survive a restart.
 - A non-loopback `hostname` requires at least one key. On the first Docker start, set `FROGP_LOCAL_ACCESS_KEY` through the container environment or secret configuration; the entrypoint stores only its hash and never prints the plaintext. A persisted volume with an existing enabled key restarts without the environment value.
 - Per-key `providers`/`models` scopes are not enforced yet; a key that declares them is rejected at startup rather than silently unscoped.
 
