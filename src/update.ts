@@ -1,7 +1,4 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join, sep } from "node:path";
 import {
   DEFAULT_PORT,
   loadConfig,
@@ -11,55 +8,21 @@ import {
   removeActivePort,
   writeShutdownIntent,
 } from "./config";
+import { detectInstallIdentity } from "./install-identity";
+import type { InstallKind } from "./install-identity";
+import { compareSemVer, parseCanonicalStableSemVer, parseSemVer } from "./semver";
 import { parseEnvFlag } from "./watchdog";
 
 const PKG = "frogprogsy";
-const HERE = dirname(fileURLToPath(import.meta.url)); // .../frogprogsy/src
 
-type Installer = "bun" | "source" | "unsupported";
-
-function bunGlobalPackageRoot(): string | null {
-  const result = spawnSync("bun", ["pm", "bin", "-g"], { encoding: "utf8", timeout: 12000, windowsHide: true });
-  if (result.status !== 0) return null;
-  const binDir = result.stdout.trim();
-  for (const name of ["frogp", "frogp.exe", "frogp.cmd"]) {
-    const bin = join(binDir, name);
-    if (!existsSync(bin)) continue;
-    try {
-      return dirname(dirname(realpathSync(bin)));
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-/** Infer whether frogprogsy is a Bun global package, a source checkout, or unsupported. */
-export function detectInstall(): Installer {
-  if (!HERE.split(sep).includes("node_modules")) return "source";
-  try {
-    return bunGlobalPackageRoot() === realpathSync(join(HERE, "..")) ? "bun" : "unsupported";
-  } catch {
-    return "unsupported";
-  }
-}
-
-function currentVersion(): string {
-  try {
-    return (JSON.parse(readFileSync(join(HERE, "..", "package.json"), "utf8")).version as string) ?? "?";
-  } catch {
-    return "?";
-  }
-}
-
-function isDevPackageInstall(): boolean {
-  return existsSync(join(HERE, "..", ".frogprogsy-dev-build.json"));
-}
-
-/** Latest published version from the package registry through Bun. */
-function latestVersion(): string | null {
-  const r = spawnSync("bun", ["pm", "view", PKG, "version"], { encoding: "utf8", timeout: 12000, windowsHide: true });
-  return r.status === 0 ? r.stdout.trim() : null;
+/** Explicit update follows the user's configured Bun registry rather than the automatic check endpoint. */
+function latestVersionFromBun(): string | null {
+  const result = spawnSync("bun", ["pm", "view", PKG, "version"], {
+    encoding: "utf8",
+    timeout: 12_000,
+    windowsHide: true,
+  });
+  return result.status === 0 ? result.stdout.trim() || null : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,13 +103,13 @@ export async function ensureAfterUpdate(): Promise<void> {
  * - FROGP_EXTERNAL_SUPERVISOR set → print external-supervisor restart hint
  * - otherwise → auto-ensure (stop + detached respawn + health poll)
  */
-export async function planUpdateRestart(installer: Installer): Promise<void> {
+export async function planUpdateRestart(installer: InstallKind): Promise<void> {
   if (installer === "source") {
     console.log("Restart the proxy:  git pull && bun install && frogp stop && frogp start");
     return;
   }
-  if (installer === "unsupported") {
-    console.log("Unsupported package manager: reinstall with Bun before restarting.");
+  if (installer === "unsupported" || installer === "development") {
+    console.log("This package is not eligible for an automatic restart after update.");
     return;
   }
   if (parseEnvFlag(process.env.FROGP_EXTERNAL_SUPERVISOR)) {
@@ -164,9 +127,9 @@ export async function planUpdateRestart(installer: Installer): Promise<void> {
  * use git pull; packages installed by another manager are rejected explicitly.
  */
 export async function runUpdate(noRestart = false): Promise<void> {
-
-  const installer = detectInstall();
-  const current = currentVersion();
+  const identity = await detectInstallIdentity();
+  const installer = identity.kind;
+  const current = identity.version;
   console.log(`frogprogsy v${current} (installed via ${installer})`);
 
   if (installer === "source") {
@@ -178,36 +141,45 @@ export async function runUpdate(noRestart = false): Promise<void> {
     console.error("    Reinstall with Bun: bun add -g frogprogsy");
     process.exit(1);
   }
-  if (isDevPackageInstall()) {
+  if (installer === "development") {
     console.error("⚠️  This is an explicitly installed development build.");
     console.error("    Replace it from the source repository with: bun run dev:package reinstall --yes");
     process.exit(1);
   }
 
-  const latest = latestVersion();
-  if (latest === null) {
-    console.error("⚠️  Could not find frogprogsy in the package registry (not published yet, or the registry is unreachable).");
+  const latestRaw = latestVersionFromBun();
+  const latest = latestRaw === null ? null : parseCanonicalStableSemVer(latestRaw);
+  if (!latestRaw || !latest) {
+    console.error("⚠️  Could not read a valid stable frogprogsy version from the package registry.");
     console.error("    Nothing was changed. If you installed from a git checkout, update with: git pull && bun install");
     process.exit(1);
   }
-  if (latest === current) {
-    console.log(`Already on the latest version (v${latest}).`);
+  const currentVersion = parseSemVer(current);
+  if (!currentVersion) {
+    console.error(`⚠️  Installed version ${current} is not valid SemVer; refusing to replace it automatically.`);
+    process.exit(1);
+  }
+  const ordering = compareSemVer(latest, currentVersion);
+  if (ordering <= 0) {
+    console.log(ordering === 0
+      ? `Already on the latest version (v${latestRaw}).`
+      : `Installed version v${current} is newer than stable latest v${latestRaw}; nothing changed.`);
     return;
   }
 
   const cmdArgs = ["add", "-g", `${PKG}@latest`];
-  console.log(`Updating to v${latest}…\n$ bun ${cmdArgs.join(" ")}`);
+  console.log(`Updating to v${latestRaw}…\n$ bun ${cmdArgs.join(" ")}`);
 
-  const r = spawnSync("bun", cmdArgs, { stdio: "inherit", timeout: 180000, windowsHide: true });
-  if (r.status === 0) {
-    console.log(`\n✅ Updated to v${latest}.`);
+  const result = spawnSync("bun", cmdArgs, { stdio: "inherit", timeout: 180_000, windowsHide: true });
+  if (result.status === 0) {
+    console.log(`\n✅ Updated to v${latestRaw}.`);
     if (noRestart) {
       console.log("Restart the proxy manually: frogp stop && frogp start");
     } else {
       await planUpdateRestart(installer);
     }
   } else {
-    console.error(`\n⚠️  Update failed (bun exit ${r.status ?? "?"}). Try manually: bun ${cmdArgs.join(" ")}`);
+    console.error(`\n⚠️  Update failed (bun exit ${result.status ?? "?"}). Try manually: bun ${cmdArgs.join(" ")}`);
     process.exit(1);
   }
 }

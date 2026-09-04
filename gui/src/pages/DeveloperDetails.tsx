@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Logs from "./Logs";
-import { Notice } from "../ui";
+import { Notice, Switch } from "../ui";
 import { IconPower } from "../icons";
-import { useT, type TKey } from "../i18n";
+import { useT } from "../i18n";
+import type { TKey } from "../i18n";
 import type { DeepLinkTarget, Navigate } from "../navigation";
 import { ClassifierInfo } from "../components/ClassifierInfo";
+import { canApplyUpdatePoll } from "../update-status";
+import { parseUpdateStatus } from "../../../src/update-status-contract";
+import type { UpdateStatus } from "../../../src/update-status-contract";
 
 interface SettingsData { port: number; hostname: string }
 interface FallbackProviderOption { name: string; models: string[]; defaultModel?: string }
@@ -113,11 +117,15 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
   const [classifierError, setClassifierError] = useState<SectionError>(null);
   const [classifierErrorDetail, setClassifierErrorDetail] = useState("");
   const [claudeStatusError, setClaudeStatusError] = useState<SectionError>(null);
-
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updateSettingsSaving, setUpdateSettingsSaving] = useState(false);
+  const [updateSettingsError, setUpdateSettingsError] = useState<SectionError>(null);
+  const updateActionGeneration = useRef(0);
 
   useEffect(() => {
     const fetchData = async () => {
-      const [settingsResult, fallbackResult, classifierResult, claudeStatusResult] = await Promise.allSettled([
+      const updateGeneration = updateActionGeneration.current;
+      const [settingsResult, fallbackResult, classifierResult, claudeStatusResult, updateStatusResult] = await Promise.allSettled([
         fetch(`${apiBase}/api/settings`).then(res => {
           if (!res.ok) throw new Error("settings load failed");
           return res.json() as Promise<SettingsData>;
@@ -133,6 +141,13 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
         fetch(`${apiBase}/api/claude-status`).then(res => {
           if (!res.ok) throw new Error("claude status load failed");
           return res.json() as Promise<ClaudeStatusData>;
+        }),
+        fetch(`${apiBase}/api/update-status`).then(async res => {
+          if (!res.ok) throw new Error("update status load failed");
+          const payload: unknown = await res.json();
+          const parsed = parseUpdateStatus(payload);
+          if (!parsed) throw new Error("invalid update status");
+          return parsed;
         }),
       ]);
 
@@ -165,6 +180,14 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
       } else {
         setClaudeStatus(null);
         setClaudeStatusError("load");
+      }
+      if (canApplyUpdatePoll(updateGeneration, updateActionGeneration.current)) {
+        if (updateStatusResult.status === "fulfilled") {
+          setUpdateStatus(updateStatusResult.value);
+          setUpdateSettingsError(null);
+        } else {
+          setUpdateSettingsError("load");
+        }
       }
     };
     fetchData();
@@ -311,6 +334,32 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
     }
   };
 
+  const saveUpdateChecks = async (enabled: boolean) => {
+    if (!updateStatus || updateSettingsSaving) return;
+    updateActionGeneration.current += 1;
+    const previous = updateStatus;
+    setUpdateSettingsSaving(true);
+    setUpdateStatus({ ...previous, enabled, status: enabled ? "unavailable" : "disabled" });
+    try {
+      const response = await fetch(`${apiBase}/api/update-settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const payload: unknown = await response.json();
+      const parsed = parseUpdateStatus(payload);
+      if (!response.ok || !parsed) throw new Error("invalid update settings response");
+      setUpdateStatus(parsed);
+      setUpdateSettingsError(null);
+    } catch {
+      setUpdateStatus(previous);
+      setUpdateSettingsError("save");
+    } finally {
+      updateActionGeneration.current += 1;
+      setUpdateSettingsSaving(false);
+    }
+  };
+
   return (
     <>
       <div className="page-head"><h2>{t("nav.developerDetails")}</h2></div>
@@ -349,6 +398,33 @@ export default function DeveloperDetails({ apiBase, target, navigate }: { apiBas
               ))}
             </div>
           </section>
+        </div>
+      </section>
+      <section className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-head">
+          <h3 className="panel-title">{t("update.settingsTitle")}</h3>
+          <span className="muted" style={{ fontSize: 12 }}>
+            {updateSettingsSaving ? t("prov.savingDefault") : t("update.settingsStableOnly")}
+          </span>
+        </div>
+        {updateSettingsError && (
+          <Notice tone="err">
+            {t(updateSettingsError === "save" ? "update.settingsSaveFailed" : "update.loadFailed")}
+          </Notice>
+        )}
+        <div className="fallback-row">
+          <div>
+            <div style={{ fontWeight: 650 }}>{t("update.settingsAutomatic")}</div>
+            <div className="muted" style={{ fontSize: 13 }}>{t("update.settingsPrivacy")}</div>
+          </div>
+          <div className="fallback-controls">
+            <Switch
+              on={updateStatus?.enabled ?? false}
+              disabled={!updateStatus || updateSettingsSaving}
+              onClick={() => updateStatus && void saveUpdateChecks(!updateStatus.enabled)}
+              label={t("update.settingsAutomatic")}
+            />
+          </div>
         </div>
       </section>
       <section className="panel" style={{ marginBottom: 16 }}>

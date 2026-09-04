@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installedPackageVersion } from "../src/install-identity";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
@@ -114,6 +115,18 @@ describe("CLI status output", () => {
         dashboardUrl: null,
         recovery: "frogp start",
         watchdog: { present: false, attempts: null, gaveUpAt: null, unreadable: false },
+        update: {
+          enabled: true,
+          installKind: "source",
+          installedVersion: installedPackageVersion(),
+          status: "source",
+          latestVersion: null,
+          checkedAt: null,
+          lastAttemptAt: null,
+          stale: false,
+          nextCheckAt: null,
+          failure: null,
+        },
       });
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -179,7 +192,7 @@ describe("CLI status output", () => {
       const result = runCli(["status", "--verbose"], home);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("Unknown status option: --verbose");
-      expect(result.stderr).toContain("Usage: frogp status [--json]");
+      expect(result.stderr).toContain("Usage: frogp status [--json] [--refresh-update]");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

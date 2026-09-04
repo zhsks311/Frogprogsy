@@ -84,6 +84,10 @@ export function getModelCatalogCachePath(): string {
   return join(getConfigDir(), "cache", "model-catalog-v1.json");
 }
 
+export function getUpdateStatusCachePath(): string {
+  return join(getConfigDir(), "cache", "update-status-v1.json");
+}
+
 export function getConfigPath(): string {
   return resolveConfigPath();
 }
@@ -185,6 +189,10 @@ export function saveConfig(config: FrogConfig): void {
 
 export function websocketsEnabled(_config: Pick<FrogConfig, "websockets">): boolean {
   return false;
+}
+
+export function updateChecksEnabled(config: Pick<FrogConfig, "updateChecks">): boolean {
+  return config.updateChecks?.enabled !== false;
 }
 
 
@@ -296,6 +304,10 @@ export function getWatchdogPidPath(): string {
   return join(resolveConfigDir(), "watchdog.pid");
 }
 
+export function getWatchdogOwnerPath(): string {
+  return join(resolveConfigDir(), "watchdog.owner.json");
+}
+
 /** Per-start same-machine relay credential (mode 0600); written by the server, read by the CLI. */
 export function getLocalAccessTokenPath(): string {
   return join(resolveConfigDir(), "local-access.token");
@@ -329,6 +341,7 @@ export function getWatchdogStatusPath(): string {
 export interface ShutdownIntent {
   pid: number;
   timestamp: number;
+  mode?: "stop" | "refresh";
 }
 
 const SHUTDOWN_INTENT_FILE = "frogp-shutdown.intent";
@@ -337,9 +350,9 @@ function resolveShutdownIntentPath(): string {
   return join(resolveConfigDir(), SHUTDOWN_INTENT_FILE);
 }
 
-export function writeShutdownIntent(pid: number): void {
+export function writeShutdownIntent(pid: number, mode: "stop" | "refresh" = "stop"): void {
   const configDir = ensureConfigDirForWrite("writeShutdownIntent");
-  const intent: ShutdownIntent = { pid, timestamp: Date.now() };
+  const intent: ShutdownIntent = { pid, timestamp: Date.now(), mode };
   atomicWriteFile(join(configDir, SHUTDOWN_INTENT_FILE), JSON.stringify(intent) + "\n");
 }
 
@@ -355,7 +368,10 @@ export function readShutdownIntent(): ShutdownIntent | null {
       "pid" in parsed &&
       "timestamp" in parsed &&
       typeof (parsed as ShutdownIntent).pid === "number" &&
-      typeof (parsed as ShutdownIntent).timestamp === "number"
+      typeof (parsed as ShutdownIntent).timestamp === "number" &&
+      (!("mode" in parsed)
+        || (parsed as ShutdownIntent).mode === "stop"
+        || (parsed as ShutdownIntent).mode === "refresh")
     ) {
       return parsed as ShutdownIntent;
     }

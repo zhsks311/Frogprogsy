@@ -160,11 +160,22 @@ function reasoningBudget(effort: string): number {
 
 function usageFromAnthropic(usage: Record<string, number> | undefined): FrogUsage | undefined {
   if (!usage) return undefined;
-  const hasCache = usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined;
+  const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : undefined;
+  const outputTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : undefined;
+  const cacheReadInputTokens = typeof usage.cache_read_input_tokens === "number"
+    ? usage.cache_read_input_tokens
+    : undefined;
+  const cacheCreationInputTokens = typeof usage.cache_creation_input_tokens === "number"
+    ? usage.cache_creation_input_tokens
+    : undefined;
+  const hasCompleteCacheTotal = cacheReadInputTokens !== undefined
+    && cacheCreationInputTokens !== undefined;
   return {
-    inputTokens: usage.input_tokens ?? 0,
-    outputTokens: usage.output_tokens ?? 0,
-    ...(hasCache ? { cachedInputTokens: (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) } : {}),
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    ...(hasCompleteCacheTotal ? { cachedInputTokens: cacheReadInputTokens + cacheCreationInputTokens } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
   };
 }
 
@@ -419,6 +430,7 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
       let currentBlockType = "";
       let currentToolCallId = "";
       let currentToolCallName = "";
+      let pendingUsage: Record<string, number> | undefined;
 
       try {
         while (true) {
@@ -448,6 +460,11 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
             }
 
             switch (currentEventType || data.type) {
+              case "message_start": {
+                const message = data.message as { usage?: Record<string, number> } | undefined;
+                if (message?.usage) pendingUsage = message.usage;
+                break;
+              }
               case "content_block_start": {
                 const block = data.content_block as { type: string; id?: string; name?: string } | undefined;
                 if (!block) break;
@@ -481,13 +498,16 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
               }
               case "message_delta": {
                 const usage = data.usage as Record<string, number> | undefined;
+                const completeUsage = pendingUsage || usage
+                  ? { ...(pendingUsage ?? {}), ...(usage ?? {}) }
+                  : undefined;
                 const delta = data.delta as { stop_reason?: unknown } | undefined;
                 const stop = normalizeAnthropicStopReason(delta?.stop_reason, "stream");
                 if (stop?.diagnostic) yield { type: "diagnostic", diagnostic: stop.diagnostic };
                 if (usage || stop) {
                   yield {
                     type: "done",
-                    usage: usageFromAnthropic(usage),
+                    usage: usageFromAnthropic(completeUsage),
                     ...(stop ? { stopReason: stop.stopReason, stopReasonProvenance: stop.provenance } : {}),
                   };
                 }

@@ -17,6 +17,20 @@ interface UsageSummaryTotals {
   totalTokens: number;
   coverageRatio: number;
 }
+interface UsageCacheHitRate {
+  status: "available" | "no_data" | "unsupported" | "unavailable" | "error";
+  formula: "cache_read_input_tokens / total_input_tokens";
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  inputTokens: number;
+  totalInputTokens: number;
+  hitRate: number | null;
+  reportedRequests: number;
+  unsupportedRequests: number;
+  unavailableRequests: number;
+  failedRequests: number;
+}
+
 
 interface UsageDay {
   date: string;
@@ -125,6 +139,7 @@ interface UsageResponse {
   models: UsageModel[];
   providers: UsageProvider[];
   sourceState: UsageSourceState;
+  cacheHitRate: UsageCacheHitRate;
   pricing?: UsagePricing;
   error?: string;
 }
@@ -273,32 +288,42 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
 
   useEffect(() => {
     let cancelled = false;
+    const abortController = new AbortController();
+    let hasSuccessfulLoad = false;
+    let pollTimer: number | undefined;
     setLoading(true);
     setData(null);
     setLoadError(false);
     const fetchUsage = async () => {
       try {
-        const res = await fetch(`${apiBase}/api/usage?range=${range}`);
+        const res = await fetch(`${apiBase}/api/usage?range=${range}`, {
+          signal: abortController.signal,
+        });
         if (!res.ok) throw new Error("fetch failed");
         const json = await res.json() as UsageResponse;
-        if (!cancelled) {
-          if (json.range === range) {
-            setData(json);
-          } else {
-            setLoadError(true);
-          }
-        }
-      } catch {
-        if (!cancelled) {
-          setData(null);
+        if (cancelled) return;
+        if (json.range === range) {
+          setData(json);
+          setLoadError(false);
+          hasSuccessfulLoad = true;
+        } else if (!hasSuccessfulLoad) {
           setLoadError(true);
         }
+      } catch {
+        if (!cancelled && !hasSuccessfulLoad) setLoadError(true);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          pollTimer = window.setTimeout(fetchUsage, 5000);
+        }
       }
     };
-    fetchUsage();
-    return () => { cancelled = true; };
+    void fetchUsage();
+    return () => {
+      cancelled = true;
+      abortController.abort();
+      if (pollTimer !== undefined) window.clearTimeout(pollTimer);
+    };
   }, [apiBase, range]);
   useEffect(() => {
     if (target === "usage-source-state") sourceStateRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -321,6 +346,17 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
   const sourceState = isUsageSourceState(data?.sourceState) ? data.sourceState : null;
   const hasUsage = Boolean(data && data.summary.requests > 0);
   const pricing = data?.pricing?.available ? data.pricing : null;
+  const cacheHitRate = data?.cacheHitRate;
+  const cacheHasBreakdown = cacheHitRate?.status === "available";
+  const cacheStatusLabel = cacheHitRate?.status === "available"
+    ? t("usage.cache.status.available")
+    : cacheHitRate?.status === "no_data"
+      ? t("usage.cache.status.noData")
+      : cacheHitRate?.status === "error"
+        ? t("usage.cache.status.error")
+        : cacheHitRate?.status === "unsupported"
+          ? t("usage.cache.status.unsupported")
+          : t("usage.cache.status.unavailable");
 
   return (
     <>
@@ -417,6 +453,43 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
               </div>
             ) : (
               <div className="notice notice-err">{t("usage.source.contractMissing")}</div>
+            )}
+          </section>
+          <section className="panel" style={{ marginTop: 16 }}>
+            <div className="panel-head">
+              <div>
+                <h3 className="panel-title">{t("usage.cache.title")}</h3>
+                <p className="muted usage-source-note">{t("usage.cache.note")}</p>
+              </div>
+              <span className={`badge ${cacheHasBreakdown ? "badge-green" : "badge-amber"}`}>{cacheStatusLabel}</span>
+            </div>
+            <div className="usage-cards">
+              <div className="stat">
+                <div className="muted">{t("usage.cache.hitRate")}</div>
+                <div className="stat-value">{cacheHasBreakdown && cacheHitRate.hitRate !== null ? formatPct(cacheHitRate.hitRate) : "—"}</div>
+              </div>
+              <div className="stat">
+                <div className="muted">{t("usage.cache.readTokens")}</div>
+                <div className="stat-value">{cacheHasBreakdown ? formatTokens(cacheHitRate.cacheReadInputTokens) : "—"}</div>
+              </div>
+              <div className="stat">
+                <div className="muted">{t("usage.cache.creationTokens")}</div>
+                <div className="stat-value">{cacheHasBreakdown ? formatTokens(cacheHitRate.cacheCreationInputTokens) : "—"}</div>
+              </div>
+              <div className="stat">
+                <div className="muted">{t("usage.cache.inputBasis")}</div>
+                <div className="stat-value">{cacheHasBreakdown ? formatTokens(cacheHitRate.totalInputTokens) : "—"}</div>
+              </div>
+            </div>
+            {cacheHitRate && (
+              <p className="muted" style={{ marginTop: 12, fontSize: 13 }}>
+                {t("usage.cache.coverage", {
+                  reported: cacheHitRate.reportedRequests,
+                  unsupported: cacheHitRate.unsupportedRequests,
+                  unavailable: cacheHitRate.unavailableRequests,
+                  failed: cacheHitRate.failedRequests,
+                })}
+              </p>
             )}
           </section>
           {pricing && (

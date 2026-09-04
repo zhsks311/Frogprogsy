@@ -52,7 +52,7 @@ describe("full uninstall command", () => {
 
     // package removal comes after config removal
     const configIdx = cli.indexOf("frogprogsy config removed");
-    const pkgIdx = cli.indexOf("detectInstall");
+    const pkgIdx = cli.indexOf("await detectInstallIdentity()");
     expect(configIdx).toBeGreaterThan(-1);
     expect(pkgIdx).toBeGreaterThan(-1);
     expect(pkgIdx).toBeGreaterThan(configIdx);
@@ -86,7 +86,7 @@ describe("full uninstall command", () => {
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const body = cli.slice(start, end);
-    expect(body).toContain("detectInstall");
+    expect(body).toContain("await detectInstallIdentity()");
     expect(body).toContain("} catch (err) {");
     expect(body).toContain("Package removal skipped");
   });

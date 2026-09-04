@@ -15,20 +15,27 @@ description: "Install the FrogProgsy local relay command and check what you need
 
 ## Install
 
-The normal install follows the stable `latest` registry channel, currently `0.0.1`:
+The normal install follows the stable `latest` registry channel:
 
 ```bash
 bun add -g frogprogsy
 frogp --version
 ```
 
-To test the current prerelease, `0.0.2-preview.1`, select the `preview` channel explicitly:
+To test the current prerelease, select the `preview` channel explicitly:
 
 ```bash
 bun add -g frogprogsy@preview
 ```
 
 `frogp update` always updates a Bun-managed install to stable `latest`. To remain on the prerelease channel, reinstall `frogprogsy@preview` with Bun.
+
+On a canonical Bun-global stable install, a proxy start checks only npm's stable FrogProgsy release
+metadata in the background. Dashboard and `frogp status` show installed → latest plus the exact
+`frogp update` command when a newer stable version exists. Detection never installs, restarts, writes
+Claude Code state, or sends prompts, provider settings, credentials, Claude-home data, or a stable
+identifier. Disable automatic checks in Dashboard **Details**; explicit
+`frogp status --refresh-update` and `frogp update` remain available.
 
 For a source checkout instead of the registry package:
 

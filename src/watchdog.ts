@@ -7,11 +7,13 @@
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { FrogConfig } from "./types";
 import type { ShutdownIntent } from "./config";
 import {
   DEFAULT_PORT,
   getWatchdogPidPath,
+  getWatchdogOwnerPath,
   getWatchdogStatusPath,
   loadConfig,
   readActivePort,
@@ -294,6 +296,7 @@ export async function runWatchdog(opts: {
 }): Promise<void> {
   assertSafeConfigDirWrite("write watchdog pid");
   const watchdogPidPath = getWatchdogPidPath();
+  const watchdogOwnerPath = getWatchdogOwnerPath();
   const selfPid = process.pid;
 
   const acquired = acquireWatchdogPidLock(watchdogPidPath, selfPid, isProcessAlive);
@@ -302,9 +305,28 @@ export async function runWatchdog(opts: {
     process.exit(0);
   }
 
+  const instanceId = randomUUID();
+  try {
+    atomicWriteFile(watchdogOwnerPath, JSON.stringify({
+      schemaVersion: 1,
+      instanceId,
+      watchdogPid: selfPid,
+      proxyPid: opts.parentPidHint ?? null,
+    }) + "\n");
+  } catch (error) {
+    try { unlinkSync(watchdogPidPath); } catch { /* ignore */ }
+    throw error;
+  }
+
   assertSafeConfigDirWrite("remove watchdog pid");
   const removeSelfPid = () => {
-    try { unlinkSync(watchdogPidPath); } catch { /* ignore */ }
+    try {
+      const owner = JSON.parse(readFileSync(watchdogOwnerPath, "utf8")) as { instanceId?: unknown };
+      if (owner.instanceId === instanceId) unlinkSync(watchdogOwnerPath);
+    } catch { /* ignore */ }
+    try {
+      if (readFileSync(watchdogPidPath, "utf8").trim() === String(selfPid)) unlinkSync(watchdogPidPath);
+    } catch { /* ignore */ }
   };
 
   // Clean up on unexpected signals
