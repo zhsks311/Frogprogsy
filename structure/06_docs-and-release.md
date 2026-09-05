@@ -197,6 +197,12 @@ selection other than `release:none`; a competing selection keeps `Release state`
 is an automation-owned status marker, not a selection. People must not add or remove it; automation removes
 stale readiness and adds it only after the current head passes bound checks.
 
+`Prepare release` reconciles the required exact-head CI and Package lifecycle runs independently of whether
+the current invocation pushed: it binds the newest matching manual run, including a failed run, and
+dispatches each missing workflow at most once before a bounded visibility wait. Missing evidence is distinct
+from API, JSON, or invalid run-ID failure; only a positive run ID is written, and every failure remains
+fail-closed under the existing sealed-snapshot and newest-run guards.
+
 Labels request transitions; they are not release authority after merge. The publisher reads verified
 preparation and cancellation records from merged history. Changing a label after merge cannot change the
 channel or version.

@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Prepare release recovery now reuses or dispatches each missing exact-head CI and Package lifecycle run even when no new preparation commit was pushed, and rejects invalid run IDs before binding.
 - OpenAI Chat routes now fail closed on truncated or stalled streams, preserve max-token and retry metadata, and keep parallel tool calls and failed tool results distinct in Claude Messages. Codex Responses streams now count lifecycle and keepalive frames as activity and preserve terminal frames without a trailing newline.
 
 ## 0.0.3

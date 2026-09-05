@@ -1,4 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 
 const root = new URL("../", import.meta.url);
 
@@ -47,6 +59,218 @@ async function read(path: string): Promise<string> {
 
 async function readWorkflow(path: string): Promise<Workflow> {
   return Bun.YAML.parse(await read(path)) as Workflow;
+}
+
+async function readDispatchBindingScript(): Promise<string> {
+  const workflow = await readWorkflow(".github/workflows/prepare-release.yml");
+  const script = workflow.jobs.mutate.steps?.find(
+    step => step.name === "Dispatch and bind exact-ref workflow run ids",
+  )?.run;
+  if (!script) {
+    throw new Error("release dispatch-and-bind step is missing");
+  }
+  return script;
+}
+
+interface FakeWorkflowState {
+  runs?: Array<Record<string, unknown>>;
+  dispatchId: number;
+  visibilityDelay?: number;
+  failureMode?: "api" | "json";
+  postDispatchFailureMode?: "api" | "json";
+  postDispatchFailureInjected?: boolean;
+  dispatched?: boolean;
+  searches?: number;
+  searchesAtDispatch?: number;
+}
+
+interface FakeGhState {
+  workflows: Record<string, FakeWorkflowState>;
+  dispatches: string[];
+  statusWrites: number;
+}
+
+interface DispatchHarnessResult {
+  status: number | null;
+  stderr: string;
+  state: FakeGhState;
+  ciBinding: string | null;
+  packageBinding: string | null;
+}
+
+const exactRunSha = "a".repeat(40);
+const exactRunBranch = "develop";
+
+function exactRun(
+  id: unknown,
+  createdAt: string,
+  conclusion = "success",
+): Record<string, unknown> {
+  return {
+    id,
+    event: "workflow_dispatch",
+    head_sha: exactRunSha,
+    head_branch: exactRunBranch,
+    created_at: createdAt,
+    status: "completed",
+    conclusion,
+  };
+}
+
+function runDispatchBindingStep(
+  script: string,
+  workflows: Record<string, FakeWorkflowState>,
+  plan: { effectiveSelection: string; pushRequired: boolean } = {
+    effectiveSelection: "release:patch",
+    pushRequired: false,
+  },
+  options: { snapshotDriftAt?: number } = {},
+): DispatchHarnessResult {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "frog-release-dispatch-"));
+  const binDir = join(fixtureRoot, "bin");
+  const releasePlanDir = join(fixtureRoot, "release-plan");
+  const statePath = join(fixtureRoot, "fake-gh-state.json");
+  const fakeGhPath = join(binDir, "gh");
+  const fakeGhScriptPath = join(fixtureRoot, "fake-gh.js");
+  const fakeSleepPath = join(binDir, "sleep");
+  mkdirSync(binDir);
+  mkdirSync(releasePlanDir);
+
+  const initialState: FakeGhState = {
+    workflows,
+    dispatches: [],
+    statusWrites: 0,
+  };
+  writeFileSync(statePath, `${JSON.stringify(initialState)}\n`);
+  writeFileSync(join(releasePlanDir, "plan.json"), `${JSON.stringify(plan)}\n`);
+  writeFileSync(join(releasePlanDir, "post-snapshot.json"), "{}\n");
+  writeFileSync(
+    join(releasePlanDir, "collect-live.sh"),
+    [
+      "#!/bin/sh",
+      'count_file="release-plan/collect-count"',
+      "count=0",
+      '[ ! -f "$count_file" ] || count="$(cat "$count_file")"',
+      "count=$((count + 1))",
+      'printf "%s\\n" "$count" > "$count_file"',
+      'if [ -n "${SNAPSHOT_DRIFT_AT:-}" ] && [ "$count" -ge "$SNAPSHOT_DRIFT_AT" ]; then',
+      '  printf \'{"drift":true}\\n\' > "$1"',
+      "else",
+      '  cp release-plan/post-snapshot.json "$1"',
+      "fi",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    fakeGhPath,
+    "#!/bin/sh\nexec \"$FAKE_BUN\" \"$FAKE_GH_SCRIPT\" \"$@\"\n",
+  );
+  writeFileSync(fakeSleepPath, "#!/bin/sh\nexit 0\n");
+  for (const executable of [fakeGhPath, fakeSleepPath]) {
+    chmodSync(executable, 0o755);
+  }
+  writeFileSync(
+    fakeGhScriptPath,
+    String.raw`
+const statePath = process.env.FAKE_GH_STATE;
+const state = await Bun.file(statePath).json();
+const args = process.argv.slice(2);
+const save = async () => {
+  await Bun.write(statePath, JSON.stringify(state) + "\n");
+};
+const runsPath = args.find(arg => /\/actions\/workflows\/[^/]+\/runs$/.test(arg));
+if (args[0] === "api" && runsPath) {
+  const match = runsPath.match(/\/actions\/workflows\/([^/]+)\/runs$/);
+  const workflow = match && match[1];
+  const workflowState = state.workflows[workflow];
+  if (!workflowState) throw new Error("unexpected workflow lookup: " + workflow);
+  workflowState.searches = (workflowState.searches || 0) + 1;
+  const postDispatchFailure = workflowState.dispatched
+    && !workflowState.postDispatchFailureInjected
+    ? workflowState.postDispatchFailureMode
+    : undefined;
+  if (postDispatchFailure) {
+    workflowState.postDispatchFailureInjected = true;
+  }
+  const failureMode = postDispatchFailure || workflowState.failureMode;
+  if (failureMode === "api") {
+    await save();
+    console.error("simulated gh api failure");
+    process.exit(1);
+  }
+  if (failureMode === "json") {
+    await save();
+    process.stdout.write("{");
+    process.exit(0);
+  }
+  const runs = [...(workflowState.runs || [])];
+  const visibleAfter = (workflowState.searchesAtDispatch || 0)
+    + (workflowState.visibilityDelay || 0);
+  if (workflowState.dispatched && workflowState.searches > visibleAfter) {
+    runs.push({
+      id: workflowState.dispatchId,
+      event: "workflow_dispatch",
+      head_sha: process.env.RESULT_SHA,
+      head_branch: process.env.RESULT_BRANCH,
+      created_at: "9999-12-31T23:59:59Z",
+      status: "queued",
+      conclusion: null,
+    });
+  }
+  await save();
+  process.stdout.write(JSON.stringify({ workflow_runs: runs }) + "\n");
+  process.exit(0);
+}
+if (args[0] === "workflow" && args[1] === "run") {
+  const workflow = args[2];
+  const workflowState = state.workflows[workflow];
+  if (!workflowState) throw new Error("unexpected workflow dispatch: " + workflow);
+  state.dispatches.push(workflow);
+  workflowState.dispatched = true;
+  workflowState.searchesAtDispatch = workflowState.searches || 0;
+  await save();
+  process.exit(0);
+}
+if (args[0] === "api" && args.some(arg => /\/statuses\//.test(arg))) {
+  state.statusWrites += 1;
+  await save();
+  process.stdout.write("{}\n");
+  process.exit(0);
+}
+throw new Error("unexpected gh invocation: " + args.join(" "));
+`,
+  );
+
+  try {
+    const result = spawnSync("bash", ["-c", script], {
+      cwd: fixtureRoot,
+      env: {
+        ...process.env,
+        PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+        FAKE_BUN: process.execPath,
+        FAKE_GH_SCRIPT: fakeGhScriptPath,
+        FAKE_GH_STATE: statePath,
+        REPOSITORY: "zhsks311/Frogprogsy",
+        RESULT_SHA: exactRunSha,
+        RESULT_BRANCH: exactRunBranch,
+        SNAPSHOT_DRIFT_AT: options.snapshotDriftAt?.toString() ?? "",
+      },
+      encoding: "utf8",
+    });
+    const binding = (name: string): string | null => {
+      const path = join(releasePlanDir, name);
+      return existsSync(path) ? readFileSync(path, "utf8").trim() : null;
+    };
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      state: JSON.parse(readFileSync(statePath, "utf8")) as FakeGhState,
+      ciBinding: binding("ci.run-id"),
+      packageBinding: binding("package.run-id"),
+    };
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 }
 
 describe("develop to main branch promotion policy", () => {
@@ -125,6 +349,202 @@ describe("trusted release preparation workflow", () => {
       "cancel-in-progress": false,
     });
   });
+
+  test.skipIf(process.platform === "win32")(
+    "reuses each newest exact-ref run and dispatches only missing workflows after a no-push interruption",
+    async () => {
+      const script = await readDispatchBindingScript();
+      const scenarios: Array<{
+        name: string;
+        workflows: Record<string, FakeWorkflowState>;
+        dispatches: string[];
+        ciBinding: string;
+        packageBinding: string;
+      }> = [
+        {
+          name: "neither exists",
+          workflows: {
+            "ci.yml": { dispatchId: 101, visibilityDelay: 2 },
+            "package-lifecycle.yml": { dispatchId: 201, visibilityDelay: 2 },
+          },
+          dispatches: ["ci.yml", "package-lifecycle.yml"],
+          ciBinding: "101",
+          packageBinding: "201",
+        },
+        {
+          name: "only CI exists",
+          workflows: {
+            "ci.yml": {
+              runs: [exactRun(102, "2026-01-01T00:00:00Z")],
+              dispatchId: 999,
+            },
+            "package-lifecycle.yml": { dispatchId: 202, visibilityDelay: 1 },
+          },
+          dispatches: ["package-lifecycle.yml"],
+          ciBinding: "102",
+          packageBinding: "202",
+        },
+        {
+          name: "only Package lifecycle exists",
+          workflows: {
+            "ci.yml": { dispatchId: 103, visibilityDelay: 1 },
+            "package-lifecycle.yml": {
+              runs: [exactRun(203, "2026-01-01T00:00:00Z")],
+              dispatchId: 999,
+            },
+          },
+          dispatches: ["ci.yml"],
+          ciBinding: "103",
+          packageBinding: "203",
+        },
+        {
+          name: "both exist and newest CI failed",
+          workflows: {
+            "ci.yml": {
+              runs: [
+                exactRun(104, "2026-01-01T00:00:00Z"),
+                exactRun(105, "2026-01-02T00:00:00Z", "failure"),
+              ],
+              dispatchId: 999,
+            },
+            "package-lifecycle.yml": {
+              runs: [exactRun(204, "2026-01-01T00:00:00Z")],
+              dispatchId: 999,
+            },
+          },
+          dispatches: [],
+          ciBinding: "105",
+          packageBinding: "204",
+        },
+      ];
+
+      for (const scenario of scenarios) {
+        const result = runDispatchBindingStep(script, scenario.workflows);
+        expect(result.status, scenario.name).toBe(0);
+        expect(result.state.dispatches, scenario.name).toEqual(scenario.dispatches);
+        expect(result.ciBinding, scenario.name).toBe(scenario.ciBinding);
+        expect(result.packageBinding, scenario.name).toBe(scenario.packageBinding);
+      }
+    },
+    15_000,
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "rejects malformed matching run ids before creating a binding or dispatching",
+    async () => {
+      const script = await readDispatchBindingScript();
+      for (const invalidId of ["", "\n", 0, -1, 1.5, null]) {
+        const result = runDispatchBindingStep(script, {
+          "ci.yml": {
+            runs: [exactRun(invalidId, "2026-01-01T00:00:00Z")],
+            dispatchId: 301,
+          },
+          "package-lifecycle.yml": { dispatchId: 302 },
+        });
+        expect(result.status, `invalid id ${JSON.stringify(invalidId)}`).not.toBe(0);
+        expect(result.state.dispatches, `invalid id ${JSON.stringify(invalidId)}`).toEqual([]);
+        expect(result.ciBinding, `invalid id ${JSON.stringify(invalidId)}`).toBeNull();
+      }
+    },
+    15_000,
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "fails closed on workflow-run API and JSON errors instead of dispatching",
+    async () => {
+      const script = await readDispatchBindingScript();
+      for (const failureMode of ["api", "json"] as const) {
+        const result = runDispatchBindingStep(script, {
+          "ci.yml": { dispatchId: 401, failureMode },
+          "package-lifecycle.yml": { dispatchId: 402 },
+        });
+        expect(result.status, failureMode).not.toBe(0);
+        expect(result.state.dispatches, failureMode).toEqual([]);
+        expect(result.ciBinding, failureMode).toBeNull();
+      }
+    },
+    15_000,
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "fails immediately when the first post-dispatch visibility query errors",
+    async () => {
+      const script = await readDispatchBindingScript();
+      for (const postDispatchFailureMode of ["api", "json"] as const) {
+        const result = runDispatchBindingStep(script, {
+          "ci.yml": {
+            dispatchId: 451,
+            postDispatchFailureMode,
+          },
+          "package-lifecycle.yml": { dispatchId: 452 },
+        });
+        expect(result.status, postDispatchFailureMode).not.toBe(0);
+        expect(result.state.dispatches, postDispatchFailureMode).toEqual(["ci.yml"]);
+        expect(result.ciBinding, postDispatchFailureMode).toBeNull();
+        expect(result.packageBinding, postDispatchFailureMode).toBeNull();
+        expect(result.state.statusWrites, postDispatchFailureMode).toBe(0);
+      }
+    },
+    15_000,
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "stops after a dispatched run when the sealed snapshot drifts",
+    async () => {
+      const script = await readDispatchBindingScript();
+      const result = runDispatchBindingStep(
+        script,
+        {
+          "ci.yml": { dispatchId: 461 },
+          "package-lifecycle.yml": { dispatchId: 462 },
+        },
+        { effectiveSelection: "release:patch", pushRequired: false },
+        { snapshotDriftAt: 3 },
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.state.dispatches).toEqual(["ci.yml"]);
+      expect(result.ciBinding).toBe("461");
+      expect(result.packageBinding).toBeNull();
+      expect(result.state.statusWrites).toBe(0);
+    },
+    15_000,
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "keeps release:none no-push checks skipped while cancellation pushes reconcile both checks",
+    async () => {
+      const script = await readDispatchBindingScript();
+      const noPush = runDispatchBindingStep(
+        script,
+        {
+          "ci.yml": { dispatchId: 501 },
+          "package-lifecycle.yml": { dispatchId: 502 },
+        },
+        { effectiveSelection: "release:none", pushRequired: false },
+      );
+      expect(noPush.status).toBe(0);
+      expect(noPush.state.dispatches).toEqual([]);
+      expect(noPush.ciBinding).toBeNull();
+      expect(noPush.packageBinding).toBeNull();
+
+      const cancellationPush = runDispatchBindingStep(
+        script,
+        {
+          "ci.yml": { dispatchId: 503 },
+          "package-lifecycle.yml": { dispatchId: 504 },
+        },
+        { effectiveSelection: "release:none", pushRequired: true },
+      );
+      expect(cancellationPush.status).toBe(0);
+      expect(cancellationPush.state.dispatches).toEqual([
+        "ci.yml",
+        "package-lifecycle.yml",
+      ]);
+      expect(cancellationPush.ciBinding).toBe("503");
+      expect(cancellationPush.packageBinding).toBe("504");
+    },
+    15_000,
+  );
 
   test("requires one explicit selection label instead of treating no label as release:none", async () => {
     const workflow = await readWorkflow(".github/workflows/prepare-release.yml");
@@ -317,58 +737,6 @@ describe("trusted release preparation workflow", () => {
     expect(snapshotText).not.toContain("NODE_AUTH_TOKEN");
   });
 
-  test("revalidates exact live state before one compare-and-swap fast-forward ref update and readiness", async () => {
-    const workflow = await readWorkflow(".github/workflows/prepare-release.yml");
-    const mutationText = workflow.jobs.mutate.steps
-      ?.map(step => `${step.name ?? ""}\n${step.run ?? ""}`)
-      .join("\n") ?? "";
-    const gitPushStart = mutationText.indexOf('git -C "$TRUSTED_GIT" push');
-    const gitPushEnd = mutationText.indexOf("\nelse\n", gitPushStart);
-    const gitPushCommand = mutationText.slice(gitPushStart, gitPushEnd);
-
-    expect(mutationText).toContain("cmp --silent release-plan/snapshot.json release-plan/live-snapshot.json");
-    expect(mutationText).toContain("gh auth setup-git");
-    expect(mutationText).toContain("bash release-plan/collect-live.sh");
-    expect(mutationText).toContain("This comparison is unconditional");
-    expect(mutationText.match(/(?:^|\n)\s*release-plan\/collect-live\.sh/g)).toBeNull();
-    expect(mutationText).toContain(
-      "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
-    );
-    expect(mutationText).toContain("GIT_SSH_COMMAND");
-    expect(mutationText).toContain(
-      'git -C "$TRUSTED_GIT" merge-base --is-ancestor "$ORIGINAL_HEAD" "$RESULT_SHA"',
-    );
-    expect(mutationText).toContain(
-      '"--force-with-lease=refs/heads/${RESULT_BRANCH}:${ORIGINAL_HEAD}"',
-    );
-    expect(mutationText).toContain('release-push "$RESULT_SHA:refs/heads/${RESULT_BRANCH}"');
-    expect(gitPushStart).toBeGreaterThanOrEqual(0);
-    expect(gitPushEnd).toBeGreaterThan(gitPushStart);
-    expect(gitPushCommand).not.toMatch(/(?:^|\s)--force(?:\s|$)/);
-    expect(mutationText).not.toContain('+$RESULT_SHA:refs/heads/${RESULT_BRANCH}');
-    expect(mutationText).not.toContain('git/refs/heads/${RESULT_BRANCH}');
-    expect(mutationText).not.toContain("force:true");
-    expect(mutationText).toContain("gh workflow run ci.yml");
-    expect(mutationText).toContain("gh workflow run package-lifecycle.yml");
-    expect(mutationText).toContain("A newer exact-ref workflow_dispatch superseded the bound run");
-    expect(mutationText).toContain("latest_exact_ref_run_id ci.yml");
-    expect(mutationText).toContain("latest_exact_ref_run_id package-lifecycle.yml");
-    expect(mutationText).toContain("require_bound_runs_are_latest");
-    expect(mutationText.lastIndexOf("require_bound_runs_are_latest"))
-      .toBeLessThan(mutationText.lastIndexOf('--add-label release:ready'));
-    expect(mutationText).toContain("release-plan/ci.run-id");
-    expect(mutationText).toContain("release-plan/package.run-id");
-    expect(mutationText).toContain('.event == "workflow_dispatch"');
-    expect(mutationText).toContain(".head_branch == $branch");
-    expect(mutationText).toContain(".created_at >= $since");
-    expect(mutationText).toContain("Release state");
-    expect(mutationText).toContain("RESULT_SHA");
-    expect(mutationText).toContain("release:ready");
-    expect(mutationText.indexOf("This comparison is unconditional"))
-      .toBeLessThan(mutationText.indexOf('git -C "$TRUSTED_GIT" merge-base --is-ancestor'));
-    expect(mutationText.lastIndexOf("revalidate_ready_state"))
-      .toBeLessThan(mutationText.lastIndexOf('--add-label release:ready'));
-  });
 });
 
 describe("immutable prepared-release dispatcher", () => {
