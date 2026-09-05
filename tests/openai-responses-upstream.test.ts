@@ -28,6 +28,47 @@ test("does not forward a relay-local Authorization credential to OpenAI Response
 });
 
 describe("OpenAI Responses upstream body sanitization", () => {
+  test("omits configured sampling parameters from API-key raw bodies without mutating the parsed request", () => {
+    const adapter = createResponsesAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com",
+      authMode: "key",
+      apiKey: "token",
+      noTemperatureModels: ["gpt-6-astra"],
+      noTopPModels: ["gpt-6-astra"],
+    });
+    const parsed = {
+      modelId: "gpt-6-astra",
+      context: { messages: [] },
+      stream: false,
+      options: { temperature: 0.7, topP: 0.9 },
+      _rawBody: {
+        model: "gpt-6-astra",
+        input: [{ role: "user", content: "hello" }],
+        temperature: 0.7,
+        top_p: 0.9,
+        reasoning: { effort: "xhigh" },
+      },
+    };
+    const original = structuredClone(parsed);
+    const request = adapter.buildRequest(parsed);
+    const { temperature, top_p, ...expectedBody } = original._rawBody;
+
+    expect(request.url).toBe("https://api.openai.com/v1/responses");
+    expect(JSON.parse(request.body)).toEqual(expectedBody);
+    expect(parsed).toEqual(original);
+
+    const unrelated = adapter.buildRequest({
+      ...parsed,
+      modelId: "gpt-5.5",
+      _rawBody: { ...parsed._rawBody, model: "gpt-5.5" },
+    });
+    expect(JSON.parse(unrelated.body)).toEqual({
+      ...original._rawBody,
+      model: "gpt-5.5",
+    });
+  });
+
   test("drops raw reasoning input content before native GPT Responses upstream call", () => {
     const adapter = createResponsesAdapter(provider);
     const request = adapter.buildRequest({
