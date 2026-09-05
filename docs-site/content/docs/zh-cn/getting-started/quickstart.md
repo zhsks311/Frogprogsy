@@ -21,7 +21,7 @@ Dashboard 打开后添加第一个 provider。
 
 1. 点击 **Add Provider**。
 2. 选择 built-in provider，或输入 custom OpenAI-compatible endpoint。
-3. 粘贴 API key，或完成 Codex/ChatGPT、xAI、Kimi OAuth 登录。Claude 订阅访问留在 Claude Code 中；多个 Claude home 通过 `frogp claude` 管理。
+3. 粘贴 API key，完成 Codex/ChatGPT、xAI、Kimi OAuth 登录，或通过 `frogp login kiro` 从官方 `kiro-cli` 导入 Kiro。Claude 订阅访问留在 Claude Code 中；多个 Claude home 通过 `frogp claude` 管理。
 4. 确认可用模型，并把这个 provider/model 设为默认值。
 
 如果 provider 有 model-listing endpoint，模型列表会自动 discovery，并与 configured/catalog hint 合并。保存默认 provider/model 后，新 provider 无需重启即可使用。

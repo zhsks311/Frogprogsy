@@ -9,6 +9,7 @@ export { bridgeToMessagesSSE, buildMessageJSON, formatAnthropicErrorResponse } f
 export { createAnthropicAdapter } from "./adapters/anthropic";
 export { createAzureAdapter } from "./adapters/azure";
 export { createGoogleAdapter } from "./adapters/google";
+export { createKiroAdapter } from "./adapters/kiro";
 export { createOpenAIChatAdapter } from "./adapters/openai-chat";
 export { createResponsesAdapter } from "./adapters/openai-responses";
 export { loadConfig, saveConfig } from "./config";

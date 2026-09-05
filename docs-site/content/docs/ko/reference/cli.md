@@ -50,13 +50,14 @@ frogp --version
 
 | Command | Mutates | Effect |
 | --- | --- | --- |
-| `frogp login --list` | 없음 | read-only provider 목록: OAuth 그룹(codex, xai, kimi), API-key 그룹, `openai` 별칭 설명을 출력하고 exit 0. |
+| `frogp login --list` | 없음 | read-only provider 목록: 계정 그룹(codex, xai, kimi, kiro), API-key 그룹, `openai` 별칭 설명을 출력하고 exit 0. |
 | `frogp login codex` | OAuth store, config | OpenAI Codex/ChatGPT OAuth lane을 생성합니다. |
 | `frogp login openai` | config | OpenAI API-key provider를 저장합니다(`openai`는 `openai-apikey`의 별칭이고 ChatGPT 계정 로그인은 `codex`). |
 | `frogp login xai` | OAuth store, config | xAI OAuth lane을 생성합니다. |
 | `frogp login kimi` | OAuth store, config | Kimi OAuth lane을 생성합니다. |
+| `frogp login kiro` | OAuth store, config | 현재 공식 Kiro CLI session을 가져오거나 공식 대화형 `kiro-cli login`을 실행합니다. Native SQLite는 read-only로 유지합니다. |
 | `frogp login <catalog-provider>` | config 또는 OAuth store | Provider registry에 있는 API-key/OAuth/local provider를 추가합니다. 오타가 가까우면 `Did you mean: frogp login <provider>?` 제안이 나오고, OAuth 실패는 raw 스택트레이스 대신 `Login failed for <provider>: <원인>` + 재시도 안내로 보고됩니다. |
-| `frogp logout <provider>` | OAuth store | 해당 provider의 저장 OAuth credential을 제거합니다. 인자가 없거나 로그인돼 있지 않은 provider면 실패하고 현재 저장된 로그인 목록을 보여줍니다. API-key provider 삭제가 아니라 OAuth logout입니다. |
+| `frogp logout <provider>` | OAuth store | 해당 provider의 저장 account credential을 제거하고 실행 중인 relay의 model readiness를 갱신합니다. 인자가 없거나 로그인돼 있지 않은 provider면 실패하고 현재 저장된 로그인 목록을 보여줍니다. API-key provider 삭제 명령이 아닙니다. `frogp logout kiro`는 FrogProgsy 복사본만 제거하고 native Kiro CLI session은 그대로 둡니다. |
 | `frogp local-key list` | 없음 | Relay access key(id, label, request limit)와 relay 인증 활성화 여부를 출력합니다. key 자체는 출력하지 않습니다. |
 | `frogp local-key add <label> [--limit <maxRequests>/<windowSec>]` | config | Relay access key를 만들고 `localAccess`를 활성화하며 평문 key를 한 번만 출력합니다. config에는 SHA-256 hash만 남습니다. 실행 중인 proxy는 시작 시점의 설정을 다시 쓰면서 새 key를 지우기 때문에, 먼저 proxy를 정지해야 합니다. |
 | `frogp local-key remove <id-or-label>` | config | Relay access key 한 개를 제거합니다. 이 명령도 proxy가 정지된 상태여야 합니다. 마지막 key를 제거하면 relay 인증이 비활성화되고, loopback이 아닌 `hostname`은 시작을 거부합니다. |
@@ -64,6 +65,7 @@ frogp --version
 Credential 위치와 노출 규칙:
 
 - OAuth credential은 `~/.frogprogsy/auth.json`에 저장됩니다.
+- Kiro credential은 운영체제별 native Kiro CLI database에서 `~/.frogprogsy/auth.json`으로 복사됩니다. Native database는 read-only이고 social/OIDC refresh path는 서로 fallback하지 않습니다.
 - API-key provider는 `~/.frogprogsy/config.json`에 저장됩니다.
 - 직접 편집할 때는 literal key보다 `${ENV_VAR}` 또는 `$ENV_VAR` reference를 권장합니다.
 - Request log, usage log, dashboard safe log에는 API key, OAuth token, prompt body, account identity를 저장하지 않습니다.

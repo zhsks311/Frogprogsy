@@ -7,6 +7,7 @@ import { suggestClosest } from "../cli-suggest";
 import { sameMachineAccessHeaders } from "../local-access";
 import type { FrogProviderConfig } from "../types";
 import { providerUserSeedFromRegistry } from "../providers/registry";
+import { removeCredential } from "./store";
 
 /** Push the new provider into a running proxy's live config so it routes without a restart. */
 async function notifyRunningProxy(name: string, provider: unknown): Promise<void> {
@@ -24,6 +25,23 @@ async function notifyRunningProxy(name: string, provider: unknown): Promise<void
   } catch {
     /* proxy unreachable; disk config loads on next start */
   }
+}
+
+/** Remove FrogProgsy's stored account copy and refresh a running proxy's readiness-filtered catalog. */
+export async function logoutProvider(name: string): Promise<void> {
+  if (readPid()) {
+    const cfg = loadConfig();
+    try {
+      const res = await fetch(`http://localhost:${cfg.port}/api/oauth/logout?provider=${encodeURIComponent(name)}`, {
+        method: "POST",
+        headers: sameMachineAccessHeaders(),
+      });
+      if (res.ok) return;
+    } catch {
+      // The credential store remains authoritative when the recorded process is unreachable.
+    }
+  }
+  removeCredential(name);
 }
 const KEY_LOGIN_ALIASES: Record<string, string> = {
   // Users type "frogp login openai" naturally. Keep that as API-key OpenAI;
@@ -52,7 +70,7 @@ export function loginProviderGroups(): { oauth: string[]; key: string[]; suggest
 export function formatLoginProviderGroups(): string {
   const groups = loginProviderGroups();
   return (
-    `  OAuth login:   ${groups.oauth.join(", ")}\n` +
+    `  Account login: ${groups.oauth.join(", ")}\n` +
     `  API-key login: ${groups.key.join(", ")}\n` +
     `  Alias:         ${groups.openaiAlias}`
   );
@@ -90,7 +108,8 @@ export async function handleLogin(provider?: string): Promise<void> {
 }
 
 async function handleOAuthLogin(name: string): Promise<void> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const browserOwned = OAUTH_PROVIDERS[name]?.loginMode === "browser";
+  const rl = browserOwned ? readline.createInterface({ input: process.stdin, output: process.stdout }) : undefined;
   let loginError: unknown;
   try {
     await runLogin(name, {
@@ -100,13 +119,15 @@ async function handleOAuthLogin(name: string): Promise<void> {
         openUrl(url);
       },
       onProgress: (m) => console.log(`   ${m}`),
-      onManualCodeInput: () =>
-        new Promise((res) => rl.question("Paste redirect URL or code (or wait for browser): ", res)),
+      ...(rl ? {
+        onManualCodeInput: () =>
+          new Promise<string>((res) => rl.question("Paste redirect URL or code (or wait for browser): ", res)),
+      } : {}),
     });
   } catch (err) {
     loginError = err;
   } finally {
-    rl.close();
+    rl?.close();
   }
   if (loginError) {
     console.error(formatLoginFailure(name, loginError));

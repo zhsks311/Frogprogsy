@@ -92,6 +92,7 @@ OAuth accounts live in `~/.frogprogsy/auth.json` and refresh before expiry. Clau
 frogp login codex        # ChatGPT/Codex account, routed through the Codex backend
 frogp login xai          # xAI Grok
 frogp login kimi         # Moonshot Kimi
+frogp login kiro         # import or start the official Kiro CLI login
 frogp logout <provider>
 ```
 
@@ -100,6 +101,10 @@ frogp logout <provider>
 | `codex` | `openai-responses` route to `https://chatgpt.com/backend-api/codex` | Claude Messages requests become Codex Responses calls without changing Claude Code. |
 | `xai` | `openai-chat` route to `https://api.x.ai/v1` | Grok model quirks, including unsupported reasoning params, are handled at the adapter boundary. |
 | `kimi` | `openai-chat` route to `https://api.kimi.com/coding/v1` | Kimi coding models join the same FrogProgsy catalog. |
+| `kiro` | `kiro` adapter route to the credential region's Kiro runtime | Claude Messages, tool calls, images, and binary event streams use an explicit Kiro model id. |
+
+
+Kiro sign-in is terminal-owned. Install the official `kiro-cli`, sign in with `kiro-cli login`, then run `frogp login kiro`; if no current native session exists, FrogProgsy starts that same official login command. FrogProgsy reads the platform-native Kiro SQLite database read-only, copies the resulting session into its own mode-restricted `auth.json`, and refreshes social and OIDC sessions through their distinct provider endpoints. `frogp logout kiro` removes only FrogProgsy's copy and never runs `kiro-cli logout` or modifies Kiro's database. The dashboard reports stored-login state and terminal guidance; it does not claim a live connectivity probe, because Kiro exposes no non-billable runtime probe on this route. Select models as explicit routes such as `kiro/claude-sonnet-4.6` or `kiro/gpt-5.6-sol`; FrogProgsy never substitutes `auto` or another provider silently.
 
 Normal OpenAI API-key billing is separate from ChatGPT/Codex OAuth.
 

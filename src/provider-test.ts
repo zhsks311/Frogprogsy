@@ -143,6 +143,16 @@ export async function testProviderConnection(name: string, provider: FrogProvide
       };
     }
   }
+  if (provider.adapter === "kiro") {
+    return {
+      ...resultBase,
+      ok: false,
+      status: "skipped",
+      code: "probe_unavailable",
+      message: "Kiro does not expose a non-billable runtime connectivity probe; stored-login status is available separately.",
+    };
+  }
+
 
   const request = buildModelsRequest(provider, apiKey);
   const secrets = collectProviderSecrets(provider, [apiKey ?? "", ...Object.values(request.headers)]);

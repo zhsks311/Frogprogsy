@@ -92,9 +92,22 @@ Trust is per request, not per network position. `src/local-access.ts` owns relay
 | `src/adapters/anthropic.ts` | Anthropic Messages bridge. |
 | `src/adapters/google.ts` | Gemini bridge. |
 | `src/adapters/azure.ts` | Azure OpenAI bridge. |
+| `src/adapters/kiro.ts` | Kiro `GenerateAssistantResponse` request mapping and checksummed AWS binary event-stream bridge. |
 
 Adapter output must stay in internal `AdapterEvent` form until `messages/bridge.ts` converts it back to
 Anthropic Messages SSE for Claude Code.
+
+Kiro is an explicit account-backed provider, not an OpenAI-compatible alias. `frogp login kiro` imports a
+current official Kiro CLI session or starts `kiro-cli login`; the native platform SQLite database is always
+read-only. FrogProgsy stores its own copied access/refresh state in the mode-restricted OAuth store. Social
+sessions refresh only through Kiro Desktop auth; OIDC sessions refresh only through AWS CreateToken using the
+read-only native device registration. Neither path falls back to the other, and `frogp logout kiro` removes only
+the FrogProgsy copy. Request auth adds region/profile metadata only to the resolved request-scoped provider copy.
+
+The Kiro adapter sends the exact selected model id to the credential profile's region. It maps Claude Messages
+history, images, tools, and results into Kiro conversation entries; removes only source-verified unsupported JSON
+Schema fields; validates AWS event-stream framing/checksums; preserves partial tool JSON; and turns malformed,
+exception, outputless, or unfinished-tool streams into terminal `AdapterEvent` errors without `done`.
 
 OpenAI Chat has no portable `is_error` member on `role:"tool"` messages. Failed Claude tool results use
 the fixed wire-visible prefix `[frogprogsy: tool_result is_error=true]\n`; successful result content is

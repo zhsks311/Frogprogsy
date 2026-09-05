@@ -5,7 +5,23 @@ export type OAuthCredentials = {
   expires: number; // epoch ms (already skew-adjusted by the provider flow)
   email?: string;
   accountId?: string;
+  providerMetadata?: OAuthProviderMetadata;
 };
+
+export interface KiroOAuthMetadata {
+  source: "kiro-cli";
+  authType: "social" | "oidc";
+  /** Runtime region derived from the CodeWhisperer profile ARN. */
+  region: string;
+  /** OIDC refresh region may differ from the runtime region. */
+  ssoRegion?: string;
+  profileArn: string;
+}
+
+export interface OAuthProviderMetadata {
+  kiro?: KiroOAuthMetadata;
+}
+
 
 export interface OAuthController {
   onAuth?(info: { url: string; instructions?: string; code?: string }): void;

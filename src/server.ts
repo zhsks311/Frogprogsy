@@ -5,6 +5,7 @@ import { createAnthropicAdapter } from "./adapters/anthropic";
 import { createAzureAdapter } from "./adapters/azure";
 import { createGoogleAdapter } from "./adapters/google";
 import { createOpenAIChatAdapter } from "./adapters/openai-chat";
+import { createKiroAdapter } from "./adapters/kiro";
 import { createResponsesAdapter } from "./adapters/openai-responses";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import { bridgeToMessagesSSE, buildMessageJSON, formatAnthropicErrorResponse } from "./messages/bridge";
@@ -25,7 +26,7 @@ import { signalWithTimeout } from "./abort";
 import { debugSwallowed } from "./debug";
 import {
   clearLoginState, getLoginStatus, isOAuthProvider,
-  listOAuthProviders, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
+  listOAuthProviders, oauthProviderLoginModes, restoreCredentialedOAuthProviderConfigs, startLoginFlow, upsertOAuthProvider,
 } from "./oauth/index";
 import { isAllowedClaudeGrantBaseUrl, resolveProviderAuth } from "./provider-auth";
 import { authorizeLocalAccess, generateLocalAccessSecret, isLocalAccessEnabled, isLocalAccessSecret, LOCAL_ACCESS_HEADER, localAccessConfigIssue, registerLocalAccessKeys, setRuntimeAccessToken, type LocalAccessDenied } from "./local-access";
@@ -227,6 +228,8 @@ export function resolveAdapter(providerConfig: FrogProviderConfig) {
     case "azure":
     case "azure-openai":
       return createAzureAdapter(providerConfig);
+    case "kiro":
+      return createKiroAdapter(providerConfig);
     default:
       throw new Error(`Unknown adapter: ${providerConfig.adapter}`);
   }
@@ -4858,9 +4861,9 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     return jsonResponse({ ok: true, disabled });
   }
 
-  // Which providers support real OAuth login (drives the GUI's "Log in with …" buttons).
+  // Account-managed providers and the surface that owns each interactive login flow.
   if (url.pathname === "/api/oauth/providers" && req.method === "GET") {
-    return jsonResponse({ providers: listOAuthProviders() });
+    return jsonResponse({ providers: listOAuthProviders(), loginModes: oauthProviderLoginModes() });
   }
 
   // API-key "login" providers (open dashboard → paste key). Drives the GUI's key-provider picker.
@@ -4908,6 +4911,9 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     const body = await req.json().catch(() => ({})) as { provider?: string; restart?: boolean };
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
+    if (oauthProviderLoginModes()[provider] === "cli") {
+      return jsonResponse({ error: "terminal_login_required", command: `frogp login ${provider}` }, 409);
+    }
     try {
       const { url: authUrl, instructions } = await startLoginFlow(provider, {
         onComplete: async () => {

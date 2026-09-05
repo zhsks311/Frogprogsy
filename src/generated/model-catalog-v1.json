@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "catalogRevision": 3,
-  "catalogDigest": "cc98df40af3faeefd140d1091782b08fc78f66d93943d1f288c2a91047915ed1",
-  "sourceCommit": "2411cf7bd16ca29211ced6530a40a399ad81b4da",
-  "generatedAt": "2026-08-19T18:16:21+09:00",
+  "catalogRevision": 4,
+  "catalogDigest": "03a04ddabd28ee68c1720be23880aa08486a68e875a379294cb2ee7fa18bd556",
+  "sourceCommit": "fe1b9d4d2bfc5ea0b770067d5b5a6aea205d1eb2",
+  "generatedAt": "2026-08-28T18:10:59+09:00",
   "minFrogprogsyVersion": "0.0.2-preview.2",
   "providers": [
     {
@@ -684,6 +684,158 @@
           "reasoningEfforts": [],
           "noReasoning": true,
           "preserveReasoningContent": true
+        }
+      ]
+    },
+    {
+      "id": "kiro",
+      "defaultModel": "claude-sonnet-4.6",
+      "models": [
+        {
+          "id": "auto",
+          "contextWindow": 200000,
+          "inputModalities": [
+            "text"
+          ]
+        },
+        {
+          "id": "claude-haiku-4.5",
+          "contextWindow": 200000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "claude-opus-4.5",
+          "contextWindow": 200000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "claude-opus-4.6",
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "claude-opus-4.7",
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "claude-opus-4.8",
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "claude-opus-5",
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "claude-sonnet-4",
+          "contextWindow": 200000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "claude-sonnet-4.5",
+          "contextWindow": 200000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "claude-sonnet-4.6",
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "claude-sonnet-5",
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "deepseek-3.2",
+          "contextWindow": 128000,
+          "inputModalities": [
+            "text"
+          ]
+        },
+        {
+          "id": "glm-5",
+          "contextWindow": 200000,
+          "inputModalities": [
+            "text"
+          ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "contextWindow": 272000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "contextWindow": 272000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "contextWindow": 272000,
+          "inputModalities": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "minimax-m2.1",
+          "contextWindow": 200000,
+          "inputModalities": [
+            "text"
+          ]
+        },
+        {
+          "id": "minimax-m2.5",
+          "contextWindow": 200000,
+          "inputModalities": [
+            "text"
+          ]
+        },
+        {
+          "id": "qwen3-coder-next",
+          "contextWindow": 256000,
+          "inputModalities": [
+            "text"
+          ]
         }
       ]
     },

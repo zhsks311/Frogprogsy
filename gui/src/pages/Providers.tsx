@@ -14,10 +14,11 @@ interface Config {
 }
 
 interface OAuthStatus { loggedIn: boolean; error?: string }
+type OAuthLoginMode = "browser" | "cli";
 interface LoginInfo { provider: string; url?: string; instructions?: string; code?: string; copied?: boolean; copyFailed?: boolean }
 interface ProviderTestResult { ok: boolean; code: ProviderTestCode; provider: string; model?: string; upstreamStatus?: number; durationMs?: number }
-type ProviderTestCode = "ok" | "unknown_provider" | "model_missing" | "auth_missing" | "timeout" | "request_failed" | "provider_non_2xx" | "bridge_parse_error";
-const PROVIDER_TEST_CODE_KEYS: Record<ProviderTestCode, "prov.testCode.ok" | "prov.testCode.unknownProvider" | "prov.testCode.modelMissing" | "prov.testCode.authMissing" | "prov.testCode.timeout" | "prov.testCode.requestFailed" | "prov.testCode.providerNon2xx" | "prov.testCode.bridgeParseError"> = {
+type ProviderTestCode = "ok" | "unknown_provider" | "model_missing" | "auth_missing" | "timeout" | "request_failed" | "provider_non_2xx" | "bridge_parse_error" | "probe_unavailable";
+const PROVIDER_TEST_CODE_KEYS: Record<ProviderTestCode, "prov.testCode.ok" | "prov.testCode.unknownProvider" | "prov.testCode.modelMissing" | "prov.testCode.authMissing" | "prov.testCode.timeout" | "prov.testCode.requestFailed" | "prov.testCode.providerNon2xx" | "prov.testCode.bridgeParseError" | "prov.testCode.probeUnavailable"> = {
   ok: "prov.testCode.ok",
   unknown_provider: "prov.testCode.unknownProvider",
   model_missing: "prov.testCode.modelMissing",
@@ -26,6 +27,7 @@ const PROVIDER_TEST_CODE_KEYS: Record<ProviderTestCode, "prov.testCode.ok" | "pr
   request_failed: "prov.testCode.requestFailed",
   provider_non_2xx: "prov.testCode.providerNon2xx",
   bridge_parse_error: "prov.testCode.bridgeParseError",
+  probe_unavailable: "prov.testCode.probeUnavailable",
 };
 
 // Friendly labels for the OAuth providers the proxy supports.
@@ -33,6 +35,7 @@ const OAUTH_LABELS: Record<string, string> = {
   codex: "OpenAI Codex (ChatGPT)",
   xai: "xAI (Grok)",
   kimi: "Kimi (Moonshot)",
+  kiro: "Kiro",
 };
 const oauthLabel = (id: string) => OAUTH_LABELS[id] ?? id;
 function extractDeviceCode(data: { code?: unknown; instructions?: unknown }): string | undefined {
@@ -133,6 +136,7 @@ export default function Providers({ apiBase, target }: { apiBase: string; target
   const [status, setStatus] = useState("");
   const [statusOk, setStatusOk] = useState(false);
   const [oauthProviders, setOauthProviders] = useState<string[]>([]);
+  const [oauthLoginModes, setOauthLoginModes] = useState<Record<string, OAuthLoginMode>>({});
   const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [loginInfo, setLoginInfo] = useState<LoginInfo | null>(null);
@@ -210,11 +214,16 @@ export default function Providers({ apiBase, target }: { apiBase: string; target
     }
   };
 
-  // Load the list of OAuth-capable providers, then each one's login status.
+  // Load account-managed providers, their login owner, and each stored-login status.
   const fetchOauth = async () => {
     try {
-      const provs: string[] = (await fetch(`${apiBase}/api/oauth/providers`).then(r => r.json())).providers ?? [];
+      const payload = await fetch(`${apiBase}/api/oauth/providers`).then(r => r.json()) as {
+        providers?: string[];
+        loginModes?: Record<string, OAuthLoginMode>;
+      };
+      const provs = payload.providers ?? [];
       setOauthProviders(provs);
+      setOauthLoginModes(payload.loginModes ?? {});
       const entries = await Promise.all(provs.map(async p => {
         const s = await fetch(`${apiBase}/api/oauth/status?provider=${p}`).then(r => r.json()).catch(() => ({ loggedIn: false }));
         return [p, s] as const;
@@ -445,6 +454,10 @@ export default function Providers({ apiBase, target }: { apiBase: string; target
                   </span>
                   {displayState.canLogout ? (
                     <button className="btn btn-ghost btn-sm" onClick={() => logoutOAuth(p)}>{t("prov.logout")}</button>
+                  ) : !displayState.connected && oauthLoginModes[p] === "cli" ? (
+                    <span className="muted" style={{ fontSize: 13 }}>
+                      {t("prov.terminalLogin", { cmd: `frogp login ${p}` })}
+                    </span>
                   ) : !displayState.connected ? (
                     <button className="btn btn-primary btn-sm" onClick={() => loginOAuth(p)} disabled={isBusy}>
                       {isBusy ? <><span className="spin" />{t("prov.waitingBrowser")}</> : <><IconLock />{t("prov.loginWith", { provider: oauthLabel(p) })}</>}

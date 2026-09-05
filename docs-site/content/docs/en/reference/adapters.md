@@ -37,6 +37,7 @@ Every adapter must keep streaming and non-streaming output semantically equivale
 | `anthropic` | `/v1/messages` | `key`, `forward` | Claude-native Messages, pass-through auth boundaries, extended-thinking token budget, and tool-name compatibility. |
 | `google` | Gemini `generateContent` / `streamGenerateContent` | `key` | Gemini contents/parts, inline image conversion, and synthetic tool-call ids. |
 | `azure-openai` | Azure OpenAI Responses-compatible endpoint | `key` | Azure API-key header and `api-version` query handling. `azure` is a legacy alias. |
+| `kiro` | Kiro `GenerateAssistantResponse` binary event stream | `oauth` | Explicit model routing, Kiro conversation/tool/image mapping, and AWS event-stream decoding. |
 
 ## Common invariants
 
@@ -45,6 +46,15 @@ Every adapter must keep streaming and non-streaming output semantically equivale
 - Tool namespace paths are flattened with `namespacedToolName(namespace, name)` and restored on the return path.
 - Provider-rejected options are removed or lowered by provider/model gates. Unsupported values are not sent unchanged.
 - Claude Code ingress is Anthropic Messages. FrogProgsy does not advertise `/v1/responses` as a Claude Code-facing public ingress.
+
+## `kiro`: Kiro runtime lane
+
+The Kiro adapter targets the credential profile's exact region and sends the explicitly selected wire model id. It never guesses a family alias, substitutes `auto`, or falls back to another provider.
+
+- Claude Messages history becomes alternating Kiro `userInputMessage` and `assistantResponseMessage` entries. Images stay on `userInputMessage`.
+- Tools use namespace-safe names. The adapter removes only source-verified unsupported JSON Schema fields (`additionalProperties` and empty `required` arrays), preserves partial tool-input JSON as incremental `input_json_delta`, and closes each tool block before the next starts.
+- AWS binary event-stream prelude/message checksums and frame boundaries are validated. Truncated frames, inline exceptions, malformed payloads, unfinished tool calls, and outputless completion become terminal errors without a normal `message_stop`.
+- Request-scoped auth contains the copied bearer, profile ARN, and runtime region only. It is stripped from persisted/provider API shapes and never crosses into another auth mode.
 
 ## `openai-chat`: compatible chat lane
 

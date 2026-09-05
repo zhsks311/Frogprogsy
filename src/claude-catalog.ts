@@ -607,6 +607,9 @@ async function fetchProviderModels(name: string, prov: FrogProviderConfig, ttlMs
   if (prov.liveModels === false) {
     return markReady(configured);
   }
+  // Kiro's current runtime endpoint has no model-list API. Registry/catalog models remain explicit
+  // and auth-gated; never fabricate `/models` or silently substitute another provider's catalog.
+  if (prov.adapter === "kiro") return markReady(configured);
   const fresh = getFreshCached(name, ttlMs);
   if (fresh) {
     return markReady(mergeLiveAndConfiguredModels(name, prov, managedIds, fresh, configured));

@@ -41,6 +41,26 @@ describe("provider registry parity", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  test("Kiro account catalog uses the current explicit wire ids and capability metadata", () => {
+    const kiro = PROVIDER_REGISTRY.find(entry => entry.id === "kiro");
+    expect(kiro).toMatchObject({
+      adapter: "kiro",
+      authKind: "oauth",
+      oauthId: "kiro",
+      defaultModel: "claude-sonnet-4.6",
+    });
+    expect(kiro?.models).toEqual([
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "auto",
+      "claude-opus-5", "claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-opus-4.5",
+      "claude-sonnet-5", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5",
+      "minimax-m2.5", "glm-5", "deepseek-3.2", "minimax-m2.1", "qwen3-coder-next",
+    ]);
+    expect(kiro?.modelContextWindows?.["claude-opus-5"]).toBe(1_000_000);
+    expect(kiro?.modelContextWindows?.["gpt-5.6-sol"]).toBe(272_000);
+    expect(kiro?.modelCapabilities?.["claude-sonnet-5"]?.input).toEqual(["text", "image"]);
+    expect(kiro?.modelCapabilities?.["glm-5"]?.input).toEqual(["text"]);
+  });
+
   test("key-login export is derived from the registry", () => {
     expect(KEY_LOGIN_PROVIDERS).toEqual(deriveKeyLoginMap());
     expect(Object.keys(KEY_LOGIN_PROVIDERS)).toEqual(EXPECTED_KEY_PROVIDER_IDS);

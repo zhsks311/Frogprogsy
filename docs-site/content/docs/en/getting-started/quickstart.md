@@ -21,7 +21,7 @@ When the dashboard opens, add the first provider.
 
 1. Select **Add Provider**.
 2. Choose a built-in provider or enter a custom OpenAI-compatible endpoint.
-3. Paste an API key or complete Codex/ChatGPT, xAI, or Kimi OAuth login. Claude subscription access stays in Claude Code; manage multiple Claude homes with `frogp claude`.
+3. Paste an API key, complete Codex/ChatGPT, xAI, or Kimi OAuth login, or import Kiro from the official `kiro-cli` with `frogp login kiro`. Claude subscription access stays in Claude Code; manage multiple Claude homes with `frogp claude`.
 4. Review the available models and make this provider/model the default.
 
 Model lists are discovered automatically when the provider has a model-listing endpoint, then merged with configured/catalog hints. After you save the default provider/model, the new provider is available without restarting the relay.
