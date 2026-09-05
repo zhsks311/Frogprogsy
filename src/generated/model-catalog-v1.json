@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "catalogRevision": 3,
-  "catalogDigest": "cc98df40af3faeefd140d1091782b08fc78f66d93943d1f288c2a91047915ed1",
-  "sourceCommit": "2411cf7bd16ca29211ced6530a40a399ad81b4da",
-  "generatedAt": "2026-08-19T18:16:21+09:00",
+  "catalogRevision": 4,
+  "catalogDigest": "c53fd62b760a916d60f8819ae1a39e2f287a6730e9754316c51d9f8f76ccd1a3",
+  "sourceCommit": "05465bbccb01cad46c0c14b0028963bd00c7e99f",
+  "generatedAt": "2026-09-06T04:36:15+09:00",
   "minFrogprogsyVersion": "0.0.2-preview.2",
   "providers": [
     {
@@ -41,6 +41,24 @@
           ],
           "noTemperature": true,
           "noTopP": true
+        },
+        {
+          "id": "claude-fable-5-1",
+          "minFrogprogsyVersion": "0.0.7",
+          "contextWindow": 1000000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "noTemperature": true,
+          "noTopP": true,
+          "autoToolChoiceOnly": true
         },
         {
           "id": "claude-haiku-4-5",
@@ -174,40 +192,16 @@
     {
       "id": "codex",
       "defaultModel": "gpt-5.6-sol",
+      "retiredModels": [
+        "gpt-5.4",
+        "gpt-5.4-mini"
+      ],
       "models": [
         {
           "id": "gpt-5.3-codex-spark",
           "contextWindow": 128000,
           "inputModalities": [
             "text"
-          ],
-          "reasoningEfforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh"
-          ]
-        },
-        {
-          "id": "gpt-5.4",
-          "contextWindow": 1000000,
-          "inputModalities": [
-            "text",
-            "image"
-          ],
-          "reasoningEfforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh"
-          ]
-        },
-        {
-          "id": "gpt-5.4-mini",
-          "contextWindow": 272000,
-          "inputModalities": [
-            "text",
-            "image"
           ],
           "reasoningEfforts": [
             "low",
@@ -260,6 +254,20 @@
         },
         {
           "id": "gpt-5.6-terra",
+          "contextWindow": 872000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        },
+        {
+          "id": "gpt-6-astra",
           "contextWindow": 872000,
           "inputModalities": [
             "text",
@@ -1212,6 +1220,65 @@
             "high",
             "xhigh"
           ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "contextWindow": 1050000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "contextWindow": 1050000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "contextWindow": 1050000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        },
+        {
+          "id": "gpt-6-astra",
+          "minFrogprogsyVersion": "0.0.7",
+          "contextWindow": 1050000,
+          "inputModalities": [
+            "text",
+            "image"
+          ],
+          "reasoningEfforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "noTemperature": true,
+          "noTopP": true
         }
       ]
     },
