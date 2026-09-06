@@ -961,28 +961,33 @@ jobs:
             local created_after="$2"
             gh api -X GET "repos/${REPOSITORY}/actions/workflows/${workflow}/runs" \
               -f event=workflow_dispatch -f branch="$RESULT_BRANCH" -f per_page=100 |
-              jq -r --arg sha "$RESULT_SHA" --arg branch "$RESULT_BRANCH" \
+              jq -sr --arg sha "$RESULT_SHA" --arg branch "$RESULT_BRANCH" \
                 --arg since "$created_after" '
-                if (.workflow_runs | type) != "array" then
-                  error("workflow runs response is not an array")
+                if length != 1 then
+                  error("workflow runs response must contain exactly one JSON document")
                 else
-                  [.workflow_runs[]
-                    | select(
-                        .event == "workflow_dispatch"
-                        and .head_sha == $sha
-                        and .head_branch == $branch
-                        and ($since == "" or .created_at >= $since)
-                      )]
-                  | sort_by(.created_at, .id)
-                  | if length == 0 then
-                      empty
-                    elif (last.id | type) == "number"
-                      and last.id > 0
-                      and last.id == (last.id | floor)
-                    then
-                      last.id
+                  .[0]
+                  | if (.workflow_runs | type) != "array" then
+                      error("workflow runs response is not an array")
                     else
-                      error("newest matching workflow run has an invalid id")
+                      [.workflow_runs[]
+                        | select(
+                            .event == "workflow_dispatch"
+                            and .head_sha == $sha
+                            and .head_branch == $branch
+                            and ($since == "" or .created_at >= $since)
+                          )]
+                      | sort_by(.created_at, .id)
+                      | if length == 0 then
+                          empty
+                        elif (last.id | type) == "number"
+                          and last.id > 0
+                          and last.id == (last.id | floor)
+                        then
+                          last.id
+                        else
+                          error("newest matching workflow run has an invalid id")
+                        end
                     end
                 end'
           }

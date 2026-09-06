@@ -76,8 +76,8 @@ interface FakeWorkflowState {
   runs?: Array<Record<string, unknown>>;
   dispatchId: number;
   visibilityDelay?: number;
-  failureMode?: "api" | "json";
-  postDispatchFailureMode?: "api" | "json";
+  failureMode?: "api" | "json" | "empty" | "whitespace" | "multiple";
+  postDispatchFailureMode?: "api" | "json" | "empty" | "whitespace" | "multiple";
   postDispatchFailureInjected?: boolean;
   dispatched?: boolean;
   searches?: number;
@@ -201,6 +201,20 @@ if (args[0] === "api" && runsPath) {
   if (failureMode === "json") {
     await save();
     process.stdout.write("{");
+    process.exit(0);
+  }
+  if (failureMode === "empty") {
+    await save();
+    process.exit(0);
+  }
+  if (failureMode === "whitespace") {
+    await save();
+    process.stdout.write(" \n");
+    process.exit(0);
+  }
+  if (failureMode === "multiple") {
+    await save();
+    process.stdout.write('{"workflow_runs":[]}\n{"workflow_runs":[]}\n');
     process.exit(0);
   }
   const runs = [...(workflowState.runs || [])];
@@ -450,10 +464,10 @@ describe("trusted release preparation workflow", () => {
   );
 
   test.skipIf(process.platform === "win32")(
-    "fails closed on workflow-run API and JSON errors instead of dispatching",
+    "fails closed on workflow-run API and malformed response errors instead of dispatching",
     async () => {
       const script = await readDispatchBindingScript();
-      for (const failureMode of ["api", "json"] as const) {
+      for (const failureMode of ["api", "json", "empty", "whitespace", "multiple"] as const) {
         const result = runDispatchBindingStep(script, {
           "ci.yml": { dispatchId: 401, failureMode },
           "package-lifecycle.yml": { dispatchId: 402 },
@@ -467,10 +481,10 @@ describe("trusted release preparation workflow", () => {
   );
 
   test.skipIf(process.platform === "win32")(
-    "fails immediately when the first post-dispatch visibility query errors",
+    "fails immediately when the first post-dispatch visibility response is invalid",
     async () => {
       const script = await readDispatchBindingScript();
-      for (const postDispatchFailureMode of ["api", "json"] as const) {
+      for (const postDispatchFailureMode of ["api", "json", "empty", "whitespace"] as const) {
         const result = runDispatchBindingStep(script, {
           "ci.yml": {
             dispatchId: 451,
