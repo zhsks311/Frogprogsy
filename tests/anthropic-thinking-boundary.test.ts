@@ -78,6 +78,7 @@ describe("Anthropic explicit model effort and request restrictions", () => {
   const model = "claude-fable-5-1";
   const adaptiveProvider: FrogProviderConfig = {
     ...provider,
+    catalogProviderId: "anthropic",
     modelReasoningEfforts: { [model]: ["low", "medium", "high", "xhigh"] },
     noTemperatureModels: [model],
     noTopPModels: [model],
@@ -141,7 +142,7 @@ describe("Anthropic explicit model effort and request restrictions", () => {
       max_tokens: 20,
       thinking: { type: "enabled", budget_tokens: 24_576 },
     }, {
-      ...provider,
+      ...adaptiveProvider,
       modelReasoningEfforts: { [model]: ["high", "xhigh"] },
       modelReasoningEffortMap: { [model]: { xhigh: "max" } },
     });
@@ -158,6 +159,16 @@ describe("Anthropic explicit model effort and request restrictions", () => {
     }, { ...adaptiveProvider, modelReasoningEfforts: { [model]: [] } });
     expect(body).not.toHaveProperty("output_config");
     expect(body).not.toHaveProperty("thinking");
+  });
+
+  test("does not infer the adaptive protocol for a custom provider or suffix model", () => {
+    const request = { max_tokens: 8192, thinking: { type: "enabled", budget_tokens: 4096 } };
+    const custom = buildBody({ ...request, model }, { ...adaptiveProvider, catalogProviderId: undefined });
+    const suffix = buildBody({ ...request, model: `${model}:custom` }, adaptiveProvider);
+    for (const body of [custom, suffix]) {
+      expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+      expect(body).not.toHaveProperty("output_config");
+    }
   });
 
   test("provider-wide efforts and a neighboring model's restrictions do not change legacy requests", () => {

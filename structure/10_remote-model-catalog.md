@@ -187,11 +187,12 @@ Invitation-only Mythos 5.1 is not added to the general managed inventory. The
 [parameter deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations)
 require these request constraints:
 
-- Fable 5.1 uses always-on adaptive thinking. The registry's bundled, exact
-  `ANTHROPIC_ADAPTIVE_THINKING_MODELS` list selects `output_config.effort`, leaving thinking at
+- Fable 5.1 uses always-on adaptive thinking. Only the managed `anthropic` catalog provider
+  and an exact ID in the bundled `ANTHROPIC_ADAPTIVE_THINKING_MODELS` list select `output_config.effort`, leaving thinking at
   the provider default instead of sending a legacy manual budget. Effort-tier metadata alone
   does not select a wire dialect: other models, including Umans, retain the existing budget path.
   This protocol list is not a new catalog v1 field, so older strict-schema readers remain compatible.
+  Custom providers and colon-suffixed IDs do not inherit the native provider's wire dialect.
 - Messages `output_config.effort` takes precedence over the legacy thinking-budget-derived level.
 - Fable 5.1 rejects forced/named tool choice; the maintained restriction normalizes it to `auto`
   while preserving `none`.

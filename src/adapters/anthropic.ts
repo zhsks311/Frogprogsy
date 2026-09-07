@@ -364,7 +364,8 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
       }
       if (parsed.options.stopSequences) body.stop_sequences = parsed.options.stopSequences;
 
-      if (modelInList(ANTHROPIC_ADAPTIVE_THINKING_MODELS, parsed.modelId)) {
+      if (provider.catalogProviderId === "anthropic"
+        && ANTHROPIC_ADAPTIVE_THINKING_MODELS.includes(parsed.modelId)) {
         // These exact verified models use adaptive thinking by default. Effort tiers alone
         // do not establish that wire dialect for other Anthropic-compatible providers.
         const effort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);

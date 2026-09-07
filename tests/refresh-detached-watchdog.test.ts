@@ -99,6 +99,11 @@ function waitForGateChildPid(gatePath: string): Promise<number> {
     watcher.close();
     reject(error);
   });
+  const readyPid = currentPid();
+  if (readyPid !== null) {
+    watcher.close();
+    resolve(readyPid);
+  }
   return promise;
 }
 describe("frogp refresh detached lifecycle", () => {
