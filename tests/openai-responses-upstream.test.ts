@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createResponsesAdapter } from "../src/adapters/openai-responses";
 import { __resetLocalAccessRegistry, setRuntimeAccessToken } from "../src/local-access";
+import { parseMessagesRequest } from "../src/messages/parser";
 
 const provider = {
   adapter: "openai-responses",
@@ -28,6 +29,33 @@ test("does not forward a relay-local Authorization credential to OpenAI Response
 });
 
 describe("OpenAI Responses upstream body sanitization", () => {
+  test("maps Messages effort through the selected model before sending Responses", () => {
+    const config = {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com",
+      modelReasoningEfforts: { "gpt-test": ["low", "medium", "high"] },
+    };
+    const parsed = parseMessagesRequest({
+      model: "gpt-test",
+      messages: [{ role: "user", content: "Explain quicksort." }],
+      output_config: { effort: "max" },
+    });
+    const original = structuredClone(parsed);
+    const request = createResponsesAdapter(config).buildRequest(parsed);
+    expect(JSON.parse(request.body).reasoning).toEqual({ effort: "high", summary: "auto" });
+    expect(parsed).toEqual(original);
+
+    const unsupported = createResponsesAdapter({ ...config, noReasoningModels: ["gpt-test"] }).buildRequest(parsed);
+    expect(JSON.parse(unsupported.body)).not.toHaveProperty("reasoning");
+
+    const invalid = parseMessagesRequest({
+      model: "gpt-test",
+      messages: [{ role: "user", content: "Explain quicksort." }],
+      output_config: { effort: "invalid-effort" },
+    });
+    expect(JSON.parse(createResponsesAdapter(config).buildRequest(invalid).body)).not.toHaveProperty("reasoning");
+  });
+
   test("omits configured sampling parameters from API-key raw bodies without mutating the parsed request", () => {
     const adapter = createResponsesAdapter({
       adapter: "openai-responses",
@@ -47,7 +75,7 @@ describe("OpenAI Responses upstream body sanitization", () => {
         input: [{ role: "user", content: "hello" }],
         temperature: 0.7,
         top_p: 0.9,
-        reasoning: { effort: "xhigh" },
+        reasoning: { effort: "none" },
       },
     };
     const original = structuredClone(parsed);

@@ -171,16 +171,16 @@ describe("Anthropic explicit model effort and request restrictions", () => {
     }
   });
 
-  test("provider-wide efforts and a neighboring model's restrictions do not change legacy requests", () => {
-    const legacyProvider = { ...adaptiveProvider, reasoningEfforts: ["low"] };
+  test("uses adaptive thinking for managed Fable 5 without borrowing Fable 5.1 restrictions", () => {
+    const fableProvider = { ...adaptiveProvider, reasoningEfforts: ["low"] };
     const body = buildBody({
       model: "claude-fable-5",
       max_tokens: 32_000,
       thinking: { type: "enabled", budget_tokens: 16_384 },
-    }, legacyProvider);
-    expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 16_384 });
+    }, fableProvider);
+    expect(body).not.toHaveProperty("thinking");
     expect(body.max_tokens).toBe(32_000);
-    expect(body).not.toHaveProperty("output_config");
+    expect(body.output_config).toEqual({ effort: "low" });
 
     const nonThinkingBody = buildBody({
       model: "claude-fable-5",
@@ -188,7 +188,7 @@ describe("Anthropic explicit model effort and request restrictions", () => {
       top_p: 0.9,
       tools,
       tool_choice: { type: "tool", name: "get_weather" },
-    }, legacyProvider);
+    }, fableProvider);
     expect(nonThinkingBody.temperature).toBe(0.5);
     expect(nonThinkingBody.top_p).toBe(0.9);
     expect(nonThinkingBody.tool_choice).toEqual({ type: "tool", name: "get_weather" });
