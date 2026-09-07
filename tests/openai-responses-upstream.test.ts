@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createResponsesAdapter } from "../src/adapters/openai-responses";
 import { __resetLocalAccessRegistry, setRuntimeAccessToken } from "../src/local-access";
+import { parseMessagesRequest } from "../src/messages/parser";
 
 const provider = {
   adapter: "openai-responses",
@@ -28,6 +29,74 @@ test("does not forward a relay-local Authorization credential to OpenAI Response
 });
 
 describe("OpenAI Responses upstream body sanitization", () => {
+  test("maps Messages effort through the selected model before sending Responses", () => {
+    const config = {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com",
+      modelReasoningEfforts: { "gpt-test": ["low", "medium", "high"] },
+    };
+    const parsed = parseMessagesRequest({
+      model: "gpt-test",
+      messages: [{ role: "user", content: "Explain quicksort." }],
+      output_config: { effort: "max" },
+    });
+    const original = structuredClone(parsed);
+    const request = createResponsesAdapter(config).buildRequest(parsed);
+    expect(JSON.parse(request.body).reasoning).toEqual({ effort: "high", summary: "auto" });
+    expect(parsed).toEqual(original);
+
+    const unsupported = createResponsesAdapter({ ...config, noReasoningModels: ["gpt-test"] }).buildRequest(parsed);
+    expect(JSON.parse(unsupported.body)).not.toHaveProperty("reasoning");
+
+    const invalid = parseMessagesRequest({
+      model: "gpt-test",
+      messages: [{ role: "user", content: "Explain quicksort." }],
+      output_config: { effort: "invalid-effort" },
+    });
+    expect(JSON.parse(createResponsesAdapter(config).buildRequest(invalid).body)).not.toHaveProperty("reasoning");
+  });
+
+  test("omits configured sampling parameters from API-key raw bodies without mutating the parsed request", () => {
+    const adapter = createResponsesAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com",
+      authMode: "key",
+      apiKey: "token",
+      noTemperatureModels: ["gpt-6-astra"],
+      noTopPModels: ["gpt-6-astra"],
+    });
+    const parsed = {
+      modelId: "gpt-6-astra",
+      context: { messages: [] },
+      stream: false,
+      options: { temperature: 0.7, topP: 0.9 },
+      _rawBody: {
+        model: "gpt-6-astra",
+        input: [{ role: "user", content: "hello" }],
+        temperature: 0.7,
+        top_p: 0.9,
+        reasoning: { effort: "none" },
+      },
+    };
+    const original = structuredClone(parsed);
+    const request = adapter.buildRequest(parsed);
+    const { temperature, top_p, ...expectedBody } = original._rawBody;
+
+    expect(request.url).toBe("https://api.openai.com/v1/responses");
+    expect(JSON.parse(request.body)).toEqual(expectedBody);
+    expect(parsed).toEqual(original);
+
+    const unrelated = adapter.buildRequest({
+      ...parsed,
+      modelId: "gpt-5.5",
+      _rawBody: { ...parsed._rawBody, model: "gpt-5.5" },
+    });
+    expect(JSON.parse(unrelated.body)).toEqual({
+      ...original._rawBody,
+      model: "gpt-5.5",
+    });
+  });
+
   test("drops raw reasoning input content before native GPT Responses upstream call", () => {
     const adapter = createResponsesAdapter(provider);
     const request = adapter.buildRequest({

@@ -110,6 +110,29 @@ describe("docs i18n parity (en is the source of truth)", () => {
     }
   });
 
+  test("installation channel guidance does not hard-code mutable registry versions", () => {
+    for (const locale of ["en", "ko", "zh-cn"]) {
+      const text = readFileSync(`${DOCS_ROOT}/${locale}/getting-started/installation.md`, "utf8");
+      const installSection = text.split(/^## /m).find(section =>
+        section.startsWith("Install") || section.startsWith("설치") || section.startsWith("安装")
+      );
+      expect(installSection, locale).toBeDefined();
+      expect(installSection, locale).not.toMatch(/\b\d+\.\d+\.\d+(?:-preview\.\d+)?\b/);
+    }
+  });
+
+  test("runtime-token docs describe CLI loopback sending without claiming relay-side refusal", () => {
+    const en = readFileSync(`${DOCS_ROOT}/en/reference/configuration.md`, "utf8");
+    const ko = readFileSync(`${DOCS_ROOT}/ko/reference/configuration.md`, "utf8");
+    const zh = readFileSync(`${DOCS_ROOT}/zh-cn/reference/configuration.md`, "utf8");
+    expect(en).toContain("The CLI sends that unrestricted token only to a loopback destination");
+    expect(ko).toContain("CLI는 이 제한 없는 token을 loopback 대상으로만 보내며");
+    expect(zh).toContain("CLI 只会把这个无限制 token 发送到 loopback");
+    expect(en).not.toContain("refuses token-bearing management calls");
+    expect(ko).not.toContain("token이 포함된 management 호출을 거부");
+    expect(zh).not.toContain("拒绝携带 token 的 management call");
+  });
+
   test("documentation links use the canonical case-sensitive Pages path", () => {
     for (const file of [
       "README.md",

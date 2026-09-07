@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCredential, saveCredential } from "../src/oauth/store";
-import { dropRuntimeFixtureProviders, getDefaultConfig, saveConfig } from "../src/config";
+import { dropRuntimeFixtureProviders, getDefaultConfig, saveConfig, updateChecksEnabled } from "../src/config";
 
 describe("frogprogsy config defaults", () => {
 
@@ -17,6 +17,16 @@ describe("frogprogsy config defaults", () => {
       defaultModel: "claude-sonnet-4-6",
     });
     expect(config.providers.openai).toBeUndefined();
+  });
+
+  test("stable update checks default on without rewriting config and honor explicit opt-out", () => {
+    const defaults = getDefaultConfig();
+    expect(defaults.updateChecks).toBeUndefined();
+    expect(updateChecksEnabled(defaults)).toBe(true);
+    expect(updateChecksEnabled({ ...defaults, updateChecks: { enabled: false } })).toBe(false);
+    expect(updateChecksEnabled({ ...defaults, updateChecks: { enabled: true } })).toBe(true);
+    const malformed = JSON.parse('{\"updateChecks\":\"not-an-object\"}');
+    expect(updateChecksEnabled(malformed)).toBe(true);
   });
 
   test("runtime fixture providers are stripped before proxy startup persists config", () => {

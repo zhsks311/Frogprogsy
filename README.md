@@ -6,7 +6,7 @@
   <b>English</b> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://zhsks311.github.io/Frogprogsy/"><b>Full documentation</b></a>
 </p>
 
-frogprogsy is a local provider gateway in front of Claude Code. Connect a provider in the dashboard first, then keep using Claude Code normally.
+frogprogsy is a local provider gateway for Claude Code CLI, TUI, App, and SDK. The frogprogsy package supports macOS, Linux, and Windows. It uses Claude Code's gateway settings without patching Claude Code. Connect a provider in the dashboard first, then keep using Claude Code normally.
 
 ## Quick start: connect your first provider in the dashboard
 
@@ -24,6 +24,11 @@ bun add -g frogprogsy@preview
 ```
 
 `frogp update` always moves a Bun-managed install to stable `latest`. To stay on the prerelease channel, reinstall `frogprogsy@preview` with Bun.
+
+On a normal Bun-global stable install, proxy startup checks npm's stable release metadata in the background
+and shows an available version in the dashboard and `frogp status`. It never installs or restarts
+automatically. Disable automatic checks in **Details**; explicit `frogp status --refresh-update` and
+`frogp update` remain under your control.
 
 Preview versions are public, immutable candidates and may be less stable. Because the `preview` tag moves
 to newer candidates, install an exact version to keep one. Maintainers should follow the
@@ -63,20 +68,42 @@ Open a new terminal after installing Bun or the global package.
 frogp start
 ```
 
-The default dashboard URL is `http://localhost:3764` — `3764` spells FROG on a phone keypad. If another port is used, the next step's `frogp gui` opens the current dashboard.
+The default dashboard URL is `http://localhost:3764` — `3764` spells FROG on a phone keypad. If another port is used, the next step's `frogp gui` opens the current dashboard. `frogp start` synchronizes FrogProgsy-owned gateway settings and model catalog entries for every configured Claude Code home.
+
+`frogp stop` stops the relay and restores FrogProgsy-owned Claude Code settings and catalog entries for every configured home. `frogp restore` performs the same native-state cleanup without stopping the relay. `frogp uninstall` also removes FrogProgsy config and managed account shortcuts, plus the global package when the install is Bun-managed. All three preserve native `~/.claude*` homes, global Claude credentials, and unrelated Claude settings.
 
 <details>
 <summary><b>Running the proxy in Docker?</b></summary>
 
-Build and run the included Docker Compose service:
+Before the first start, set a strong `FROGP_LOCAL_ACCESS_KEY` in the container environment; the entrypoint stores only its hash. In one terminal, build and run the included Docker Compose service:
 
 ```bash
+export FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
 docker compose up --build
 ```
 
-The Compose file sets `FROGP_EXTERNAL_SUPERVISOR=1`, binds the proxy to `0.0.0.0` inside the container, publishes `3764`, and persists config in the `frogprogsy-config` volume. Docker's restart policy owns crash recovery, so frogprogsy does not start its own watchdog inside the container.
+```powershell
+$env:FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
+docker compose up --build
+```
 
-Point Claude Code at the host-exposed gateway, for example `ANTHROPIC_BASE_URL=http://localhost:3764`.
+Keep that terminal open while Compose runs, or add `-d` to run it detached. The Compose file sets `FROGP_EXTERNAL_SUPERVISOR=1`, binds the proxy to `0.0.0.0` inside the container, publishes `3764` on host loopback, and persists config in the `frogprogsy-config` volume. Docker's restart policy owns crash recovery, so frogprogsy does not start its own watchdog inside the container.
+
+In a separate client terminal, point Claude Code at the host-exposed gateway and send the same secret in the dedicated relay header:
+
+```bash
+export ANTHROPIC_BASE_URL='http://localhost:3764'
+export ANTHROPIC_CUSTOM_HEADERS='x-frogp-local-key: <strong-secret>'
+claude
+```
+
+```powershell
+$env:ANTHROPIC_BASE_URL='http://localhost:3764'
+$env:ANTHROPIC_CUSTOM_HEADERS='x-frogp-local-key: <strong-secret>'
+claude
+```
+
+Keep any upstream `Authorization` or `x-api-key` credential in its original header; `ANTHROPIC_CUSTOM_HEADERS` adds the relay key without replacing either one.
 
 </details>
 
@@ -129,7 +156,7 @@ If you want a Claude subscription to answer alongside Codex in the same session 
 
 ```bash
 frogp claude grants add "Work Claude"     # prints a login command; frogprogsy never runs it
-frogp claude grants status                # ok / reauth required / unreadable / none — no secrets
+frogp claude grants status                # ok / expiring / none / unreadable / reauth_required / dangling — no secrets
 frogp providers set anthropic --auth claude-grant --grant <cg_id>
 ```
 

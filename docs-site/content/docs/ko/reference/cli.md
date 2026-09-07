@@ -44,7 +44,7 @@ frogp --version
 | `frogp stop` | process, Claude Code settings/catalog | Proxy를 중지하고 설정된 모든 Claude Code 홈을 native Claude Code 상태로 restore합니다. 관리형 launcher는 남아 있고 proxy가 꺼진 동안 native Claude Code로 통과합니다. |
 | `frogp restore` | Claude Code settings/catalog | 실행 중인 proxy는 그대로 두고 설정된 모든 Claude Code 홈에서 FrogProgsy-owned Claude Code settings/catalog entry를 제거합니다. 활성 proxy가 없으면 관리형 launcher는 native Claude Code로 통과합니다. |
 | `frogp uninstall` | config, Claude Code settings/catalog, launcher shim, installed package | FrogProgsy 로컬 설정을 제거하고 native Claude Code 상태로 복원하며 관리형 launcher가 들어 있는 config directory와 글로벌 패키지도 제거합니다. |
-| `frogp status [--json]` | 없음 | PID guard를 출력하고 active port로 relay health를 확인하며 dashboard URL을 알려줍니다. PID는 있는데 응답이 없으면 `frogp refresh`, 꺼져 있으면 `frogp start`를 안내합니다. `--json`은 안정 스키마 스냅샷을 출력합니다: `running`, `healthy`, `pid`, `port`, `dashboardUrl`, `recovery`, 고정 필드 `watchdog` 객체(`present`, `attempts`, `gaveUpAt`, `unreadable`) — watchdog 파일의 raw 필드는 절대 노출되지 않습니다. 꺼져 있어도 exit code는 0입니다. |
+| `frogp status [--json] [--refresh-update]` | 명시적 새로고침 때만 update cache | Relay health와 공용 안정판 업데이트 snapshot을 출력합니다. healthy relay는 update GET/POST의 단일 owner이고, 꺼진 relay는 로컬 cache만 읽다가 `--refresh-update`일 때만 npm에 연결합니다. 응답 없는 PID가 있으면 두 번째 checker를 시작하지 않습니다. 사람용 출력은 `available`에서만 설치 버전 → 최신 버전과 `frogp update`를 보여줍니다. `--json`은 고정 `watchdog` 옆에 정규화된 `update`(`enabled`, `installKind`, `installedVersion`, `status`, `latestVersion`, `checkedAt`, `lastAttemptAt`, `stale`, `nextCheckAt`, `failure`)를 추가하고 계속 JSON 문서 하나만 출력합니다. |
 
 ## Provider and account
 
@@ -122,7 +122,13 @@ Dashboard는 config, route, safe request log, usage summary를 보는 운영 표
 
 | Command | Mutates | Effect |
 | --- | --- | --- |
-| `frogp update [--no-restart]` | installed package | Bun으로 공개된 최신 버전으로 업데이트하고 proxy를 재시작합니다(`--no-restart`로 재시작 생략). 패키지 레지스트리에서 패키지를 찾지 못하면 아무것도 바꾸지 않고 명시적으로 실패하며, source checkout에는 `git pull && bun install`을 안내합니다. |
+| `frogp update [--no-restart]` | installed package | Bun 관리 설치를 검증된 안정판 `latest`로 명시적으로 업데이트하고 proxy를 재시작합니다(`--no-restart`로 생략). Registry가 같거나 더 오래된 버전이면 패키지를 바꾸지 않으며 source, unsupported, development 설치는 실패하거나 정확한 대안을 안내합니다. 자동 확인은 이 명령을 호출하지 않습니다. |
 | `frogp version` | 없음 | 설치된 frogprogsy version을 출력합니다(`--version` / `-v`도 동일). |
 | `frogp help [command]` | 없음 | 전체 command map 또는 특정 command usage를 출력합니다. |
 | `frogp <command> --help` | 없음 | 해당 command usage를 출력합니다. |
+
+대상 Bun 전역 안정판 설치에서는 listener 준비 뒤 고정된 공식 npm 안정판 dist-tag endpoint를
+확인하고 persistent cache window를 사용합니다. Preview, source, development, unsupported 설치에는
+업데이트를 안내하지 않으며 자동 설치나 재시작은 하지 않습니다. 일반 확인을 끄려면
+`updateChecks.enabled`를 `false`로 설정하세요. 명시적 status 새로고침과 update는 계속 사용할 수
+있습니다.

@@ -62,6 +62,19 @@ describe("Umans provider", () => {
     expect(provider.escapeBuiltinToolNames).toBe(true);
   });
 
+  test("model effort metadata preserves the gateway's manual thinking request", () => {
+    const provider = umansProvider();
+    enrichProviderFromCatalog("umans", provider);
+    const parsed = parsedWithWebSearchTool();
+    parsed.options = { reasoning: "medium", maxOutputTokens: 8192 };
+    const request = createAnthropicAdapter(provider).buildRequest(parsed) as { body: string };
+    const body = JSON.parse(request.body);
+
+    expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+    expect(body.max_tokens).toBe(8192);
+    expect(body).not.toHaveProperty("output_config");
+  });
+
   test("CLI key-login save payload excludes managed Umans runtime metadata", () => {
     const provider = providerConfigFromKeyLoginProvider("umans", "sk-umans");
 

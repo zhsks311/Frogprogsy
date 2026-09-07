@@ -22,12 +22,17 @@ cd gui && bun dev
 
 | Panel | Use it for |
 | --- | --- |
-| **Dashboard** | Proxy status, version, uptime, provider count, search/image fallback settings, and auto-mode classifier model settings. |
+| **Dashboard** | Proxy status, installed/stable-update status, version, uptime, provider count, search/image fallback settings, and auto-mode classifier model settings. |
 | **Providers** | OAuth login, API-key providers, Anthropic Claude Code home rows, custom endpoints, opt-in connection tests, default provider switching, and removal. |
 | **Models** | Dashboard/API model-list reload: routed model visibility, disabled models, and Claude Code discovery state. This reloads what the dashboard and `/v1/models` expose; it is not the Claude Code picker recovery command. |
 | **Claude Code Homes** | Named Claude Code config directories, pass-through auth state, inject/restore/refresh actions, and per-home model overlays. Refresh prepares Claude Code picker recovery and shows the stable `frogp claude reload-models <profile-id>` command for that home. |
 | **Activity** | Safe request phase traces, recent logs, and local usage accounting grouped by day, model, and provider. |
 | **Stop Proxy** | Graceful shutdown plus native Claude Code restore. |
+
+For an available stable release, Home shows installed → latest, the exact `frogp update` command, explicit
+refresh, and dismissal for that version. A newer version reappears. **Details** owns the persistent
+automatic-check toggle and the npm-metadata-only privacy disclosure. The dashboard never compares versions
+or contacts npm itself; it renders the proxy's shared snapshot.
 
 ## Model list refresh vs Claude Code picker recovery
 
@@ -84,7 +89,16 @@ shortcut. A reviewer 404/429 can make Claude Code fall back to the current main 
 
 ## Usage accounting
 
-The Activity usage section is local accounting, not a provider invoice view. FrogProgsy records completed `/v1/messages` requests to `~/.frogprogsy/usage.jsonl` when the upstream response includes usage data. Requests without provider-reported usage are counted as `unreported` instead of being displayed as zero tokens.
+The Activity usage section is local accounting, not a provider invoice view. FrogProgsy records every finalized `/v1/messages` request in `~/.frogprogsy/usage.jsonl`, including provider-reported usage when present and a failure status when the request did not complete successfully. Requests without provider-reported usage are counted as `unreported` instead of being displayed as zero tokens.
+Prompt cache effectiveness uses only requests with a wire-proven comparable denominator. Anthropic uses
+`cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)`.
+Native OpenAI Chat Completions uses `prompt_tokens_details.cached_tokens / prompt_tokens`; native OpenAI
+Responses uses `input_tokens_details.cached_tokens / input_tokens`. OpenAI's input total already includes
+cached tokens, so it is not added again. The mixed-provider panel aggregates cache reads over each
+comparable request's correctly normalized input basis. Cache creation remains an Anthropic-only value.
+Generic OpenAI-compatible and Google cache counters stay excluded unless their provenance and denominator
+are proven; missing breakdowns and failed requests are counted separately. A reported zero is shown as
+`0%`; no data, unsupported data, unavailable breakdowns, and failed requests remain distinct states.
 
 Use it to answer “which route/model consumed tokens through this proxy?” For account invoices, subscription quota, or organization spend, use the provider's own metering endpoints. Those endpoints are not standardized across providers and often require separate owner credentials.
 
@@ -98,6 +112,9 @@ Most operations should stay in the UI. Use these endpoints only for automation o
 | --- | --- |
 | `GET /api/provider-state` | Non-secret provider and runtime summary. |
 | `GET /api/claude-status` | Redacted Claude Code injection/base URL, runtime/watchdog/external-supervisor, and last `/v1/messages` status. |
+| `GET /api/update-status` | Read the disk/memory snapshot only; never starts registry work. |
+| `POST /api/update-status/refresh` | Explicit bounded stable-release refresh; requires the normal local mutation guard. |
+| `PUT /api/update-settings` | Persist exactly `{enabled:boolean}` for automatic checks; explicit refresh remains available while disabled. |
 | `GET /api/providers` | Configured provider summaries. |
 | `POST /api/providers` | Add or update a provider from catalog/custom input. |
 | `POST /api/providers/test` | Opt-in single minimal-token provider connection test with enum-only error results. |

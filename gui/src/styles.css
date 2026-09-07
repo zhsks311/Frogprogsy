@@ -184,6 +184,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .home-hero-ok { border-color: color-mix(in oklch, var(--green) 34%, var(--border)); }
 .home-hero-warn { border-color: color-mix(in oklch, var(--amber) 34%, var(--border)); }
 .home-hero-bad { border-color: color-mix(in oklch, var(--red) 34%, var(--border)); }
+.home-update-panel { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+.home-update-panel h3 { margin: 0 0 6px; }
+.home-update-panel p { max-width: 68ch; }
+.home-update-panel .action-row { justify-content: flex-end; margin-top: 0; }
 .action-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
 .panel-soft { background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
 .command-chip-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -449,7 +453,8 @@ select.input { appearance: none; }
   .main-inner { padding: 22px 18px 48px; }
   .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tbl { min-width: 460px; }   /* keep columns readable; .tbl-wrap scrolls horizontally */
-  .dashboard-hero { flex-direction: column; }
+  .dashboard-hero, .home-update-panel { flex-direction: column; }
+  .home-update-panel .action-row { justify-content: flex-start; }
   .dashboard-stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-grid { grid-template-columns: 1fr; }
   .command-chip-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

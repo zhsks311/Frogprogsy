@@ -43,7 +43,7 @@ frogp --version
 | `frogp stop` | process, Claude Code settings/catalog | Stops the proxy and restores native Claude Code state for every configured Claude Code home. Managed launchers stay installed and pass through to native Claude Code while the proxy is stopped. |
 | `frogp restore` | Claude Code settings/catalog | Removes FrogProgsy-owned Claude Code settings/catalog entries for every configured Claude Code home while leaving a running proxy alone. Managed launchers stay installed and pass through to native Claude Code when no proxy is active. |
 | `frogp uninstall` | config, Claude Code settings/catalog, launcher shims, installed package | Removes FrogProgsy local config, restores native Claude Code state, removes the config directory that contains managed launchers, and removes the global package. |
-| `frogp status [--json]` | none | Prints the PID guard, checks relay health on the active port, and prints the dashboard URL. An unhealthy PID points at `frogp refresh`; a stopped relay points at `frogp start`. `--json` prints a stable snapshot: `running`, `healthy`, `pid`, `port`, `dashboardUrl`, `recovery`, and a fixed `watchdog` object (`present`, `attempts`, `gaveUpAt`, `unreadable`) — raw watchdog file fields are never exposed. Exit code stays 0 for a stopped relay. |
+| `frogp status [--json] [--refresh-update]` | update cache only when explicitly refreshed | Prints relay health plus the shared stable-update snapshot. A healthy relay owns GET/POST update status; a stopped relay reads the local cache and only `--refresh-update` contacts npm. An unhealthy recorded PID never starts a second checker. Human output shows installed → latest and `frogp update` only for `available`. `--json` adds normalized `update` (`enabled`, `installKind`, `installedVersion`, `status`, `latestVersion`, `checkedAt`, `lastAttemptAt`, `stale`, `nextCheckAt`, `failure`) beside the fixed `watchdog` object and still prints exactly one document. |
 
 ## Provider and account
 
@@ -120,7 +120,13 @@ The dashboard is an operations surface for config, routes, safe request logs, an
 
 | Command | Mutates | Effect |
 | --- | --- | --- |
-| `frogp update [--no-restart]` | installed package | Updates to the latest published version with Bun and restarts the proxy (skip the restart with `--no-restart`). If the package cannot be found in the package registry, it aborts loudly without changing anything; a source checkout is told to use `git pull && bun install` instead. |
+| `frogp update [--no-restart]` | installed package | Explicitly updates a Bun-managed install to validated stable `latest` and restarts the proxy (skip with `--no-restart`). Equal or older registry versions do not replace the package; source, unsupported, and development installs fail or provide their exact alternative. Automatic checks never call this command. |
 | `frogp version` | none | Prints the installed frogprogsy version (also `--version` / `-v`). |
 | `frogp help [command]` | none | Prints the full command map, or one command's usage. |
 | `frogp <command> --help` | none | Prints command-specific usage. |
+
+For eligible Bun-global stable installs, startup checks the fixed official npm stable dist-tag endpoint after
+the listener is ready and uses a persisted cache window. It does not advertise preview, source,
+development, or unsupported installs and never installs or restarts automatically. Set
+`updateChecks.enabled` to `false` to disable ordinary checks; explicit status refresh and update remain
+available.

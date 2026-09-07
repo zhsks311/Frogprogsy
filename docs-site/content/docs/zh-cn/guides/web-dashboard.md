@@ -22,12 +22,17 @@ cd gui && bun dev
 
 | Panel | 用途 |
 | --- | --- |
-| **Dashboard** | Proxy status、version、uptime、provider count、search/image fallback settings、auto-mode classifier model settings |
+| **Dashboard** | Proxy status、已安装/稳定版更新状态、version、uptime、provider count、search/image fallback settings、auto-mode classifier model settings |
 | **Providers** | OAuth login、API-key providers、Anthropic Claude Code 目录行、custom endpoints、opt-in connection tests、default provider switch、removal |
 | **Models** | Dashboard/API model-list reload：查看 routed model visibility、disabled models、Claude Code discovery 状态。它刷新 dashboard 与 `/v1/models` 暴露的列表，不是 Claude Code picker recovery 命令。 |
 | **Claude Code 目录** | 命名 Claude Code 配置目录、pass-through auth state、inject/restore/refresh actions、按目录隔离的 model overlays；这不是模型选择器。Refresh 会准备 Claude Code picker recovery，并显示该 profile 稳定的 `frogp claude reload-models <profile-id>` 命令。 |
 | **Activity** | Safe request phase traces、recent logs、按 day/model/provider 汇总的 local usage accounting |
 | **Stop Proxy** | Graceful shutdown + native Claude Code restore |
+
+有新稳定版时，Home 会显示已安装版本 → 最新版本、准确的 `frogp update` 命令、显式
+refresh，以及针对该版本的忽略操作。更新的版本会再次出现。**详细设置**负责持久化自动检查
+开关，并说明只检查 npm metadata 的隐私边界。Dashboard 不自行比较版本或连接 npm，
+只显示 proxy 的共享 snapshot。
 
 ## Model list refresh 与 Claude Code picker recovery
 
@@ -84,7 +89,15 @@ Claude Code 2.1.220 会让这些目录的两个审查阶段使用保留别名；
 
 ## 用 usage accounting 查看 local 使用量
 
-Activity 的 usage section 是 local accounting，不是 provider invoice view。FrogProgsy 会在完成的 `/v1/messages` request 中，当 upstream response 提供 usage data 时，把记录写入 `~/.frogprogsy/usage.jsonl`。没有提供 usage 的 provider request 会归入 `unreported`，不会显示为 0 token。
+Activity 的 usage section 是 local accounting，不是 provider invoice view。FrogProgsy 会把每个已结束的 `/v1/messages` request 记录到 `~/.frogprogsy/usage.jsonl`，保留 provider 提供的 usage，并为未成功完成的 request 保留失败状态。没有提供 usage 的 provider request 会归入 `unreported`，不会显示为 0 token。
+提示缓存效果只计算 wire 语义和输入分母已证实的请求。Anthropic 使用
+`cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)`。
+原生 OpenAI Chat Completions 使用 `prompt_tokens_details.cached_tokens / prompt_tokens`，原生
+OpenAI Responses 使用 `input_tokens_details.cached_tokens / input_tokens`。OpenAI 输入总数已包含
+缓存 token，因此不会再次相加。混合 provider 汇总会按每个请求的正确输入基数计算；缓存创建仅显示
+Anthropic 值。通用 OpenAI-compatible provider 和 Google 的缓存计数会保持排除，直到 provenance
+和分母得到证实；明细缺失与请求失败会分别计数。已报告的真实零值显示为 `0%`；无数据、不支持、
+明细缺失和请求失败仍是不同状态。
 
 该 tab 用于回答“通过这个 proxy，哪些 route/model 消耗了 token？”Account invoice、subscription quota、organization spend 应使用 provider 的 metering endpoint。这些 endpoint 在 provider 之间没有标准，且通常需要单独的 owner credential。
 
@@ -99,6 +112,9 @@ Claude Code 也可能调用 provider-specific usage endpoint，因此 FrogProgsy
 | --- | --- |
 | `GET /api/provider-state` | non-secret provider/runtime summary |
 | `GET /api/claude-status` | redacted Claude Code injection/Base URL、runtime/watchdog/external-supervisor、last `/v1/messages` status |
+| `GET /api/update-status` | 只读取 disk/memory snapshot，不启动 registry 工作 |
+| `POST /api/update-status/refresh` | 显式、限时的稳定版 refresh；需要普通 local mutation guard |
+| `PUT /api/update-settings` | 只持久化准确的 `{enabled:boolean}`；关闭时仍允许显式 refresh |
 | `GET /api/providers` | configured provider summaries |
 | `POST /api/providers` | 从 catalog/custom input 添加或更新 provider |
 | `POST /api/providers/test` | opt-in single minimal-token provider connection test，返回 enum-only error results |

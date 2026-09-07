@@ -54,6 +54,10 @@ export type ProviderConfigSeed = Pick<
   | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "escapeBuiltinToolNames"
 >;
 
+// Verified wire-dialect support is bundled with the adapter, not inferred from effort tiers.
+// Keep catalog v1's strict schema readable by older clients; new dialects require a client update.
+export const ANTHROPIC_ADAPTIVE_THINKING_MODELS = ["claude-fable-5", "claude-fable-5-1"];
+
 function textOnlyCapabilities(ids: readonly string[]): Record<string, FrogModelCapabilities> {
   return Object.fromEntries(ids.map(id => [id, { input: ["text"] } satisfies FrogModelCapabilities]));
 }
@@ -132,35 +136,34 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     oauthId: "codex",
     note: "Log in with your ChatGPT/Codex account — no API key",
     models: [
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
       "gpt-5.5",
-      "gpt-5.4",
-      "gpt-5.4-mini",
       "gpt-5.3-codex-spark",
     ],
     defaultModel: "gpt-5.6-sol",
+    retiredModels: ["gpt-5.4", "gpt-5.4-mini"],
     modelContextWindows: {
+      "gpt-6-astra": 872_000,
       "gpt-5.6-sol": 872_000,
       "gpt-5.6-terra": 872_000,
       "gpt-5.6-luna": 872_000,
       "gpt-5.5": 272_000,
-      "gpt-5.4": 1_000_000,
-      "gpt-5.4-mini": 272_000,
       "gpt-5.3-codex-spark": 128_000,
     },
     modelCapabilities: {
       ...Object.fromEntries(
-        ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
+        ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
           .map(id => [id, { input: ["text", "image"] } satisfies FrogModelCapabilities]),
       ),
       "gpt-5.3-codex-spark": { input: ["text"] },
     },
     reasoningEfforts: ["low", "medium", "high", "xhigh"],
     officialModelSources: [
-      "https://developers.openai.com/codex/models",
-      "https://developers.openai.com/api/docs/models",
+      "https://learn.chatgpt.com/docs/models",
+      "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
     ],
   },
   {
@@ -244,6 +247,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     note: "Use Claude Code login from a config directory such as ~/.claude; add another Anthropic row with another Claude Code home for multiple Claude accounts.",
     minFrogprogsyVersion: "0.0.5",
     models: [
+      "claude-fable-5-1",
       "claude-fable-5",
       "claude-opus-5",
       "claude-sonnet-5",
@@ -277,32 +281,38 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "claude-sonnet-4-6[1m]",
     ],
     modelContextWindows: Object.fromEntries([
-      ...["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]
+      ...["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]
         .map(id => [id, 1_000_000]),
       ...["claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "claude-opus-4-5", "claude-opus-4-5-20251101", "claude-haiku-4-5", "claude-haiku-4-5-20251001"]
         .map(id => [id, 200_000]),
     ]),
     modelMaxOutputTokens: Object.fromEntries([
-      ...["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]
+      ...["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]
         .map(id => [id, 128_000]),
       ...["claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "claude-opus-4-5", "claude-opus-4-5-20251101", "claude-haiku-4-5", "claude-haiku-4-5-20251001"]
         .map(id => [id, 64_000]),
     ]),
     modelCapabilities: Object.fromEntries(
       [
-        "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7",
+        "claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7",
         "claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929",
         "claude-opus-4-5", "claude-opus-4-5-20251101", "claude-haiku-4-5", "claude-haiku-4-5-20251001",
       ].map(id => [id, { input: ["text", "image"] } satisfies FrogModelCapabilities]),
     ),
-    noTemperatureModels: ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"],
-    noTopPModels: ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"],
+    modelReasoningEfforts: { "claude-fable-5-1": ["low", "medium", "high", "xhigh"] },
+    modelMinFrogprogsyVersions: { "claude-fable-5-1": "0.0.7" },
+    noTemperatureModels: ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"],
+    noTopPModels: ["claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"],
+    autoToolChoiceOnlyModels: ["claude-fable-5-1"],
     officialModelSources: [
       "https://platform.claude.com/docs/en/about-claude/models/overview",
       "https://platform.claude.com/docs/en/about-claude/model-deprecations",
+      "https://platform.claude.com/docs/en/models/fable-5-1/overview",
+      "https://platform.claude.com/docs/en/models/fable-5-1/migration-guide",
+      "https://platform.claude.com/docs/en/build-with-claude/effort",
     ],
     verifiedJawcodeModels: [
-      "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7",
+      "claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7",
       "claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929",
       "claude-opus-4-5", "claude-opus-4-5-20251101", "claude-haiku-4-5", "claude-haiku-4-5-20251001",
     ],
@@ -341,13 +351,33 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "key",
     featured: true,
     dashboardUrl: "https://platform.openai.com/api-keys",
-    models: ["gpt-5.5"],
+    models: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
     defaultModel: "gpt-5.5",
-    modelContextWindows: { "gpt-5.5": 1_050_000 },
-    modelMaxOutputTokens: { "gpt-5.5": 128_000 },
-    modelCapabilities: { "gpt-5.5": { input: ["text", "image"] } },
-    modelReasoningEfforts: { "gpt-5.5": ["low", "medium", "high", "xhigh"] },
-    officialModelSources: ["https://developers.openai.com/api/docs/models/gpt-5.5"],
+    modelMinFrogprogsyVersions: { "gpt-6-astra": "0.0.7" },
+    modelContextWindows: Object.fromEntries(
+      ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"].map(id => [id, 1_050_000]),
+    ),
+    modelMaxOutputTokens: Object.fromEntries(
+      ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"].map(id => [id, 128_000]),
+    ),
+    modelCapabilities: Object.fromEntries(
+      ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+        .map(id => [id, { input: ["text", "image"] } satisfies FrogModelCapabilities]),
+    ),
+    modelReasoningEfforts: Object.fromEntries(
+      ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+        .map(id => [id, ["low", "medium", "high", "xhigh"]]),
+    ),
+    noTemperatureModels: ["gpt-6-astra"],
+    noTopPModels: ["gpt-6-astra"],
+    officialModelSources: [
+      "https://developers.openai.com/api/docs/models/gpt-6-astra",
+      "https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra",
+      "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+      "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+      "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+      "https://developers.openai.com/api/docs/models/gpt-5.5",
+    ],
   },
   {
     id: "umans",

@@ -119,10 +119,12 @@ describe("planUpdateRestart — source-code contract", () => {
 
   test("registry update refuses explicit development-package installs", async () => {
     const root = new URL("../", import.meta.url);
-    const src = await Bun.file(new URL("src/update.ts", root)).text();
-    expect(src).toContain(".frogprogsy-dev-build.json");
-    expect(src).toContain("explicitly installed development build");
-    expect(src.indexOf("isDevPackageInstall()")).toBeLessThan(src.indexOf("const latest = latestVersion()"));
+    const updateSource = await Bun.file(new URL("src/update.ts", root)).text();
+    const identitySource = await Bun.file(new URL("src/install-identity.ts", root)).text();
+    expect(identitySource).toContain(".frogprogsy-dev-build.json");
+    expect(identitySource).toContain('kind: devReceiptExists ? "development" : "bun"');
+    expect(updateSource).toContain("explicitly installed development build");
+    expect(updateSource.indexOf('installer === "development"')).toBeLessThan(updateSource.indexOf("const latestRaw = latestVersionFromBun()"));
   });
 });
 describe("runUpdate --no-restart flag", () => {

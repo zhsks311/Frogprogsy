@@ -34,11 +34,15 @@
  * process/network I/O and NO real global install; production leaves every seam at its default.
  */
 
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { LOCAL_ACCESS_HEADER } from "../src/local-access";
+import { parseUpdateStatus } from "../src/update-status-contract";
+import type { UpdateStatus } from "../src/update-status-contract";
 
 /** Published package name (Bun global add/remove target). */
 export const PACKAGE_NAME = "frogprogsy";
@@ -89,11 +93,17 @@ export interface TempLayout {
   bunInstall: string;
   binDir: string;
   binPath: string;
+  installedPackageRoot: string;
+  installedCliPath: string;
+  registryPreloadPath: string;
+  registryRequestCountPath: string;
   frogHome: string;
   claudeHome: string;
   frogpPidPath: string;
   watchdogPidPath: string;
   activePortPath: string;
+  localAccessTokenPath: string;
+  updateCachePath: string;
   configPath: string;
   claudeSettingsPath: string;
 }
@@ -102,6 +112,7 @@ export interface TempLayout {
 export function planTempLayout(root: string, platform: NodeJS.Platform): TempLayout {
   const bunInstall = join(root, "bun-install");
   const binDir = join(bunInstall, "bin");
+  const installedPackageRoot = join(bunInstall, "install", "global", "node_modules", PACKAGE_NAME);
   const frogHome = join(root, "frogprogsy-home");
   const claudeHome = join(root, "claude-home");
   return {
@@ -109,11 +120,17 @@ export function planTempLayout(root: string, platform: NodeJS.Platform): TempLay
     bunInstall,
     binDir,
     binPath: join(binDir, binName(platform)),
+    installedPackageRoot,
+    installedCliPath: join(installedPackageRoot, "src", "cli.ts"),
+    registryPreloadPath: join(root, "update-registry-preload.ts"),
+    registryRequestCountPath: join(root, "update-registry-requests.txt"),
     frogHome,
     claudeHome,
     frogpPidPath: join(frogHome, "frogp.pid"),
     watchdogPidPath: join(frogHome, "watchdog.pid"),
     activePortPath: join(frogHome, "frogp.port"),
+    localAccessTokenPath: join(frogHome, "local-access.token"),
+    updateCachePath: join(frogHome, "cache", "update-status-v1.json"),
     configPath: join(frogHome, "config.json"),
     claudeSettingsPath: join(claudeHome, "settings.json"),
   };
@@ -164,6 +181,29 @@ export function bytesEquivalent(a: Buffer | string, b: Buffer | string): boolean
   const bufA = Buffer.isBuffer(a) ? a : Buffer.from(a);
   const bufB = Buffer.isBuffer(b) ? b : Buffer.from(b);
   return bufA.equals(bufB);
+}
+
+export const PACKAGE_SMOKE_LATEST_VERSION = "999999.0.0";
+
+/** Test-process preload: intercept only the immutable official dist-tags URL; every other fetch stays real. */
+export function registryPreloadSource(requestCountPath: string): string {
+  return [
+    "const originalFetch = globalThis.fetch.bind(globalThis);",
+    `const requestCountPath = ${JSON.stringify(requestCountPath)};`,
+    "globalThis.fetch = async (input, init) => {",
+    "  const url = typeof input === \"string\" ? input : input instanceof URL ? input.href : input.url;",
+    "  if (url !== \"https://registry.npmjs.org/-/package/frogprogsy/dist-tags\") return originalFetch(input, init);",
+    "  let count = 0;",
+    "  try { count = Number.parseInt((await Bun.file(requestCountPath).text()).trim(), 10) || 0; } catch {}",
+    "  await Bun.write(requestCountPath, `${count + 1}\\n`);",
+    `  return Response.json({ latest: ${JSON.stringify(PACKAGE_SMOKE_LATEST_VERSION)} });`,
+    "};",
+    "",
+  ].join("\n");
+}
+
+export function sha256(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 /**
@@ -228,6 +268,7 @@ export interface PackageSmokeDeps {
   run: CommandRunner;
   spawnDetached: DetachedSpawner;
   probeHealth: (port: number) => Promise<boolean>;
+  requestUpdateStatus: (port: number, refresh: boolean, tokenPath: string) => Promise<UpdateStatus | null>;
   portBound: (port: number) => Promise<boolean>;
   killPid: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
   isAlive: (pid: number) => boolean;
@@ -280,6 +321,38 @@ async function defaultProbeHealth(port: number): Promise<boolean> {
     return res.ok;
   } catch {
     return false;
+  }
+}
+
+async function defaultRequestUpdateStatus(
+  port: number,
+  refresh: boolean,
+  tokenPath: string,
+): Promise<UpdateStatus | null> {
+  let token: string;
+  try {
+    token = readFileSync(tokenPath, "utf8").trim();
+  } catch {
+    return null;
+  }
+  if (!token) return null;
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/update-status${refresh ? "/refresh" : ""}`,
+      {
+        method: refresh ? "POST" : "GET",
+        headers: {
+          [LOCAL_ACCESS_HEADER]: token,
+          Origin: `http://127.0.0.1:${port}`,
+        },
+        signal: AbortSignal.timeout(4_000),
+      },
+    );
+    if (!response.ok) return null;
+    const payload: unknown = await response.json();
+    return parseUpdateStatus(payload);
+  } catch {
+    return null;
   }
 }
 
@@ -360,6 +433,7 @@ export function resolvePackageSmokeDeps(overrides: Partial<PackageSmokeDeps> = {
     run: overrides.run ?? defaultRun,
     spawnDetached: overrides.spawnDetached ?? defaultSpawnDetached,
     probeHealth: overrides.probeHealth ?? defaultProbeHealth,
+    requestUpdateStatus: overrides.requestUpdateStatus ?? defaultRequestUpdateStatus,
     portBound: overrides.portBound ?? defaultPortBound,
     killPid: overrides.killPid ?? defaultKillPid,
     isAlive: overrides.isAlive ?? defaultIsAlive,
@@ -393,6 +467,8 @@ export interface CleanupOutcome {
   packageRemoved: boolean;
   /** Config-preservation contract: the temp frog `config.json` survived the Bun package removal. */
   configPreserved: boolean;
+  /** Update metadata cache survives package-only removal alongside the rest of FROGPROGSY_HOME. */
+  cachePreserved: boolean;
   tempRemoved: boolean;
 }
 
@@ -413,6 +489,7 @@ function emptyCleanup(): CleanupOutcome {
     safeToRemove: false,
     packageRemoved: false,
     configPreserved: false,
+    cachePreserved: false,
     tempRemoved: false,
   };
 }
@@ -458,7 +535,11 @@ async function waitForLivePidFile(deps: PackageSmokeDeps, pidPath: string): Prom
 }
 
 function startProxy(deps: PackageSmokeDeps, layout: TempLayout, childEnv: Record<string, string>, port: number): void {
-  const handle = deps.spawnDetached(layout.binPath, ["start", "--port", String(port)], { env: childEnv });
+  const handle = deps.spawnDetached(
+    process.execPath,
+    ["--preload", layout.registryPreloadPath, layout.installedCliPath, "start", "--port", String(port)],
+    { env: childEnv },
+  );
   handle.unref();
 }
 
@@ -520,6 +601,7 @@ export async function runCleanup(
 
   let packageRemoved = false;
   let configPreserved = false;
+  let cachePreserved = false;
   let tempRemoved = false;
   if (safeToRemove) {
     try {
@@ -534,6 +616,8 @@ export async function runCleanup(
     // Verify it survived BEFORE deleting the temp tree that contains it.
     events.push("config-preserved");
     configPreserved = deps.fileExists(layout.configPath);
+    events.push("cache-preserved");
+    cachePreserved = deps.fileExists(layout.updateCachePath);
 
     try {
       events.push("remove-temp");
@@ -557,8 +641,28 @@ export async function runCleanup(
     safeToRemove,
     packageRemoved,
     configPreserved,
+    cachePreserved,
     tempRemoved,
   };
+}
+
+function registryRequestCount(deps: PackageSmokeDeps, path: string): number {
+  try {
+    const count = Number.parseInt(deps.readBytes(path).toString("utf8").trim(), 10);
+    return Number.isInteger(count) && count >= 0 ? count : -1;
+  } catch {
+    return -1;
+  }
+}
+
+function updateStatusFromCliJson(stdout: string): UpdateStatus | null {
+  try {
+    const payload: unknown = JSON.parse(stdout);
+    if (payload === null || typeof payload !== "object" || !("update" in payload)) return null;
+    return parseUpdateStatus(payload.update);
+  } catch {
+    return null;
+  }
 }
 
 // ── orchestrator ─────────────────────────────────────────────────────────────────────────────
@@ -623,13 +727,30 @@ export async function runPackageLifecycleSmoke(overrides: Partial<PackageSmokeDe
 
     // ── install the provided tarball into the temp global install ────────────────────────────
     const install = deps.run("bun", ["add", "-g", "--ignore-scripts", tarball], { env: childEnv, timeoutMs: 180_000 });
-    const installedBin = install.status === 0 && deps.fileExists(layout.binPath);
+    const installedBin = install.status === 0
+      && deps.fileExists(layout.binPath)
+      && deps.fileExists(layout.installedCliPath);
     checks.push({
       id: "global-install",
       pass: installedBin,
-      detail: "bun add -g --ignore-scripts placed frogp in the temp global bin",
+      detail: "bun add -g --ignore-scripts placed frogp and its installed CLI in the temp global root",
     });
     if (!installedBin) throw new PackageSmokeError(`install failed (status ${install.status ?? "unknown"})`);
+
+    deps.writeBytes(layout.registryPreloadPath, registryPreloadSource(layout.registryRequestCountPath));
+    deps.writeBytes(layout.registryRequestCountPath, "0\n");
+    const localKeySetupStatus = deps.run(layout.binPath, ["local-key", "add", "package-lifecycle"], {
+      env: childEnv,
+      timeoutMs: 60_000,
+    }).status;
+    checks.push({
+      id: "local-access-configured",
+      pass: localKeySetupStatus === 0,
+      detail: "temp install enabled authenticated same-machine management access",
+    });
+    if (localKeySetupStatus !== 0) throw new PackageSmokeError("local access setup failed");
+    const versionBefore = deps.run(layout.binPath, ["version"], { env: childEnv, timeoutMs: 30_000 });
+    const binHashBefore = sha256(deps.readBytes(layout.binPath));
 
     // ── start #1 + health ────────────────────────────────────────────────────────────────────
     startProxy(deps, layout, childEnv, requestedPort);
@@ -654,6 +775,63 @@ export async function runPackageLifecycleSmoke(overrides: Partial<PackageSmokeDe
       detail: "default watchdog sidecar was live after first start",
     });
     if (!watchdogStarted) throw new PackageSmokeError("default watchdog did not start");
+
+    let firstUpdateStatus: UpdateStatus | null = null;
+    const updateAvailable = await waitUntil(deps, 5_000, 100, async () => {
+      firstUpdateStatus = await deps.requestUpdateStatus(requestedPort, false, layout.localAccessTokenPath);
+      return firstUpdateStatus?.status === "available";
+    });
+    checks.push({
+      id: "update-available",
+      pass: updateAvailable
+        && firstUpdateStatus?.latestVersion === PACKAGE_SMOKE_LATEST_VERSION
+        && firstUpdateStatus.installKind === "bun",
+      detail: "installed Bun package exposed the controlled newer stable release within five seconds",
+    });
+    if (!updateAvailable) throw new PackageSmokeError("stable update did not become available");
+    checks.push({
+      id: "update-ordinary-request-count",
+      pass: registryRequestCount(deps, layout.registryRequestCountPath) === 1,
+      detail: "first eligible start made exactly one ordinary registry request",
+    });
+
+    const humanStatus = deps.run(layout.binPath, ["status"], { env: childEnv, timeoutMs: 30_000 });
+    const jsonStatus = deps.run(layout.binPath, ["status", "--json"], { env: childEnv, timeoutMs: 30_000 });
+    const parsedCliUpdate = updateStatusFromCliJson(jsonStatus.stdout);
+    checks.push({
+      id: "update-cli-surfaces",
+      pass: humanStatus.status === 0
+        && humanStatus.stdout.includes("frogp update")
+        && jsonStatus.status === 0
+        && parsedCliUpdate?.status === "available",
+      detail: "human and one-document JSON status exposed the shared available update",
+    });
+
+    const pidBeforeRefresh = deps.readIntFile(layout.frogpPidPath);
+    const explicitRefresh = deps.run(layout.binPath, ["status", "--json", "--refresh-update"], {
+      env: childEnv,
+      timeoutMs: 30_000,
+    });
+    const explicitUpdate = updateStatusFromCliJson(explicitRefresh.stdout);
+    const versionAfter = deps.run(layout.binPath, ["version"], { env: childEnv, timeoutMs: 30_000 });
+    const pidAfterRefresh = deps.readIntFile(layout.frogpPidPath);
+    checks.push({
+      id: "update-explicit-refresh",
+      pass: explicitRefresh.status === 0
+        && explicitUpdate?.status === "available"
+        && registryRequestCount(deps, layout.registryRequestCountPath) === 2,
+      detail: "explicit status refresh made exactly one additional controlled registry request",
+    });
+    checks.push({
+      id: "update-notification-no-mutation",
+      pass: pidBeforeRefresh !== null
+        && pidAfterRefresh === pidBeforeRefresh
+        && versionBefore.status === 0
+        && versionAfter.status === 0
+        && versionAfter.stdout === versionBefore.stdout
+        && sha256(deps.readBytes(layout.binPath)) === binHashBefore,
+      detail: "notification and refresh preserved proxy PID, installed version, and frogp bytes",
+    });
 
     // ── explicit restore (proxy still running) must be byte-equivalent to the seed ────────────
     const restore = deps.run(layout.binPath, ["restore"], { env: childEnv, timeoutMs: 60_000 });
@@ -703,6 +881,18 @@ export async function runPackageLifecycleSmoke(overrides: Partial<PackageSmokeDe
     });
     if (!watchdogRestarted) throw new PackageSmokeError("default watchdog did not restart");
 
+    let restartedUpdateStatus: UpdateStatus | null = null;
+    const restartedUpdateAvailable = await waitUntil(deps, 5_000, 100, async () => {
+      restartedUpdateStatus = await deps.requestUpdateStatus(requestedPort, false, layout.localAccessTokenPath);
+      return restartedUpdateStatus?.status === "available";
+    });
+    checks.push({
+      id: "update-restart-throttle",
+      pass: restartedUpdateAvailable
+        && registryRequestCount(deps, layout.registryRequestCountPath) === 2,
+      detail: "restart inside the persisted 24-hour window made no additional ordinary registry request",
+    });
+
     // ── stop #2 must also restore settings byte-for-byte ──────────────────────────────────────
     const stop2 = deps.run(layout.binPath, ["stop"], { env: childEnv, timeoutMs: 60_000 });
     const secondStopPortFree = await waitPortUnbound(deps, recordedPort);
@@ -743,6 +933,11 @@ export async function runPackageLifecycleSmoke(overrides: Partial<PackageSmokeDe
     id: "config-preserved",
     pass: cleanup.configPreserved,
     detail: "temp frog config.json survived the package removal",
+  });
+  checks.push({
+    id: "update-cache-preserved",
+    pass: cleanup.cachePreserved,
+    detail: "stable-update cache survived the Bun package removal",
   });
 
   return {

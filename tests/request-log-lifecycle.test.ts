@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { __requestLogTest } from "../src/server";
 import { bridgeToMessagesSSE } from "../src/messages/bridge";
-import type { AdapterEvent } from "../src/types";
+import type { AdapterEvent, FrogConfig } from "../src/types";
+import { readUsageEntries } from "../src/usage-log";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -482,7 +483,7 @@ describe("privacy-safe request logs", () => {
     }
   });
 
-  test("messages preserve safe upstream usage headers and aggregate non-stream usage", async () => {
+  test("messages preserve safe upstream usage headers and keep partial cache usage unavailable", async () => {
     __requestLogTest.clear();
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({
@@ -542,11 +543,19 @@ describe("privacy-safe request logs", () => {
         unreportedRequests: 0,
         inputTokens: 11,
         outputTokens: 7,
-        cachedInputTokens: 3,
+        cachedInputTokens: 0,
         totalTokens: 18,
       });
       expect(summary.providers[0]).toMatchObject({ provider: "anthropic", totalTokens: 18 });
       expect(summary.models[0]).toMatchObject({ provider: "anthropic", model: "claude-sonnet-4-6", inputTokens: 11, outputTokens: 7 });
+      const [persisted] = readUsageEntries();
+      expect(persisted).toMatchObject({
+        cacheUsageStatus: "unavailable",
+        cacheUsageSemantics: "anthropic_separate_input_buckets",
+        usage: { inputTokens: 11, outputTokens: 7, cacheReadInputTokens: 3 },
+      });
+      expect(persisted.usage).not.toHaveProperty("cachedInputTokens");
+      expect(persisted.usage).not.toHaveProperty("cacheCreationInputTokens");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -628,6 +637,543 @@ describe("privacy-safe request logs", () => {
     }
   });
 
+
+  test("native OpenAI routes persist denominator provenance for positive, zero, absent, and error outcomes", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    let chatCalls = 0;
+    let responsesCalls = 0;
+    globalThis.fetch = (async (url) => {
+      if (String(url).endsWith("/chat/completions")) {
+        chatCalls += 1;
+        return Response.json({
+          choices: [{ message: { content: "chat answer" }, finish_reason: "stop" }],
+          usage: chatCalls === 1
+            ? { prompt_tokens: 11, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 5 } }
+            : { prompt_tokens: 11, completion_tokens: 2 },
+        });
+      }
+      responsesCalls += 1;
+      if (responsesCalls === 2) {
+        return Response.json({ error: { message: "upstream failed" } }, { status: 500 });
+      }
+      return Response.json({
+        output: [{ type: "message", content: [{ type: "output_text", text: "responses answer" }] }],
+        usage: { input_tokens: 13, output_tokens: 3, input_tokens_details: { cached_tokens: 0 } },
+      });
+    }) as typeof fetch;
+
+    const config = {
+      port: 10100,
+      defaultProvider: "chat",
+      providers: {
+        chat: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: "sk-test",
+          catalogProviderId: "openai-apikey",
+          defaultModel: "gpt-chat",
+          models: ["gpt-chat"],
+        },
+        responses: {
+          adapter: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          apiKey: "sk-test",
+          catalogProviderId: "openai-apikey",
+          defaultModel: "gpt-responses",
+          models: ["gpt-responses"],
+        },
+      },
+    } satisfies FrogConfig;
+
+    try {
+      const routes = [
+        ["chat/gpt-chat", 200],
+        ["responses/gpt-responses", 200],
+        ["chat/gpt-chat", 200],
+        ["responses/gpt-responses", 500],
+      ] as const;
+      for (const [model, expectedStatus] of routes) {
+        const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+        const response = await __requestLogTest.handleMessages(
+          new Request("http://127.0.0.1/v1/messages", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              model,
+              max_tokens: 10,
+              messages: [{ role: "user", content: "hello" }],
+            }),
+          }),
+          config,
+          ctx,
+        );
+        expect(response.status).toBe(expectedStatus);
+        __requestLogTest.finalizeRequestLog(ctx, expectedStatus === 200 ? "completed" : "provider_non_2xx", expectedStatus);
+      }
+
+      const requestEntries = __requestLogTest.requestLogSnapshot();
+      expect(requestEntries.map(entry => entry.route.cacheUsageSemantics)).toEqual([
+        "openai_input_total_includes_cached",
+        "openai_input_total_includes_cached",
+        "openai_input_total_includes_cached",
+        "openai_input_total_includes_cached",
+      ]);
+      expect(requestEntries[0].upstream?.usage).toMatchObject({ inputTokens: 11, cacheReadInputTokens: 5 });
+      expect(requestEntries[1].upstream?.usage).toMatchObject({ inputTokens: 13, cacheReadInputTokens: 0 });
+      expect(requestEntries[2].upstream?.usage).toEqual({ inputTokens: 11, outputTokens: 2 });
+      expect(requestEntries[3].upstream?.usage).toBeUndefined();
+
+      const persisted = readUsageEntries();
+      expect(persisted.map(entry => ({
+        semantics: entry.cacheUsageSemantics,
+        status: entry.cacheUsageStatus,
+      }))).toEqual([
+        { semantics: "openai_input_total_includes_cached", status: "reported" },
+        { semantics: "openai_input_total_includes_cached", status: "reported" },
+        { semantics: "openai_input_total_includes_cached", status: "unavailable" },
+        { semantics: "openai_input_total_includes_cached", status: "unavailable" },
+      ]);
+      expect(__requestLogTest.usageSummarySnapshot().cacheHitRate).toMatchObject({
+        status: "available",
+        cacheReadInputTokens: 5,
+        cacheCreationInputTokens: 0,
+        totalInputTokens: 24,
+        hitRate: 5 / 24,
+        reportedRequests: 2,
+        unavailableRequests: 1,
+        failedRequests: 1,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("effective Anthropic wire override owns cache provenance instead of the configured adapter", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url) => {
+      expect(String(url)).toBe("https://go.test/v1/messages");
+      return Response.json({
+        id: "msg_wire_override",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "answer" }],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 3,
+          cache_read_input_tokens: 4,
+          cache_creation_input_tokens: 2,
+        },
+      });
+    }) as typeof fetch;
+
+    try {
+      const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const response = await __requestLogTest.handleMessages(
+        new Request("http://127.0.0.1/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "opencode-go/qwen3.5-plus",
+            max_tokens: 10,
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        }),
+        {
+          port: 10100,
+          defaultProvider: "opencode-go",
+          providers: {
+            "opencode-go": {
+              adapter: "openai-chat",
+              baseUrl: "https://go.test",
+              apiKey: "test-key",
+              defaultModel: "qwen3.5-plus",
+              models: ["qwen3.5-plus"],
+            },
+          },
+        },
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      __requestLogTest.finalizeRequestLog(ctx, "completed", 200);
+
+      const [requestEntry] = __requestLogTest.requestLogSnapshot();
+      expect(requestEntry.route).toMatchObject({
+        provider: "opencode-go",
+        routedModelLabel: "qwen3.5-plus",
+        adapter: "anthropic",
+        cacheUsageSemantics: "anthropic_separate_input_buckets",
+      });
+      expect(readUsageEntries()[0]).toMatchObject({
+        provider: "opencode-go",
+        model: "qwen3.5-plus",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "anthropic_separate_input_buckets",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("fusion and pipeline final targets alone own Anthropic and native OpenAI cache provenance", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (url, init) => {
+      calls.push(String(url));
+      if (String(url) === "https://anthropic.test/v1/messages") {
+        const body = JSON.parse(String(init?.body)) as { stream?: boolean };
+        if (body.stream === false) {
+          return Response.json({
+            id: "msg_buffered",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "buffered stage" }],
+            usage: {
+              input_tokens: 100,
+              output_tokens: 3,
+              cache_read_input_tokens: 90,
+              cache_creation_input_tokens: 5,
+            },
+          });
+        }
+        return new Response([
+          "event: message_start\n",
+          "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":2}}}\n\n",
+          "event: content_block_start\n",
+          "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n",
+          "event: content_block_delta\n",
+          "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"anthropic final\"}}\n\n",
+          "event: message_delta\n",
+          "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+          "event: message_stop\n",
+          "data: {\"type\":\"message_stop\"}\n\n",
+        ].join(""), { headers: { "content-type": "text/event-stream" } });
+      }
+      expect(String(url)).toBe("https://api.openai.com/v1/responses");
+      return new Response([
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"openai final\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":4,\"input_tokens_details\":{\"cached_tokens\":3}}}}\n\n",
+      ].join(""), { headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+
+    const providers = {
+      anthropic: {
+        adapter: "anthropic",
+        baseUrl: "https://anthropic.test",
+        apiKey: "test-key",
+        defaultModel: "claude-final",
+        models: ["claude-final"],
+      },
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "test-key",
+        catalogProviderId: "openai-apikey",
+        defaultModel: "gpt-final",
+        models: ["gpt-final"],
+      },
+    } satisfies FrogConfig["providers"];
+
+    try {
+      for (const scenario of [
+        { combine: "fusion" as const, finalTarget: { provider: "anthropic", model: "claude-final" } },
+        { combine: "pipeline" as const, finalTarget: { provider: "openai", model: "gpt-final" } },
+      ]) {
+        const { combine, finalTarget } = scenario;
+        const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+        const response = await __requestLogTest.handleMessages(
+          new Request("http://127.0.0.1/v1/messages", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              model: "frogp/mix",
+              max_tokens: 10,
+              messages: [{ role: "user", content: "hello" }],
+            }),
+          }),
+          {
+            port: 10100,
+            defaultProvider: finalTarget.provider,
+            providers,
+            modelMixing: combine === "fusion"
+              ? {
+                  enabled: true,
+                  aliasId: "frogp/mix",
+                  combine,
+                  agents: [finalTarget],
+                  fusion: {
+                    panel: [finalTarget],
+                    judge: finalTarget,
+                    synthesizer: finalTarget,
+                  },
+                }
+              : {
+                  enabled: true,
+                  aliasId: "frogp/mix",
+                  combine,
+                  pipeline: [{ role: "final", ...finalTarget }],
+                },
+          },
+          ctx,
+        );
+        expect(response.status).toBe(200);
+        __requestLogTest.finalizeRequestLog(ctx, "completed", 200);
+      }
+
+      expect(calls).toEqual([
+        "https://anthropic.test/v1/messages",
+        "https://anthropic.test/v1/messages",
+        "https://anthropic.test/v1/messages",
+        "https://api.openai.com/v1/responses",
+      ]);
+      expect(__requestLogTest.requestLogSnapshot().map(entry => ({
+        provider: entry.route.provider,
+        model: entry.route.routedModelLabel,
+        adapter: entry.route.adapter,
+        semantics: entry.route.cacheUsageSemantics,
+      }))).toEqual([
+        {
+          provider: "anthropic",
+          model: "claude-final",
+          adapter: "anthropic",
+          semantics: "anthropic_separate_input_buckets",
+        },
+        {
+          provider: "openai",
+          model: "gpt-final",
+          adapter: "openai-responses",
+          semantics: "openai_input_total_includes_cached",
+        },
+      ]);
+      expect(readUsageEntries().map(entry => ({
+        provider: entry.provider,
+        status: entry.cacheUsageStatus,
+        semantics: entry.cacheUsageSemantics,
+      }))).toEqual([
+        {
+          provider: "anthropic",
+          status: "reported",
+          semantics: "anthropic_separate_input_buckets",
+        },
+        {
+          provider: "openai",
+          status: "reported",
+          semantics: "openai_input_total_includes_cached",
+        },
+      ]);
+      expect(__requestLogTest.usageSummarySnapshot().cacheHitRate).toMatchObject({
+        cacheReadInputTokens: 7,
+        cacheCreationInputTokens: 2,
+        inputTokens: 22,
+        totalInputTokens: 28,
+        hitRate: 0.25,
+        reportedRequests: 2,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("an early pipeline tool-call response persists the stage's effective cache provenance", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (url) => {
+      calls.push(String(url));
+      return Response.json({
+        id: "msg_tool_stage",
+        type: "message",
+        role: "assistant",
+        model: "tool-model",
+        content: [{
+          type: "tool_use",
+          id: "toolu_1",
+          name: "read_file",
+          input: { path: "README.md" },
+        }],
+        stop_reason: "tool_use",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 3,
+          cache_read_input_tokens: 4,
+          cache_creation_input_tokens: 2,
+        },
+      });
+    }) as typeof fetch;
+
+    try {
+      const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const response = await __requestLogTest.handleMessages(
+        new Request("http://127.0.0.1/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "frogp/mix",
+            max_tokens: 10,
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        }),
+        {
+          port: 10100,
+          defaultProvider: "tool-stage",
+          providers: {
+            "tool-stage": {
+              adapter: "anthropic",
+              baseUrl: "https://tool-stage.test",
+              apiKey: "test-key",
+              defaultModel: "tool-model",
+              models: ["tool-model"],
+            },
+            final: {
+              adapter: "anthropic",
+              baseUrl: "https://final.test",
+              apiKey: "test-key",
+              defaultModel: "final-model",
+              models: ["final-model"],
+            },
+          },
+          modelMixing: {
+            enabled: true,
+            aliasId: "frogp/mix",
+            combine: "pipeline",
+            pipeline: [
+              { role: "worker", provider: "tool-stage", model: "tool-model" },
+              { role: "verifier", provider: "final", model: "final-model" },
+            ],
+          },
+        },
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      expect((await response.json()).content).toContainEqual({
+        type: "tool_use",
+        id: "toolu_1",
+        name: "read_file",
+        input: { path: "README.md" },
+      });
+      __requestLogTest.finalizeRequestLog(ctx, "completed", 200);
+
+      expect(calls).toEqual(["https://tool-stage.test/v1/messages"]);
+      const [requestEntry] = __requestLogTest.requestLogSnapshot();
+      expect(requestEntry.route).toMatchObject({
+        provider: "tool-stage",
+        routedModelLabel: "tool-model",
+        adapter: "anthropic",
+        cacheUsageSemantics: "anthropic_separate_input_buckets",
+      });
+      expect(readUsageEntries()[0]).toMatchObject({
+        provider: "tool-stage",
+        model: "tool-model",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "anthropic_separate_input_buckets",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("a verifier dispatch failure persists the pre-final producer's native cache provenance", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (url) => {
+      calls.push(String(url));
+      if (String(url) === "https://api.openai.com/v1/responses") {
+        return Response.json({
+          output: [{ type: "message", content: [{ type: "output_text", text: "worker fallback" }] }],
+          usage: {
+            input_tokens: 12,
+            output_tokens: 3,
+            input_tokens_details: { cached_tokens: 3 },
+          },
+        });
+      }
+      throw new Error("verifier unavailable");
+    }) as typeof fetch;
+
+    try {
+      const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const response = await __requestLogTest.handleMessages(
+        new Request("http://127.0.0.1/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "frogp/mix",
+            max_tokens: 10,
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        }),
+        {
+          port: 10100,
+          defaultProvider: "worker",
+          providers: {
+            worker: {
+              adapter: "openai-responses",
+              baseUrl: "https://api.openai.com/v1",
+              apiKey: "test-key",
+              catalogProviderId: "openai-apikey",
+              defaultModel: "gpt-worker",
+              models: ["gpt-worker"],
+            },
+            verifier: {
+              adapter: "anthropic",
+              baseUrl: "https://verifier.test",
+              apiKey: "test-key",
+              defaultModel: "claude-verifier",
+              models: ["claude-verifier"],
+            },
+          },
+          modelMixing: {
+            enabled: true,
+            aliasId: "frogp/mix",
+            combine: "pipeline",
+            surfaceStages: false,
+            pipeline: [
+              { role: "worker", provider: "worker", model: "gpt-worker" },
+              { role: "verifier", provider: "verifier", model: "claude-verifier" },
+            ],
+          },
+        },
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        content: [{ type: "text", text: "worker fallback" }],
+        usage: {
+          input_tokens: 12,
+          output_tokens: 3,
+          cache_read_input_tokens: 3,
+        },
+      });
+      __requestLogTest.finalizeRequestLog(ctx, "completed", 200);
+
+      expect(calls).toEqual([
+        "https://api.openai.com/v1/responses",
+        "https://verifier.test/v1/messages",
+      ]);
+      const [requestEntry] = __requestLogTest.requestLogSnapshot();
+      expect(requestEntry.route).toMatchObject({
+        provider: "worker",
+        routedModelLabel: "gpt-worker",
+        adapter: "openai-responses",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+      });
+      expect(readUsageEntries()[0]).toMatchObject({
+        provider: "worker",
+        model: "gpt-worker",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 12, outputTokens: 3, cacheReadInputTokens: 3 },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("usage API exposes summary under Claude Code compatible aliases", async () => {
     __requestLogTest.clear();
     const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
@@ -667,6 +1213,37 @@ describe("privacy-safe request logs", () => {
         sessionLimits: { available: false, reason: "no_authoritative_source" },
         cost: { available: false, reason: "no_authoritative_source" },
       },
+    });
+  });
+
+  test("usage API classifies a completed non-Anthropic request without usage as unsupported", async () => {
+    __requestLogTest.clear();
+    const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+    ctx.entry.route.provider = "codex";
+    ctx.entry.route.adapter = "openai-responses";
+    ctx.entry.route.routedModelLabel = "gpt-5.5";
+    __requestLogTest.finalizeRequestLog(ctx, "completed", 200);
+
+    const config = { port: 10100, defaultProvider: "codex", providers: {} };
+    const response = await __requestLogTest.handleManagementAPI(
+      new Request("http://127.0.0.1/api/usage"),
+      new URL("http://127.0.0.1/api/usage"),
+      config,
+    );
+
+    expect(response?.status).toBe(200);
+    const body = await response!.json();
+    expect(body.summary).toMatchObject({
+      requests: 1,
+      reportedRequests: 0,
+      unreportedRequests: 1,
+    });
+    expect(body.cacheHitRate).toMatchObject({
+      status: "unsupported",
+      hitRate: null,
+      reportedRequests: 0,
+      unsupportedRequests: 1,
+      unavailableRequests: 0,
     });
   });
 
@@ -755,7 +1332,7 @@ describe("privacy-safe request logs", () => {
         role: "assistant",
         model: "fallback-model",
         content: [{ type: "text", text: "fallback ok" }],
-        usage: { input_tokens: 13, output_tokens: 5, cache_read_input_tokens: 2 },
+        usage: { input_tokens: 13, output_tokens: 5, cache_read_input_tokens: 2, cache_creation_input_tokens: 0 },
       }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -804,7 +1381,13 @@ describe("privacy-safe request logs", () => {
       expect(calls).toEqual(["https://primary.test/v1/messages", "https://fallback.test/v1/messages"]);
       expect(entry.route.provider).toBe("fallback");
       expect(entry.route.routedModelLabel).toBe("fallback-model");
-      expect(entry.upstream?.usage).toEqual({ inputTokens: 13, outputTokens: 5, cachedInputTokens: 2 });
+      expect(entry.upstream?.usage).toEqual({
+        inputTokens: 13,
+        outputTokens: 5,
+        cachedInputTokens: 2,
+        cacheReadInputTokens: 2,
+        cacheCreationInputTokens: 0,
+      });
       expect(entry.attempts).toEqual([
         { provider: "primary", model: "primary-model", source: "primary", keyIndex: 0, status: "error", code: "provider_non_2xx", upstreamStatus: 429 },
         { provider: "fallback", model: "fallback-model", source: "fallback", keyIndex: 0, status: "ok", upstreamStatus: 200 },

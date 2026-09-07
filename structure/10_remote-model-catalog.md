@@ -29,6 +29,53 @@ The remote catalog must not contain or override:
 
 A model that needs a new adapter, transport, or request transformation requires a Frogprogsy release. Remote data cannot add that behavior.
 
+## Authenticity trust boundary
+
+Decision (2026-08-27): for the catalog v1 model-only scope, Frogprogsy accepts the
+maintainer-controlled GitHub repository, Actions workflows and their hosted runners/build
+dependencies, GitHub Pages/CDN, HTTPS, and the Bun process's effective TLS trust configuration as
+the publication trust boundary. Bun fetch trusts bundled Mozilla roots by default and can also use
+configured system or extra CA roots. This decision assumes certificate verification remains
+enabled; process-level settings that add roots or disable verification expand or weaken the
+boundary. Catalog v1 does not require an independent publisher signature.
+
+The catalog digest detects corruption and conflicting canonical provider/model payloads for one
+revision; it does not cover the surrounding envelope. It is not independent publisher
+authentication because the digest travels with the payload in the same document. A party that
+controls a trusted publication path could publish a schema-valid payload
+with matching digest, revision, and source metadata.
+Pinning individual Actions dependencies can reduce workflow supply-chain risk, but it remains inside
+this trust boundary and does not independently authenticate the catalog publisher.
+
+The strict schema is therefore a security boundary. A forged but schema-valid catalog could change
+managed model membership and defaults, retirements, provider wire model IDs, limits, capabilities,
+compatibility restrictions, and reasoning mappings. Catalog-derived membership, defaults, and
+retirements participate in routing, so forged data could influence which already-configured
+provider and model handle an unqualified request or an explicitly opted-in continuity fallback.
+The resulting impact includes model discovery, routing among existing destinations, request
+shaping, availability, provider-account usage, and recovery from a poisoned revision.
+
+The catalog cannot introduce or modify provider destinations, adapters, authentication modes,
+headers, credentials, executable code, or persisted user selections. The installed runtime and
+strict parser remain authoritative for those fields and for which catalog behavior is understood.
+
+After a publication-path compromise, maintainers normally restore the trusted path and publish
+corrected model data under a higher revision. Runtime and publication validation accept only
+positive JavaScript safe integers for `catalogRevision`, capped at `Number.MAX_SAFE_INTEGER`; an
+equal revision with a different digest is rejected. A forged maximum revision therefore requires a
+package/runtime or guarded publication-recovery change plus remediation of affected caches;
+clearing one cache is not durable while the compromised remote remains available. Ordinary
+network, parsing, schema, or compatibility failures continue to use the last valid cache or bundled
+fallback.
+
+Reconsider independent publisher authentication before expanding the remote schema or giving an
+existing field authority beyond this model-only damage limit, moving publication outside the
+current maintainer-controlled GitHub path, or after evidence that this accepted boundary is
+inadequate. Any future signature design must pin a verification trust root in the package, sign an
+exact canonical payload, fail closed before caching, and define key rotation, revocation, recovery,
+and high-revision cache-poison recovery. A signature field without that lifecycle is not
+sufficient.
+
 ## One generated artifact
 
 One deterministic generator combines the maintained provider registry and generated Jawcode metadata into `model-catalog-v1.json`. A maintained positive integer, `catalogRevision`, changes whenever the generated model data changes. Reverting bad model data still increments this revision, so clients can accept an operational rollback. For a given source commit, revision, and generation timestamp, the generator produces the same bytes.
@@ -107,6 +154,62 @@ The same refresh established these maintenance decisions:
 - output-token limits remain source inventory only;
 - migration and runtime overlays preserve credentials, user defaults, disabled models, explicit additions, and fixed `liveModels:false` allowlists; and
 - `unmanagedModels` removes stale validation data without claiming retirement or creating a fallback route.
+
+### GPT and Claude refresh: 2026-09-06
+
+Catalog revision 4 adds the current general-availability models without changing existing
+provider defaults or user-selected models:
+
+| Route | Added model IDs | Maximum context | Audited maximum output |
+| --- | --- | ---: | ---: |
+| ChatGPT Codex | `gpt-6-astra` | 872,000 | Not published by the observed route |
+| OpenAI Responses API key | `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 1,050,000 | 128,000 |
+| Claude API | `claude-fable-5-1` | 1,000,000 | 128,000 |
+
+All added models accept text and image input. Output limits remain source notes, not enforced caps.
+The authenticated Codex [`/models?client_version=1.0.0`](https://chatgpt.com/backend-api/codex/models?client_version=1.0.0)
+response returned Astra with `context_window:272000` and `max_context_window:872000`.
+The separate [OpenAI API specification](https://developers.openai.com/api/docs/models/gpt-6-astra)
+reports 1,050,000 total context and 922,000 maximum input tokens; those API values are not copied
+to the ChatGPT route. The GPT-5.6 API additions were checked against each model's own page.
+
+The [Codex model documentation](https://learn.chatgpt.com/docs/models) announces retirement of
+`gpt-5.4` and `gpt-5.4-mini` from ChatGPT-authenticated Codex on August 31, 2026, explicitly excluding
+API-key access. Both IDs therefore move to Codex's `retiredModels`, superseding their August baseline
+above. The observed response still included `gpt-5.4-mini`; live discovery does not override this
+documented lifecycle decision. Hidden `gpt-reserve` and `codex-auto-review` records are not promoted
+to general managed membership.
+
+[Fable 5.1](https://platform.claude.com/docs/en/models/fable-5-1/overview) was released September 1.
+Fable 5, Opus 5, Sonnet 5, and the previously managed Claude legacy IDs remain available.
+Invitation-only Mythos 5.1 is not added to the general managed inventory. The
+[migration guide](https://platform.claude.com/docs/en/models/fable-5-1/migration-guide) and
+[parameter deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations)
+require these request constraints:
+
+- Fable 5 and Fable 5.1 use always-on adaptive thinking. Only the managed `anthropic` catalog provider
+  and an exact ID in the bundled `ANTHROPIC_ADAPTIVE_THINKING_MODELS` list select `output_config.effort`, leaving thinking at
+  the provider default instead of sending a legacy manual budget. Effort-tier metadata alone
+  does not select a wire dialect: other models, including Umans, retain the existing budget path.
+  This protocol list is not a new catalog v1 field, so older strict-schema readers remain compatible.
+  Custom providers and colon-suffixed IDs do not inherit the native provider's wire dialect.
+- Messages `output_config.effort` takes precedence over the legacy thinking-budget-derived level.
+  The Responses adapter applies the selected provider/model's existing effort mapper to translated
+  Messages requests, including `max` normalization and unsupported-effort omission. Native Responses
+  requests retain their upstream effort vocabulary.
+- Fable 5.1 rejects forced/named tool choice; the maintained restriction normalizes it to `auto`
+  while preserving `none`.
+- Fable 5.1 and Astra reject sampling overrides. Anthropic and API-key Responses adapters now
+  enforce their existing `noTemperatureModels` and `noTopPModels` metadata at the wire boundary.
+- Claude Code's current catalog contract exposes `low`, `medium`, `high`, and `xhigh` only.
+  The upstream `max`, Codex orchestration mode `ultra`, and GPT-5.6 API `none` are not advertised
+  as new Claude Code levels. Existing effort normalization remains unchanged.
+
+Fable 5.1 and API-key Astra require Frogprogsy **0.0.7** because they depend on the adapter fixes
+in this refresh; their model-local minimum versions prevent remote promotion on older readers.
+This is a compatibility floor for the next release, not a package-version bump or a release.
+Codex Astra uses the already installed Codex request path. Other providers and OpenRouter's
+full passthrough catalog are unchanged. No credentials or account configuration are part of this update.
 
 ## Publication
 

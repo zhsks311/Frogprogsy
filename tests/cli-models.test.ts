@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { catalogDataDigest } from "../src/model-catalog-generator";
+import { installedPackageVersion } from "../src/install-identity";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
@@ -154,7 +155,9 @@ function startStubProxy(options: {
     port: 0,
     async fetch(req) {
       const url = new URL(req.url);
-      if (url.pathname === "/healthz") return new Response("ok", { status: 200 });
+      if (url.pathname === "/healthz") {
+        return Response.json({ status: "ok", serverBuildId: `frogprogsy-server@${installedPackageVersion()}` });
+      }
       if (url.pathname === "/api/models") return Response.json(STUB_MODELS);
       if (url.pathname === "/api/model-catalog/status") {
         if (options.statusAvailable === false) return new Response("unavailable", { status: 503 });

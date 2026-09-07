@@ -1,7 +1,7 @@
 import type { ProviderAdapter } from "./base";
 import { debugDroppedFrame } from "../debug";
 import type { AdapterEvent, AdapterStopReason, FrogAssistantMessage, FrogContentPart, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTextContent, FrogThinkingContent, FrogToolCall, FrogUsage } from "../types";
-import { modelInList, namespacedToolName } from "../types";
+import { cacheUsageSemanticsForProvider, modelInList, namespacedToolName } from "../types";
 import { mapReasoningEffort } from "../reasoning-effort";
 import { contentPartsToText } from "./image";
 
@@ -152,15 +152,23 @@ function toolChoiceToChatFormat(tc: FrogParsedRequest["options"]["toolChoice"]):
   return undefined;
 }
 
-function usageFromOpenAIChat(usage: Record<string, unknown> | undefined): FrogUsage | undefined {
+function usageFromOpenAIChat(
+  usage: Record<string, unknown> | undefined,
+  preserveNativeCacheRead: boolean,
+): FrogUsage | undefined {
   if (!usage) return undefined;
-  const promptDetails = usage.prompt_tokens_details as Record<string, number> | undefined;
-  const completionDetails = usage.completion_tokens_details as Record<string, number> | undefined;
+  const promptTokens = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : undefined;
+  const promptDetails = usage.prompt_tokens_details as Record<string, unknown> | undefined;
+  const cachedTokens = typeof promptDetails?.cached_tokens === "number" ? promptDetails.cached_tokens : undefined;
+  const completionDetails = usage.completion_tokens_details as Record<string, unknown> | undefined;
   return {
-    inputTokens: typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : 0,
+    inputTokens: promptTokens ?? 0,
     outputTokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0,
-    ...(promptDetails?.cached_tokens !== undefined ? { cachedInputTokens: promptDetails.cached_tokens } : {}),
-    ...(completionDetails?.reasoning_tokens !== undefined ? { reasoningOutputTokens: completionDetails.reasoning_tokens } : {}),
+    ...(cachedTokens !== undefined ? { cachedInputTokens: cachedTokens } : {}),
+    ...(preserveNativeCacheRead && promptTokens !== undefined && cachedTokens !== undefined
+      ? { cacheReadInputTokens: cachedTokens }
+      : {}),
+    ...(typeof completionDetails?.reasoning_tokens === "number" ? { reasoningOutputTokens: completionDetails.reasoning_tokens } : {}),
   };
 }
 
@@ -189,6 +197,7 @@ function inlineErrorMessage(value: unknown): string {
 }
 
 export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderAdapter {
+  const preserveNativeCacheRead = cacheUsageSemanticsForProvider(provider) === "openai_input_total_includes_cached";
   return {
     name: "openai-chat",
 
@@ -315,7 +324,7 @@ export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderA
 
         if (chunk.usage && typeof chunk.usage === "object" && !Array.isArray(chunk.usage)) {
           // Some providers combine usage with a final content delta; keep parsing this frame.
-          pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>);
+          pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>, preserveNativeCacheRead);
         }
         const choice = choices[0];
         if (!choice) return false;
@@ -461,7 +470,7 @@ export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderA
       const stopReason = stopReasonFromOpenAIChat(choice?.finish_reason);
       events.push({
         type: "done",
-        usage: usageFromOpenAIChat(usage),
+        usage: usageFromOpenAIChat(usage, preserveNativeCacheRead),
         ...(stopReason ? { stopReason } : {}),
       });
       return events;

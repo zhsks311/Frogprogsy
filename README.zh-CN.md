@@ -6,7 +6,7 @@
   <a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <b>简体中文</b> · <a href="https://zhsks311.github.io/Frogprogsy/zh-cn/"><b>完整文档</b></a>
 </p>
 
-frogprogsy 是运行在 Claude Code 前面的本地 provider 网关。先在仪表盘中连接 provider，然后照常使用 Claude Code。
+frogprogsy 是支持 Claude Code CLI、TUI、App 和 SDK 的本地 provider 网关。frogprogsy package 支持 macOS、Linux 和 Windows。它使用 Claude Code 的 gateway 设置，不会 patch Claude Code。先在仪表盘中连接 provider，然后照常使用 Claude Code。
 
 ## 快速开始：在仪表盘连接第一个 provider
 
@@ -24,6 +24,11 @@ bun add -g frogprogsy@preview
 ```
 
 `frogp update` 始终把 Bun 管理的安装切换到稳定版 `latest`。要继续使用预览版，请用 Bun 重新安装 `frogprogsy@preview`。
+
+对于普通的 Bun 全局稳定版安装，proxy 启动后会在后台检查 npm 稳定版发布信息，并在
+dashboard 和 `frogp status` 中显示可用版本。它不会自动安装或重启。可以在
+**详细设置**中关闭自动检查；显式的 `frogp status --refresh-update` 与 `frogp update`
+仍由你主动执行。
 
 预览版是公开且不可变的候选版本，稳定性可能不如正式版。`preview` tag 会指向更新的候选版本；
 如需固定某个候选版本，请安装其确切版本号。维护者请遵循
@@ -63,20 +68,42 @@ frogp --version
 frogp start
 ```
 
-默认仪表盘地址是 `http://localhost:3764`（`3764` 在电话键盘上正好拼出 FROG）。如果实际使用了其他端口，下一步的 `frogp gui` 会打开当前仪表盘。
+默认仪表盘地址是 `http://localhost:3764`（`3764` 在电话键盘上正好拼出 FROG）。如果实际使用了其他端口，下一步的 `frogp gui` 会打开当前仪表盘。`frogp start` 会为所有已配置的 Claude Code 目录同步 FrogProgsy 拥有的 gateway 设置和 model catalog 条目。
+
+`frogp stop` 会停止 relay，并在所有已配置目录中恢复 FrogProgsy 添加的 Claude Code 设置和 catalog 条目。`frogp restore` 执行相同的原生状态清理，但不会停止 relay。`frogp uninstall` 还会删除 FrogProgsy 配置和托管的账户快捷命令；如果是 Bun 管理的安装，也会删除全局 package。三个命令都会保留原生 `~/.claude*` 目录、全局 Claude credential 和无关的 Claude 设置。
 
 <details>
 <summary><b>在 Docker 中运行 proxy？</b></summary>
 
-构建并运行随仓库提供的 Docker Compose 服务：
+首次启动前，请在 container 环境中为 `FROGP_LOCAL_ACCESS_KEY` 设置一个高强度 secret；entrypoint 只存储其 hash。在一个 terminal 中构建并运行随仓库提供的 Docker Compose 服务：
 
 ```bash
+export FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
 docker compose up --build
 ```
 
-Compose 文件会设置 `FROGP_EXTERNAL_SUPERVISOR=1`，让容器内 proxy 绑定到 `0.0.0.0`，发布 `3764` 端口，并把配置保存在 `frogprogsy-config` volume 中。Crash recovery 由 Docker restart policy 负责，因此 frogprogsy 不会在容器内启动自己的 watchdog。
+```powershell
+$env:FROGP_LOCAL_ACCESS_KEY='<strong-secret>'
+docker compose up --build
+```
 
-让 Claude Code 指向宿主机暴露出来的 gateway，例如 `ANTHROPIC_BASE_URL=http://localhost:3764`。
+Compose 运行期间请保持该 terminal 打开，或者添加 `-d` 让它在 detached mode 中运行。Compose 文件会设置 `FROGP_EXTERNAL_SUPERVISOR=1`，让 container 内 proxy 绑定到 `0.0.0.0`，在 host loopback 上发布 `3764` 端口，并把配置保存在 `frogprogsy-config` volume 中。Crash recovery 由 Docker restart policy 负责，因此 frogprogsy 不会在 container 内启动自己的 watchdog。
+
+在另一个 client terminal 中，让 Claude Code 指向 host 暴露的 gateway，并通过专用 relay header 发送同一个 secret：
+
+```bash
+export ANTHROPIC_BASE_URL='http://localhost:3764'
+export ANTHROPIC_CUSTOM_HEADERS='x-frogp-local-key: <strong-secret>'
+claude
+```
+
+```powershell
+$env:ANTHROPIC_BASE_URL='http://localhost:3764'
+$env:ANTHROPIC_CUSTOM_HEADERS='x-frogp-local-key: <strong-secret>'
+claude
+```
+
+所有 upstream `Authorization` 或 `x-api-key` credential 都应保留在原来的 header 中；`ANTHROPIC_CUSTOM_HEADERS` 会添加 relay key，而不会替换其中任何一个。
 
 </details>
 
@@ -123,22 +150,21 @@ claude "解释这个项目的入口点"
 
 ## 可选：连接 Claude 订阅（dual-auth grant）
 
-<details>
-<summary><b>isolated Claude 订阅 grant（Branch B）</b></summary>
+默认情况下，Anthropic provider 使用 **forward** mode：frogprogsy 不存储 Claude token，而是在请求时复用当前 Claude Code 目录的订阅认证。不需要额外设置；原生 `~/.claude*` 目录和多个 Claude 账户保持不变。
 
-上面的 forward-auth 是默认行为，也是零托管：frogprogsy 不保存 Claude token，你的 native `~/.claude` homes 和多账户保持不变。如果需要在无人值守或脚本 caller 中使用 Claude 订阅，可以另外发放一个仅供 frogprogsy 使用、与 native home 及全局 Keychain 登录完全隔离的订阅凭据。
+如果希望 Claude 订阅在同一 session 或 `frogp/mix` roster 中与 Codex 一起响应，又不想让每次调用都依赖已登录的 Claude Code 目录，可以添加一个可选、隔离的 **Claude grant**：
 
 ```bash
-frogp claude grants add "工作订阅"
-frogp providers set anthropic --auth claude-grant --grant <grant-id>
-frogp claude grants status
+frogp claude grants add "Work Claude"     # prints a login command; frogprogsy never runs it
+frogp claude grants status                # ok / expiring / none / unreadable / reauth_required / dangling — no secrets
+frogp providers set anthropic --auth claude-grant --grant <cg_id>
 ```
 
-`grants add` 不会自动登录：它只创建 grant 记录和隔离目录，并用已验证的真实 Claude 可执行文件和一个隔离的 `CLAUDE_CONFIG_DIR` 打印一条手动登录命令。add 本身不验证凭据；你亲自完成 Claude 登录后，再由 `grants status`（或仪表盘）核对隔离 scoped 凭据是否就绪。`grants status` 只报告 `ok`/`reauth_required`/`dangling` 这类就绪状态，不显示任何 secret。绑定后的 grant 可以和 Codex/ChatGPT 等 OAuth 登录在同一 session 及 model mixing 中并存，Codex OAuth 保持独立。
+- Grant 是一次独立的 Claude 登录，由你使用真实的 `claude` executable 登录到 frogprogsy 拥有的 `CLAUDE_CONFIG_DIR`。`frogp claude grants add` 创建 grant record 和 scoped directory，并打印 `CLAUDE_CONFIG_DIR=<grant-dir> claude auth login --claudeai` 命令；它不会自动登录、打开 browser、复制 token，也不会接管原生 `~/.claude*` 目录或全局 Keychain login。登录后，使用 `frogp claude grants status` 或 dashboard 确认 scoped credential 已出现。
+- Grant custody 相互隔离并且 fail-closed：grant token 只服务于已绑定的 Anthropic provider；Codex OAuth 始终是独立 credential。如果 refresh 失败，provider 会返回 typed re-auth error，而不是 fallback 到其他 credential。
+- 设置 grant 时需要同意；任何使用订阅认证的 live 诊断还需要显式 `--yes` 或 dashboard 确认，普通 routed request 不会每次要求确认。这种 custody 会把订阅 token 交给 frogprogsy，因此订阅认证调用会带来任何保护措施都无法消除的 Anthropic ToS、account 和 quota risk。如果不接受，请使用同样支持 headless/API caller 的 Anthropic API-key provider。
 
-Grant 是 opt-in 的托管选择：携带订阅认证的网络请求可能触及 Anthropic 服务条款，并带来 account/quota 层面的后果。显式同意用于选择启用 grant，以及 `frogp claude auth probe-b --live --yes` 这类实时订阅诊断，而不是每个正常 provider 请求都弹确认。不想托管订阅、或需要纯 headless/API 认证时，Anthropic API-key provider 仍是随时可用的替代方案。frogprogsy 不复制 token，也不接管全局登录。详见[Claude Code 接入指南](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/claude-integration/)。
-
-</details>
+Grant readiness 状态、re-auth 和 `frogp doctor claude` 详见[Claude Code 接入指南](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/claude-integration/)。
 
 ## model-mixing 配置
 

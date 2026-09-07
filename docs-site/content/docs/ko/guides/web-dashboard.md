@@ -24,12 +24,17 @@ cd gui && bun dev
 
 | 화면 | 용도 |
 | --- | --- |
-| **Dashboard** | 실행 상태, 버전, 연결한 서비스 수, 웹 검색/이미지 대신 처리 설정, 자동 모드 확인 모델 |
+| **Dashboard** | 실행 상태, 설치/안정판 업데이트 상태, 버전, 연결한 서비스 수, 웹 검색/이미지 대신 처리 설정, 자동 모드 확인 모델 |
 | **Providers** | OAuth 로그인, API 키 서비스, Anthropic Claude Code 홈 행, 직접 입력한 주소, 명시적으로 누르는 연결 테스트, 기본 서비스 변경, 삭제 |
 | **Models** | 대시보드/API 모델 목록 새로고침: Claude Code에 노출되는 모델, 숨긴 모델, discovery 상태를 확인합니다. 대시보드와 `/v1/models`가 내보내는 목록을 다시 읽는 기능이며 Claude Code 선택기 복구 명령은 아닙니다. |
 | **Claude Code 홈** | Claude 모델 선택이 아닌 이름이 있는 Claude Code 설정 디렉터리, pass-through 인증 상태, 주입/복원/새로고침, 홈별 모델 오버레이. 새로고침은 Claude Code 선택기 복구를 준비하고 해당 홈의 안정적인 `frogp claude reload-models <profile-id>` 명령을 보여줍니다. |
 | **Activity** | 안전한 요청 단계 기록, 최근 로그, 날짜/모델/서비스별 로컬 사용량 |
 | **Stop Proxy** | 안전하게 종료하고 Claude Code 설정을 원래대로 복원 |
+
+새 안정판이 있으면 Home은 설치 버전 → 최신 버전, 정확한 `frogp update` 명령, 명시적
+새로고침, 해당 버전 알림 닫기를 보여줍니다. 더 새 버전은 다시 나타납니다. **자세한 설정**은
+자동 확인 토글과 npm 메타데이터만 확인한다는 개인정보 경계를 담당합니다. 대시보드는 버전을
+직접 비교하거나 npm에 연결하지 않고 프록시의 공용 snapshot만 표시합니다.
 
 ## 모델 목록 새로고침과 Claude Code 선택기 복구
 
@@ -89,9 +94,18 @@ resume해야 합니다.
 
 ## 로컬 사용량 확인
 
-Activity의 사용량 영역은 외부 서비스의 청구서가 아니라 로컬 집계입니다. FrogProgsy는 완료된
-`/v1/messages` 요청에서 외부 서비스가 사용량 데이터를 제공할 때 `~/.frogprogsy/usage.jsonl`에
-기록합니다. 사용량을 주지 않은 요청은 token 0으로 표시하지 않고 `unreported`로 집계합니다.
+Activity의 사용량 영역은 외부 서비스의 청구서가 아니라 로컬 집계입니다. FrogProgsy는 완료 처리된 모든
+`/v1/messages` 요청을 `~/.frogprogsy/usage.jsonl`에 기록하며, 외부 서비스가 제공한 사용량과 성공하지
+못한 요청의 실패 상태도 보존합니다. 사용량을 주지 않은 요청은 token 0으로 표시하지 않고 `unreported`로 집계합니다.
+프롬프트 캐시 효과는 wire 의미와 입력 분모가 확인된 요청만 계산합니다. Anthropic은
+`cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)`를
+사용합니다. 네이티브 OpenAI Chat Completions는
+`prompt_tokens_details.cached_tokens / prompt_tokens`, 네이티브 OpenAI Responses는
+`input_tokens_details.cached_tokens / input_tokens`를 사용합니다. OpenAI 입력 합계에는 캐시 토큰이
+이미 포함되므로 다시 더하지 않습니다. 여러 provider가 섞이면 각 요청의 올바른 입력 기준을 합쳐
+계산하며, 캐시 생성은 Anthropic 값으로만 표시합니다. 일반 OpenAI 호환 provider와 Google의 캐시
+수치는 provenance와 분모가 입증되기 전까지 제외하고, 내역 누락과 요청 실패는 별도로 셉니다. 보고된
+실제 0은 `0%`로 표시하며 데이터 없음, 미지원, 내역 누락, 요청 실패 상태도 서로 구분합니다.
 
 이 화면은 “FrogProgsy를 통해 어떤 서비스/모델이 토큰을 썼는가?”를 확인하는 용도입니다. 계정 청구서,
 구독 한도, 조직 비용은 각 AI 서비스의 사용량 화면에서 확인해야 합니다. 서비스마다 방식이 달라서 FrogProgsy가 하나로 합치지 않습니다.
@@ -109,6 +123,9 @@ Claude Code가 서비스별 사용량 주소를 호출할 수도 있으므로, F
 | --- | --- |
 | `GET /api/provider-state` | 비밀값 없는 서비스/실행 상태 요약 |
 | `GET /api/claude-status` | Claude Code 주입/Base URL, 런타임/watchdog/외부 supervisor, 마지막 `/v1/messages` 상태를 민감정보 없이 요약 |
+| `GET /api/update-status` | 디스크/메모리 snapshot만 읽으며 registry 작업을 시작하지 않음 |
+| `POST /api/update-status/refresh` | 명시적인 제한 시간 안정판 새로고침. 일반 로컬 변경 guard가 필요 |
+| `PUT /api/update-settings` | 자동 확인의 정확한 `{enabled:boolean}`만 저장. 꺼진 상태에서도 명시적 새로고침은 가능 |
 | `GET /api/providers` | 설정된 AI 서비스 요약 |
 | `POST /api/providers` | 목록 또는 직접 입력값으로 AI 서비스 추가/갱신 |
 | `POST /api/providers/test` | 사용자가 누를 때만 한 번 수행하는 최소 토큰 provider 연결 테스트와 enum 오류 결과 |

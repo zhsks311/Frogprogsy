@@ -173,6 +173,41 @@ describe("runWithMixing multiround", () => {
     }
   });
 
+  test("budget exhaustion returns and owns the current best panel answer without dispatching a synthesizer", async () => {
+    const owners: Array<{ provider: string; model: string }> = [];
+    let finalDispatched = false;
+    const gen = await runWithMixing({
+      config: cfg({ enabled: true, maxRounds: 2, branchFactor: 2, budgetCalls: 2 }),
+      parsed: req(),
+      incomingHeaders: new Headers(),
+      dispatchBuffered: async (_target, messages): Promise<AdapterEvent[]> => {
+        const text = promptText(messages);
+        if (text.includes("impartial analyst")) {
+          return [{ type: "text_delta", text: judgeJson() }, { type: "done" }];
+        }
+        return [
+          { type: "text_delta", text: "bounded panel answer" },
+          { type: "done", usage: { inputTokens: 6, outputTokens: 2 } },
+        ];
+      },
+      dispatchFinalStream: async () => {
+        finalDispatched = true;
+        return (async function* (): AsyncGenerator<AdapterEvent> {
+          yield { type: "done" };
+        })();
+      },
+      onUserFacingTarget: target => owners.push(target),
+    });
+
+    const events = await collect(gen);
+    expect(finalDispatched).toBe(false);
+    expect(owners).toEqual([{ provider: "codex", model: "gpt-5.5" }]);
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      usage: { inputTokens: 6, outputTokens: 2 },
+    });
+  });
+
   test("respects maxRounds", async () => {
     const calls: string[] = [];
     const gen = await runWithMixing({

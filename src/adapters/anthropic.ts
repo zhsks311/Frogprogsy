@@ -16,9 +16,11 @@ import type {
   FrogToolResultMessage,
   FrogUsage,
 } from "../types";
-import { namespacedToolName } from "../types";
+import { modelInList, namespacedToolName } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
+import { ANTHROPIC_ADAPTIVE_THINKING_MODELS } from "../providers/registry";
 import { modelRecordValue } from "../model-capabilities";
+import { mapReasoningEffort } from "../reasoning-effort";
 import { parseDataUrl } from "./image";
 import { isLocalAccessSecret } from "../local-access";
 
@@ -160,11 +162,22 @@ function reasoningBudget(effort: string): number {
 
 function usageFromAnthropic(usage: Record<string, number> | undefined): FrogUsage | undefined {
   if (!usage) return undefined;
-  const hasCache = usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined;
+  const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : undefined;
+  const outputTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : undefined;
+  const cacheReadInputTokens = typeof usage.cache_read_input_tokens === "number"
+    ? usage.cache_read_input_tokens
+    : undefined;
+  const cacheCreationInputTokens = typeof usage.cache_creation_input_tokens === "number"
+    ? usage.cache_creation_input_tokens
+    : undefined;
+  const hasCompleteCacheTotal = cacheReadInputTokens !== undefined
+    && cacheCreationInputTokens !== undefined;
   return {
-    inputTokens: usage.input_tokens ?? 0,
-    outputTokens: usage.output_tokens ?? 0,
-    ...(hasCache ? { cachedInputTokens: (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) } : {}),
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    ...(hasCompleteCacheTotal ? { cachedInputTokens: cacheReadInputTokens + cacheCreationInputTokens } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
   };
 }
 
@@ -343,11 +356,21 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
         body.system = system;
       }
       if (tools) body.tools = tools;
-      if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;
-      if (parsed.options.topP !== undefined) body.top_p = parsed.options.topP;
+      if (parsed.options.temperature !== undefined && !modelInList(provider.noTemperatureModels, parsed.modelId)) {
+        body.temperature = parsed.options.temperature;
+      }
+      if (parsed.options.topP !== undefined && !modelInList(provider.noTopPModels, parsed.modelId)) {
+        body.top_p = parsed.options.topP;
+      }
       if (parsed.options.stopSequences) body.stop_sequences = parsed.options.stopSequences;
 
-      if (parsed.options.reasoning) {
+      if (provider.catalogProviderId === "anthropic"
+        && ANTHROPIC_ADAPTIVE_THINKING_MODELS.includes(parsed.modelId)) {
+        // These exact verified models use adaptive thinking by default. Effort tiers alone
+        // do not establish that wire dialect for other Anthropic-compatible providers.
+        const effort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
+        if (effort !== undefined) body.output_config = { effort };
+      } else if (parsed.options.reasoning) {
         // Anthropic requires max_tokens > thinking.budget_tokens (max_tokens caps thinking +
         // visible output) and budget_tokens >= 1024. The caller's max_tokens is the hard wire cap
         // and is NEVER raised. Thinking is sent only when the cap fits the minimum budget plus the
@@ -364,7 +387,9 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
       }
 
       if (parsed.options.toolChoice) {
-        const tc = parsed.options.toolChoice;
+        const tc = modelInList(provider.autoToolChoiceOnlyModels, parsed.modelId)
+          ? (parsed.options.toolChoice === "none" ? "none" : "auto")
+          : parsed.options.toolChoice;
         if (tc === "auto") body.tool_choice = { type: "auto" };
         else if (tc === "none") body.tool_choice = { type: "none" };
         else if (tc === "required") body.tool_choice = { type: "any" };
@@ -419,6 +444,7 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
       let currentBlockType = "";
       let currentToolCallId = "";
       let currentToolCallName = "";
+      let pendingUsage: Record<string, number> | undefined;
 
       try {
         while (true) {
@@ -448,6 +474,11 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
             }
 
             switch (currentEventType || data.type) {
+              case "message_start": {
+                const message = data.message as { usage?: Record<string, number> } | undefined;
+                if (message?.usage) pendingUsage = message.usage;
+                break;
+              }
               case "content_block_start": {
                 const block = data.content_block as { type: string; id?: string; name?: string } | undefined;
                 if (!block) break;
@@ -481,13 +512,16 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
               }
               case "message_delta": {
                 const usage = data.usage as Record<string, number> | undefined;
+                const completeUsage = pendingUsage || usage
+                  ? { ...(pendingUsage ?? {}), ...(usage ?? {}) }
+                  : undefined;
                 const delta = data.delta as { stop_reason?: unknown } | undefined;
                 const stop = normalizeAnthropicStopReason(delta?.stop_reason, "stream");
                 if (stop?.diagnostic) yield { type: "diagnostic", diagnostic: stop.diagnostic };
                 if (usage || stop) {
                   yield {
                     type: "done",
-                    usage: usageFromAnthropic(usage),
+                    usage: usageFromAnthropic(completeUsage),
                     ...(stop ? { stopReason: stop.stopReason, stopReasonProvenance: stop.provenance } : {}),
                   };
                 }

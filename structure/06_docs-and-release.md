@@ -163,6 +163,21 @@ A published npm version, Git tag, or GitHub Release is immutable. Moving or remo
 New preparation requires `main`'s `package.json.version`, npm `latest`, and the matching stable Git tag and
 GitHub Release to agree. Automation stops on disagreement instead of calculating from uncertain state.
 
+### Release path selection
+
+The maintainer selects the release path; automation does not infer it from the changed files. An npm preview
+is an optional, risk-based validation path, not a prerequisite for publishing stable `latest`. Select preview
+when a change needs acceptance against the public package or by real users, especially for high-risk
+authentication or credential handling, restoration or configuration, provider routing, protocol or streaming
+behavior, model-catalog or release machinery, and behavior whose cross-platform outcome remains uncertain.
+Choose direct stable for reviewed, lower-risk work when the exact-SHA gates provide adequate confidence.
+
+The choice changes the acceptance evidence, not the stable safeguards. A direct stable release still requires
+the release SHA's Cross-platform CI, Package lifecycle, Pages deployment and package-to-Pages checks, release
+dry-run and exact-tarball verification, and registry and provenance smoke checks. Published versions, Git tags,
+and GitHub Releases remain immutable, and failures retain the fix-forward and rollback boundaries below.
+Skipping preview makes no claim that a public preview tarball received acceptance testing.
+
 ### Release labels
 
 | Label | Eligible pull request | Meaning |
@@ -181,6 +196,12 @@ Every eligible pull request must carry exactly one selection label. Only one ope
 selection other than `release:none`; a competing selection keeps `Release state` failed. `release:ready`
 is an automation-owned status marker, not a selection. People must not add or remove it; automation removes
 stale readiness and adds it only after the current head passes bound checks.
+
+`Prepare release` reconciles the required exact-head CI and Package lifecycle runs independently of whether
+the current invocation pushed: it binds the newest matching manual run, including a failed run, and
+dispatches each missing workflow at most once before a bounded visibility wait. Missing evidence is distinct
+from API, JSON, or invalid run-ID failure; only a positive run ID is written, and every failure remains
+fail-closed under the existing sealed-snapshot and newest-run guards.
 
 Labels request transitions; they are not release authority after merge. The publisher reads verified
 preparation and cancellation records from merged history. Changing a label after merge cannot change the
@@ -400,7 +421,12 @@ the native `Claude Code-credentials` service.
 because `ci.yml` owns those gates, uploads that immutable artifact, and downloads the same bytes in
 all three OS jobs. Each job installs into an isolated Bun global root and uses temporary frogprogsy
 and Claude homes to verify start, health, explicit restore, stop, restart, final byte-equivalent
-restore, watchdog/proxy cleanup, and package-only removal.
+restore, watchdog/proxy cleanup, and package-only removal. A package-smoke-only Bun preload intercepts
+only the fixed official npm dist-tags URL; it is not a product URL override. The installed package must
+show a controlled newer stable release within five seconds, make one ordinary request, make one additional
+explicit request, make zero additional ordinary requests after restart inside 24 hours, and preserve
+proxy PID, installed version/bin hash, Claude settings, config, and update cache. Linux, Windows, and macOS
+must classify the exact installed package as Bun-managed.
 
 The release workflow is publish-focused and receives only immutable inputs classified by the prepared-release
 dispatcher. Before a dry run, recovery, or publication, it requires the channel-specific exact-SHA gates

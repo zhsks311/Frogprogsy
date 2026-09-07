@@ -30,6 +30,7 @@ describe("GUI/server build identity contract", () => {
     expect(payload.status).toBe("ok");
     expect(payload.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(payload.uptime).toBe(12.5);
+    expect(payload.processPid).toBe(process.pid);
     expect(payload.serverBuildId).toBe(`frogprogsy-server@${payload.version}`);
     expect(payload).toHaveProperty("guiBuildId");
     expect(["ok", "missing", "malformed", "version-mismatch", "source-mismatch-dev"]).toContain(payload.guiBuildStatus);

@@ -11,7 +11,7 @@ import { bridgeToMessagesSSE, buildMessageJSON, formatAnthropicErrorResponse } f
 import { classifyError, parseUpstreamErrorDetails, type UpstreamErrorDetails } from "./errors";
 import { safeResponseHeaders, type WsData } from "./ws-bridge";
 import type { ServerWebSocket } from "bun";
-import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, readActivePort, readPid, saveConfig, websocketsEnabled, writeLocalAccessToken } from "./config";
+import { DEFAULT_PORT, DEFAULT_SUBAGENT_MODELS, dropRuntimeFixtureProviders, getConfigPath, getWatchdogPidPath, getWatchdogStatusPath, readActivePort, readPid, saveConfig, updateChecksEnabled, websocketsEnabled, writeLocalAccessToken } from "./config";
 import { parseRequest } from "./responses/parser";
 import { estimateMessagesInputTokens, parseMessagesRequest, buildResponsesBody } from "./messages/parser";
 import { listPersistedModelAliases, materializeModelAliases, reconcileRetiredModelAliases, type ModelAliasEntry } from "./model-aliases";
@@ -20,7 +20,7 @@ import { cheapMixTarget, isModelMixingRequest, resolveMix, validMixAgents, type 
 import { computeCallPlan } from "./model-mixing/orchestrate";
 import { applyModelMixingPatch, modelMixingSettingsSnapshot } from "./model-mixing/settings";
 import { runWithMixing } from "./model-mixing/loop";
-import { namespacedToolName } from "./types";
+import { cacheUsageSemanticsForProvider, namespacedToolName } from "./types";
 import { signalWithTimeout } from "./abort";
 import { debugSwallowed } from "./debug";
 import {
@@ -58,7 +58,7 @@ import {
 } from "./model-continuity";
 import { createRuntimeConfigState, type RuntimeConfigState } from "./runtime-config-state";
 import type { CatalogRuntimeStatus, SelectedModelCatalog } from "./model-catalog-runtime";
-import type { AdapterDiagnostic, AdapterEvent, ClaudeGrantRecord, ClaudeProfileRecord, ClaudeProjectRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage, ModelContinuityAutomatic, ModelContinuityPolicy } from "./types";
+import type { AdapterDiagnostic, AdapterEvent, CacheUsageSemantics, ClaudeGrantRecord, ClaudeProfileRecord, ClaudeProjectRecord, FrogConfig, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTool, FrogUsage, ModelContinuityAutomatic, ModelContinuityPolicy } from "./types";
 import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalTokens } from "./usage-log";
 import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
@@ -121,16 +121,12 @@ import {
 import { deleteClaudeGrantCredential, inspectClaudeGrantStatus } from "./claude-grant-auth";
 import { ClaudeGrantProbeError, runClaudeGrantLiveProbe, type ClaudeGrantLiveProbeResult } from "./claude-grant-probe";
 import { parseEnvFlag, resolveWatchdogEnabled } from "./watchdog";
+import { createUpdateStatusService } from "./update-status";
+import type { UpdateStatusService } from "./update-status";
+import { installedPackageVersion } from "./install-identity";
 
 // Single source of truth = package.json (../ from src/), so /healthz + the GUI badge match the
-// installed package version instead of a stale hardcode.
-const VERSION = (() => {
-  try {
-    return JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
-  } catch {
-    return "0.0.0";
-  }
-})();
+const VERSION = installedPackageVersion();
 
 const SERVER_BUILD_ID = `frogprogsy-server@${VERSION}`;
 
@@ -176,6 +172,7 @@ export function buildHealthzPayload(uptime = process.uptime()) {
     status: "ok",
     version: VERSION,
     uptime,
+    processPid: process.pid,
     ...resolveGuiBuildIdentity(GUI_DIST, VERSION, SERVER_BUILD_ID),
   };
 }
@@ -823,6 +820,16 @@ async function handleMessages(
       abortSignal: mixingAbort.signal,
       dispatchBuffered: (target, messages, maxTokens, timeoutMs, tools) =>
         runMixTurn(config, target, parsed, { messages, stream: false, maxTokens, tools }, req.headers, timeoutMs ?? mixTimeoutMs, mixingAbort.signal) as Promise<AdapterEvent[]>,
+      onUserFacingTarget: target => {
+        const finalProvider = config.providers[target.provider];
+        if (!finalProvider) return;
+        const effectiveFinalProvider = resolveWireProtocolOverride(target.provider, target.model, finalProvider);
+        setRouteLog(
+          logCtx,
+          { providerName: target.provider, modelId: target.model, provider: effectiveFinalProvider },
+          "qualified",
+        );
+      },
       dispatchFinalStream: (target, systemAppend) =>
         runMixTurn(config, target, parsed, { systemAppend, stream: true }, req.headers, mixTimeoutMs, mixingAbort.signal) as Promise<AsyncGenerator<AdapterEvent>>,
     });
@@ -1077,6 +1084,12 @@ async function handleMessages(
 
     recordLogPhase(logCtx, "adapter_build", "ok");
     const adapterProvider = resolveWireProtocolOverride(attempt.providerName, attempt.modelId, attemptProvider);
+    setRouteLog(
+      logCtx,
+      { providerName: attempt.providerName, modelId: attempt.modelId, provider: adapterProvider },
+      attempt.routeKind,
+      attempt.ambiguousCandidates,
+    );
     const adapter = resolveAdapter(adapterProvider);
     const upstream = new AbortController();
     linkAbortSignal(upstream, options.abortSignal);
@@ -1620,6 +1633,7 @@ interface RequestLogEntry {
     routedModelLabel?: string;
     provider: string;
     adapter?: string;
+    cacheUsageSemantics?: CacheUsageSemantics;
     authMode?: string;
     routeKind?: string;
     ambiguousCandidates?: string[];
@@ -1643,7 +1657,14 @@ interface RequestLogEntry {
     contentTypeFamily?: "sse" | "json" | "text" | "binary" | "unknown";
     requestBytes?: number;
     responseBytes?: number;
-    usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningOutputTokens?: number };
+    usage?: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+      cacheReadInputTokens?: number;
+      cacheCreationInputTokens?: number;
+      reasoningOutputTokens?: number;
+    };
   };
   error?: {
     kind: "validation" | "routing" | "authentication" | "origin" | "timeout" | "upstream" | "bridge" | "internal";
@@ -1706,6 +1727,7 @@ function requestLogManagementSnapshot() {
       ...(entry.route.routedModelLabel !== undefined ? { routedModelLabel: entry.route.routedModelLabel } : {}),
       provider: entry.route.provider,
       ...(entry.route.adapter !== undefined ? { adapter: entry.route.adapter } : {}),
+      ...(entry.route.cacheUsageSemantics !== undefined ? { cacheUsageSemantics: entry.route.cacheUsageSemantics } : {}),
       ...(entry.route.authMode !== undefined ? { authMode: entry.route.authMode } : {}),
       ...(entry.route.routeKind !== undefined ? { routeKind: entry.route.routeKind } : {}),
       ...(entry.route.ambiguousCandidates !== undefined ? { ambiguousCandidates: [...entry.route.ambiguousCandidates] } : {}),
@@ -2005,6 +2027,8 @@ function recordLogUsage(ctx: RequestLogContext, usage: FrogUsage | undefined): v
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+      ...(usage.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+      ...(usage.cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
       ...(usage.reasoningOutputTokens !== undefined ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
     },
   };
@@ -2142,6 +2166,9 @@ function setRouteLog(
   ctx.entry.route.provider = route.providerName;
   ctx.entry.route.routedModelLabel = route.modelId;
   ctx.entry.route.adapter = route.provider.adapter;
+  const cacheUsageSemantics = cacheUsageSemanticsForProvider(route.provider);
+  if (cacheUsageSemantics) ctx.entry.route.cacheUsageSemantics = cacheUsageSemantics;
+  else delete ctx.entry.route.cacheUsageSemantics;
   ctx.entry.route.authMode = route.provider.authMode ?? (route.provider.apiKey ? "key" : "none");
   ctx.entry.route.routeKind = routeKind;
   if (ambiguousCandidates && ambiguousCandidates.length > 0) {
@@ -2158,8 +2185,33 @@ function usageFromLogEntry(entry: RequestLogEntry): FrogUsage | undefined {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+    ...(typeof usage.cacheReadInputTokens === "number" ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+    ...(typeof usage.cacheCreationInputTokens === "number" ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
     ...(typeof usage.reasoningOutputTokens === "number" ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
   };
+}
+
+function isValidUsageCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function cacheUsageStatusForFinalLog(entry: RequestLogEntry, usage: FrogUsage | undefined): "reported" | "unsupported" | "unavailable" {
+  const semantics = entry.route.cacheUsageSemantics;
+  if (
+    semantics === "anthropic_separate_input_buckets"
+    && isValidUsageCount(usage?.cacheReadInputTokens)
+    && isValidUsageCount(usage.cacheCreationInputTokens)
+    && isValidUsageCount(usage.inputTokens)
+  ) return "reported";
+  if (
+    semantics === "openai_input_total_includes_cached"
+    && isValidUsageCount(usage?.cacheReadInputTokens)
+    && isValidUsageCount(usage.inputTokens)
+    && usage.cacheReadInputTokens <= usage.inputTokens
+  ) return "reported";
+  if (semantics) return "unavailable";
+  if (entry.route.adapter) return "unsupported";
+  return "unavailable";
 }
 
 function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
@@ -2174,6 +2226,8 @@ function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
       status: ctx.entry.status ?? 0,
       durationMs: ctx.entry.durationMs ?? 0,
       usageStatus: usageStatusForFinalLog(usage),
+      cacheUsageStatus: cacheUsageStatusForFinalLog(ctx.entry, usage),
+      ...(ctx.entry.route.cacheUsageSemantics ? { cacheUsageSemantics: ctx.entry.route.cacheUsageSemantics } : {}),
       ...(usage ? { usage, totalTokens: usageTotalTokens(usage) } : {}),
     });
   } catch (err) {
@@ -2648,6 +2702,8 @@ interface ManagementAPIDeps {
     config: FrogConfig,
     profile: { claudeHome: string; profileId: string; retiredTargets?: ReadonlySet<string> },
   ) => Promise<ClaudeCodeCatalogRefreshResult>;
+  /** Single process-local update owner. Production assigns it only after listener/token readiness. */
+  updateStatusService?: UpdateStatusService;
 }
 
 // ── Branch-B claude-grant management API: metadata / lifecycle / provider binding (fail-closed) ──
@@ -3331,6 +3387,51 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
         code: "persist_failed",
       }, 500);
     }
+  }
+
+  const updateStatusService = deps.updateStatusService;
+  if (url.pathname === "/api/update-status" && req.method === "GET") {
+    return updateStatusService
+      ? jsonResponse(updateStatusService.snapshot())
+      : jsonResponse({ error: "update status service unavailable" }, 503);
+  }
+  if (url.pathname === "/api/update-status/refresh" && req.method === "POST") {
+    return updateStatusService
+      ? jsonResponse(await updateStatusService.refresh({ force: true }))
+      : jsonResponse({ error: "update status service unavailable" }, 503);
+  }
+  if (url.pathname === "/api/update-settings" && req.method === "PUT") {
+    if (!updateStatusService) return jsonResponse({ error: "update status service unavailable" }, 503);
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: "invalid JSON body" }, 400);
+    }
+    if (!isPlainJsonObject(body)
+      || Object.keys(body).length !== 1
+      || !hasOnlyKeys(body, ["enabled"])
+      || typeof body.enabled !== "boolean") {
+      return jsonResponse({ error: "expected exactly { enabled: boolean }" }, 400);
+    }
+    const previous = config.updateChecks;
+    config.updateChecks = { enabled: body.enabled };
+    try {
+      state.persist();
+    } catch {
+      if (previous === undefined) delete config.updateChecks;
+      else config.updateChecks = previous;
+      state.rebuild();
+      return jsonResponse({ error: "update settings could not be saved" }, 500);
+    }
+    updateStatusService.setEnabled(body.enabled);
+    const snapshot = updateStatusService.snapshot();
+    if (body.enabled) {
+      setTimeout(() => {
+        void updateStatusService.refresh({ force: false });
+      }, 0);
+    }
+    return jsonResponse(snapshot);
   }
 
   if (url.pathname !== "/api/model-continuity") {
@@ -4924,6 +5025,10 @@ export interface ServerStartDeps {
   onRuntimeConfigReady?: (effectiveConfig: FrogConfig, retiredTargets: ReadonlySet<string>) => void;
   /** Clock seam shared by continuity circuit routing and management reporting. */
   now?: () => number;
+  /** Factory seam; called only after the listener and same-machine token are ready. */
+  createUpdateStatusService?: (enabled: boolean) => UpdateStatusService;
+  /** Deferred-task seam proving ordinary refresh is never awaited by startup. */
+  scheduleUpdateRefresh?: (task: () => void) => void;
 }
 
 export async function startServer(
@@ -4996,6 +5101,7 @@ export async function startServer(
     );
   }
 
+  let updateStatusService: UpdateStatusService | undefined;
   const serve = deps.serve ?? Bun.serve;
   const server = serve<WsData>({
     port: listenPort,
@@ -5037,7 +5143,7 @@ export async function startServer(
       }
 
       if (url.pathname.startsWith("/api/")) {
-        const mgmtResponse = await handleManagementAPI(req, url, state, { clientAddress, continuityCircuit, now });
+        const mgmtResponse = await handleManagementAPI(req, url, state, { clientAddress, continuityCircuit, now, updateStatusService });
         return mgmtResponse ?? jsonResponse({ error: `Unknown API endpoint: ${req.method} ${url.pathname}` }, 404);
       }
 
@@ -5153,6 +5259,17 @@ export async function startServer(
       throw new Error(`Could not write the same-machine relay token: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+
+  updateStatusService = (deps.createUpdateStatusService ?? (enabled => createUpdateStatusService({ enabled })))(
+    updateChecksEnabled(state.persisted),
+  );
+  const scheduleUpdateRefresh = deps.scheduleUpdateRefresh ?? (task => {
+    const timer = setTimeout(task, 0);
+    timer.unref();
+  });
+  scheduleUpdateRefresh(() => {
+    void updateStatusService?.refresh({ force: false });
+  });
 
   console.log(`🚀 frogprogsy proxy running on http://localhost:${listenPort}`);
   console.log(`   POST /v1/messages  → provider translation`);

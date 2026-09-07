@@ -63,6 +63,19 @@ describe("GUI IA and empty states", () => {
     expect(usage).toContain(", range), [data?.days, range, t]");
   });
 
+  test("Activity polling aborts its in-flight request when the effect is replaced", () => {
+    const usage = read("gui/src/pages/Usage.tsx");
+    const effectStart = usage.indexOf("useEffect(() => {");
+    const effectEnd = usage.indexOf("}, [apiBase, range]);", effectStart);
+    const pollingEffect = usage.slice(effectStart, effectEnd);
+
+    expect(pollingEffect).toContain("const abortController = new AbortController()");
+    expect(pollingEffect).toContain("signal: abortController.signal");
+    expect(pollingEffect).toContain("cancelled = true");
+    expect(pollingEffect).toContain("abortController.abort()");
+    expect(pollingEffect.indexOf("cancelled = true")).toBeLessThan(pollingEffect.indexOf("abortController.abort()"));
+  });
+
   test("Logs empty state has actions and can navigate from Details", () => {
     const logs = read("gui/src/pages/Logs.tsx");
     const details = read("gui/src/pages/DeveloperDetails.tsx");

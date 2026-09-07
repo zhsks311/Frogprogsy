@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AUTO_MODE_CLASSIFIER_ALIAS } from "../src/classifier-settings";
+import { installedPackageVersion } from "../src/install-identity";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
@@ -851,7 +852,9 @@ describe("CLI subcommand help", () => {
       port: 0,
       async fetch(request) {
         const url = new URL(request.url);
-        if (url.pathname === "/healthz") return Response.json({ status: "ok" });
+        if (url.pathname === "/healthz") {
+          return Response.json({ status: "ok", serverBuildId: `frogprogsy-server@${installedPackageVersion()}` });
+        }
         if (url.pathname === "/api/claude-profiles/cp_work/refresh" && request.method === "POST") {
           refreshRequests.push({
             path: url.pathname,
@@ -1121,7 +1124,7 @@ describe("CLI subcommand help", () => {
     expect(result.stdout).not.toContain("frogp recover-history");
     expect(result.stdout).toContain("--no-restart");
     // round-2 surfaces present
-    expect(result.stdout).toContain("frogp status [--json]");
+    expect(result.stdout).toContain("frogp status [--json] [--refresh-update]");
     expect(result.stdout).toContain("frogp models [--json]");
     expect(result.stdout).toContain("frogp claude project enroll");
     // Branch-B isolated Claude subscription grant surfaces

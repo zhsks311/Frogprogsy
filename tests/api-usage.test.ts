@@ -195,12 +195,316 @@ describe("GET /api/usage", () => {
       expect(body.summary.requests).toBe(0);
       expect(body.summary.totalTokens).toBe(0);
       expect(body.summary.coverageRatio).toBe(0);
+      expect(body.cacheHitRate).toMatchObject({
+        status: "no_data",
+        hitRate: null,
+        reportedRequests: 0,
+        unsupportedRequests: 0,
+        unavailableRequests: 0,
+        failedRequests: 0,
+      });
       expectUsageSourceState(body);
       expectNoDerivedUsageEstimates(body);
     } finally {
       await server.stop(true);
     }
   });
+  test("normalizes Anthropic and native OpenAI denominators while separating zero, absent, unsupported, and legacy rows", async () => {
+    const now = Date.now();
+    const lines = [
+      {
+        requestId: "anthropic-hit",
+        timestamp: now,
+        provider: "anthropic",
+        model: "claude-sonnet",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "anthropic_separate_input_buckets",
+        usage: {
+          inputTokens: 50,
+          outputTokens: 5,
+          cachedInputTokens: 50,
+          cacheReadInputTokens: 40,
+          cacheCreationInputTokens: 10,
+        },
+        totalTokens: 55,
+      },
+      {
+        requestId: "openai-chat-hit",
+        timestamp: now,
+        provider: "openai",
+        model: "gpt-chat",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 80, outputTokens: 5, cachedInputTokens: 20, cacheReadInputTokens: 20 },
+        totalTokens: 85,
+      },
+      {
+        requestId: "openai-chat-zero",
+        timestamp: now,
+        provider: "openai",
+        model: "gpt-chat",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 60, outputTokens: 5, cachedInputTokens: 0, cacheReadInputTokens: 0 },
+        totalTokens: 65,
+      },
+      {
+        requestId: "openai-responses-hit",
+        timestamp: now,
+        provider: "codex",
+        model: "gpt-responses",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 70, outputTokens: 5, cachedInputTokens: 14, cacheReadInputTokens: 14 },
+        totalTokens: 75,
+      },
+      {
+        requestId: "openai-responses-zero",
+        timestamp: now,
+        provider: "codex",
+        model: "gpt-responses",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 40, outputTokens: 5, cachedInputTokens: 0, cacheReadInputTokens: 0 },
+        totalTokens: 45,
+      },
+      {
+        requestId: "openai-chat-details-absent",
+        timestamp: now,
+        provider: "openai",
+        model: "gpt-chat",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "unavailable",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 20, outputTokens: 5 },
+        totalTokens: 25,
+      },
+      {
+        requestId: "openai-responses-details-absent",
+        timestamp: now,
+        provider: "codex",
+        model: "gpt-responses",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "unavailable",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 20, outputTokens: 5 },
+        totalTokens: 25,
+      },
+      {
+        requestId: "generic-openai-compatible",
+        timestamp: now,
+        provider: "compatible",
+        model: "gpt-shaped",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "unsupported",
+        usage: { inputTokens: 20, outputTokens: 5, cachedInputTokens: 10 },
+        totalTokens: 25,
+      },
+      {
+        requestId: "google-non-equivalent",
+        timestamp: now,
+        provider: "google",
+        model: "gemini",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "unsupported",
+        usage: { inputTokens: 20, outputTokens: 5, cachedInputTokens: 10 },
+        totalTokens: 25,
+      },
+      {
+        requestId: "legacy-reported-anthropic-triple",
+        timestamp: now,
+        provider: "renamed-provider",
+        model: "claude-compatible",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cachedInputTokens: 10,
+          cacheReadInputTokens: 5,
+          cacheCreationInputTokens: 5,
+        },
+        totalTokens: 15,
+      },
+      {
+        requestId: "historical-no-provenance",
+        timestamp: now,
+        provider: "openai",
+        model: "old-gpt",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        usage: { inputTokens: 20, outputTokens: 5, cachedInputTokens: 10 },
+        totalTokens: 25,
+      },
+    ];
+    writeFileSync(join(testDir, "usage.jsonl"), `${lines.map(line => JSON.stringify(line)).join("\n")}\n`, { mode: 0o600 });
+    const server = await startServer(0);
+    try {
+      const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
+      expect(body.cacheHitRate).toEqual({
+        status: "available",
+        formula: "cache_read_input_tokens / total_input_tokens",
+        cacheReadInputTokens: 79,
+        cacheCreationInputTokens: 15,
+        inputTokens: 310,
+        totalInputTokens: 370,
+        hitRate: 79 / 370,
+        reportedRequests: 6,
+        unsupportedRequests: 2,
+        unavailableRequests: 3,
+        failedRequests: 0,
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("reports a comparable zero hit rate instead of an unavailable state", async () => {
+    writeFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
+      requestId: "cache-zero",
+      timestamp: Date.now(),
+      provider: "anthropic",
+      model: "claude-sonnet",
+      status: 200,
+      durationMs: 10,
+      usageStatus: "reported",
+      cacheUsageStatus: "reported",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+      totalTokens: 105,
+    })}\n`, { mode: 0o600 });
+    const server = await startServer(0);
+    try {
+      const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
+      expect(body.cacheHitRate).toMatchObject({
+        status: "available",
+        cacheReadInputTokens: 0,
+        totalInputTokens: 100,
+        hitRate: 0,
+        reportedRequests: 1,
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("reports non-equivalent provider cache semantics as unsupported", async () => {
+    writeFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
+      requestId: "cache-unsupported",
+      timestamp: Date.now(),
+      provider: "openai",
+      model: "gpt",
+      status: 200,
+      durationMs: 10,
+      usageStatus: "reported",
+      cacheUsageStatus: "unsupported",
+      usage: { inputTokens: 100, outputTokens: 5, cachedInputTokens: 20 },
+      totalTokens: 105,
+    })}\n`, { mode: 0o600 });
+    const server = await startServer(0);
+    try {
+      const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
+      expect(body.cacheHitRate).toMatchObject({
+        status: "unsupported",
+        hitRate: null,
+        reportedRequests: 0,
+        unsupportedRequests: 1,
+        unavailableRequests: 0,
+        failedRequests: 0,
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("surfaces failures while retaining unsupported and missing-breakdown counts", async () => {
+    const now = Date.now();
+    const lines = [
+      {
+        requestId: "cache-unsupported",
+        timestamp: now,
+        provider: "compatible",
+        model: "gpt-shaped",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "unsupported",
+        usage: { inputTokens: 100, outputTokens: 5, cachedInputTokens: 20 },
+        totalTokens: 105,
+      },
+      {
+        requestId: "cache-breakdown-missing",
+        timestamp: now,
+        provider: "openai",
+        model: "gpt",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "unavailable",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 100, outputTokens: 5 },
+        totalTokens: 105,
+      },
+      {
+        requestId: "upstream-failed",
+        timestamp: now,
+        provider: "openai",
+        model: "gpt",
+        status: 502,
+        durationMs: 10,
+        usageStatus: "unreported",
+        cacheUsageStatus: "unavailable",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+      },
+    ];
+    writeFileSync(join(testDir, "usage.jsonl"), `${lines.map(line => JSON.stringify(line)).join("\n")}\n`, { mode: 0o600 });
+    const server = await startServer(0);
+    try {
+      const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
+      expect(body.cacheHitRate).toMatchObject({
+        status: "error",
+        hitRate: null,
+        reportedRequests: 0,
+        unsupportedRequests: 1,
+        unavailableRequests: 1,
+        failedRequests: 1,
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("groups usage by final successful fallback provider and model only", async () => {
     saveConfig({
       port: 0,
@@ -242,7 +546,7 @@ describe("GET /api/usage", () => {
         role: "assistant",
         model: "fallback-model",
         content: [{ type: "text", text: "fallback ok" }],
-        usage: { input_tokens: 13, output_tokens: 5, cache_read_input_tokens: 2 },
+        usage: { input_tokens: 13, output_tokens: 5, cache_read_input_tokens: 2, cache_creation_input_tokens: 0 },
       }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -272,6 +576,15 @@ describe("GET /api/usage", () => {
         inputTokens: 13,
         outputTokens: 5,
         cachedInputTokens: 2,
+      });
+      expect(body.cacheHitRate).toMatchObject({
+        status: "available",
+        cacheReadInputTokens: 2,
+        cacheCreationInputTokens: 0,
+        inputTokens: 13,
+        totalInputTokens: 15,
+        hitRate: 2 / 15,
+        reportedRequests: 1,
       });
       expect(body.providers).toHaveLength(1);
       expect(body.providers[0]).toMatchObject({ provider: "fallback", totalTokens: 18 });
