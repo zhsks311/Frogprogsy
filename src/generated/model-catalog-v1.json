@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "catalogRevision": 4,
   "catalogDigest": "c53fd62b760a916d60f8819ae1a39e2f287a6730e9754316c51d9f8f76ccd1a3",
-  "sourceCommit": "05465bbccb01cad46c0c14b0028963bd00c7e99f",
-  "generatedAt": "2026-09-06T04:36:15+09:00",
+  "sourceCommit": "1909eae104f8b361ef80b91377594a4994e3f489",
+  "generatedAt": "2026-09-07T10:58:04+09:00",
   "minFrogprogsyVersion": "0.0.2-preview.2",
   "providers": [
     {
