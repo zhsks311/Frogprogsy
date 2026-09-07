@@ -8,6 +8,7 @@
 - Maintainers can promote only the current exactly reconciled preview and recover partial publication only for the original prepared SHA without reusing a consumed version.
 - Bun-global stable installs now detect npm `latest` after startup without blocking the proxy, expose one cached update status across CLI/API/dashboard, and keep installation, restart, Claude state, credentials, and telemetry under explicit user control.
 - The Activity dashboard now shows a provenance-aware, coverage-labelled prompt-cache hit rate from Anthropic's separate read/creation/plain-input buckets and native OpenAI Chat/Responses cached-token details without double-counting OpenAI's inclusive input total, while separating failed requests from missing or unsupported cache usage.
+- The model catalog now includes Codex GPT-6 Astra, API-key GPT-6 Astra and GPT-5.6 Sol/Terra/Luna, and Claude Fable 5.1 with route-specific limits. Codex GPT-5.4 and GPT-5.4-mini move to the retired list; existing defaults remain unchanged.
 
 ### Changed
 
@@ -17,6 +18,7 @@
 ### Fixed
 
 - OpenAI Chat routes now fail closed on truncated or stalled streams, preserve max-token and retry metadata, and keep parallel tool calls and failed tool results distinct in Claude Messages. Codex Responses streams now count lifecycle and keepalive frames as activity and preserve terminal frames without a trailing newline.
+- Claude Fable 5.1 requests now use adaptive-thinking effort and supported tool choices, while API-key GPT-6 Astra requests omit unsupported sampling parameters. These two models require a 0.0.7 or newer client; catalog-only updates do not enable them on older installations.
 
 ## 0.0.3
 
