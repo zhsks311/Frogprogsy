@@ -56,7 +56,7 @@ export type ProviderConfigSeed = Pick<
 
 // Verified wire-dialect support is bundled with the adapter, not inferred from effort tiers.
 // Keep catalog v1's strict schema readable by older clients; new dialects require a client update.
-export const ANTHROPIC_ADAPTIVE_THINKING_MODELS = ["claude-fable-5-1"];
+export const ANTHROPIC_ADAPTIVE_THINKING_MODELS = ["claude-fable-5", "claude-fable-5-1"];
 
 function textOnlyCapabilities(ids: readonly string[]): Record<string, FrogModelCapabilities> {
   return Object.fromEntries(ids.map(id => [id, { input: ["text"] } satisfies FrogModelCapabilities]));

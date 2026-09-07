@@ -4,6 +4,7 @@ import { cacheUsageSemanticsForProvider, modelInList } from "../types";
 import { debugDroppedFrame } from "../debug";
 import { codexBackendHeaders, isCodexBackendBaseUrl } from "../oauth/codex";
 import { isLocalAccessSecret } from "../local-access";
+import { mapReasoningEffort } from "../reasoning-effort";
 
 // Headers relayed verbatim from the caller in forward-auth mode.
 // Exported so fallbacks reuse the exact same forwarded-auth set for ChatGPT/OpenAI Responses calls.
@@ -327,6 +328,18 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
 
       let body = sanitizeReasoningInputContent(parsed._rawBody);
       body = normalizeInputImageUrls(body);
+      // Translate Messages labels only; native Responses requests already use upstream wire values.
+      if (parsed._messagesRawBody && parsed.options.reasoning && body && typeof body === "object" && !Array.isArray(body)) {
+        const raw = body as Record<string, unknown>;
+        const reasoning = raw.reasoning as Record<string, unknown> | undefined;
+        const effort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
+        if (reasoning?.effort !== effort) {
+          const mapped = { ...raw };
+          if (effort === undefined) delete mapped.reasoning;
+          else mapped.reasoning = { ...reasoning, effort };
+          body = mapped;
+        }
+      }
       if (isCodexBackend) body = sanitizeCodexBackendBody(body);
       else if (body && typeof body === "object" && !Array.isArray(body)) {
         const raw = body as Record<string, unknown>;
