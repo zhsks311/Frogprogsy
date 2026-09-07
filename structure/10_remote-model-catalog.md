@@ -155,6 +155,59 @@ The same refresh established these maintenance decisions:
 - migration and runtime overlays preserve credentials, user defaults, disabled models, explicit additions, and fixed `liveModels:false` allowlists; and
 - `unmanagedModels` removes stale validation data without claiming retirement or creating a fallback route.
 
+### GPT and Claude refresh: 2026-09-06
+
+Catalog revision 4 adds the current general-availability models without changing existing
+provider defaults or user-selected models:
+
+| Route | Added model IDs | Maximum context | Audited maximum output |
+| --- | --- | ---: | ---: |
+| ChatGPT Codex | `gpt-6-astra` | 872,000 | Not published by the observed route |
+| OpenAI Responses API key | `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 1,050,000 | 128,000 |
+| Claude API | `claude-fable-5-1` | 1,000,000 | 128,000 |
+
+All added models accept text and image input. Output limits remain source notes, not enforced caps.
+The authenticated Codex [`/models?client_version=1.0.0`](https://chatgpt.com/backend-api/codex/models?client_version=1.0.0)
+response returned Astra with `context_window:272000` and `max_context_window:872000`.
+The separate [OpenAI API specification](https://developers.openai.com/api/docs/models/gpt-6-astra)
+reports 1,050,000 total context and 922,000 maximum input tokens; those API values are not copied
+to the ChatGPT route. The GPT-5.6 API additions were checked against each model's own page.
+
+The [Codex model documentation](https://learn.chatgpt.com/docs/models) announces retirement of
+`gpt-5.4` and `gpt-5.4-mini` from ChatGPT-authenticated Codex on August 31, 2026, explicitly excluding
+API-key access. Both IDs therefore move to Codex's `retiredModels`, superseding their August baseline
+above. The observed response still included `gpt-5.4-mini`; live discovery does not override this
+documented lifecycle decision. Hidden `gpt-reserve` and `codex-auto-review` records are not promoted
+to general managed membership.
+
+[Fable 5.1](https://platform.claude.com/docs/en/models/fable-5-1/overview) was released September 1.
+Fable 5, Opus 5, Sonnet 5, and the previously managed Claude legacy IDs remain available.
+Invitation-only Mythos 5.1 is not added to the general managed inventory. The
+[migration guide](https://platform.claude.com/docs/en/models/fable-5-1/migration-guide) and
+[parameter deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations)
+require these request constraints:
+
+- Fable 5.1 uses always-on adaptive thinking. Only the managed `anthropic` catalog provider
+  and an exact ID in the bundled `ANTHROPIC_ADAPTIVE_THINKING_MODELS` list select `output_config.effort`, leaving thinking at
+  the provider default instead of sending a legacy manual budget. Effort-tier metadata alone
+  does not select a wire dialect: other models, including Umans, retain the existing budget path.
+  This protocol list is not a new catalog v1 field, so older strict-schema readers remain compatible.
+  Custom providers and colon-suffixed IDs do not inherit the native provider's wire dialect.
+- Messages `output_config.effort` takes precedence over the legacy thinking-budget-derived level.
+- Fable 5.1 rejects forced/named tool choice; the maintained restriction normalizes it to `auto`
+  while preserving `none`.
+- Fable 5.1 and Astra reject sampling overrides. Anthropic and API-key Responses adapters now
+  enforce their existing `noTemperatureModels` and `noTopPModels` metadata at the wire boundary.
+- Claude Code's current catalog contract exposes `low`, `medium`, `high`, and `xhigh` only.
+  The upstream `max`, Codex orchestration mode `ultra`, and GPT-5.6 API `none` are not advertised
+  as new Claude Code levels. Existing effort normalization remains unchanged.
+
+Fable 5.1 and API-key Astra require Frogprogsy **0.0.7** because they depend on the adapter fixes
+in this refresh; their model-local minimum versions prevent remote promotion on older readers.
+This is a compatibility floor for the next release, not a package-version bump or a release.
+Codex Astra uses the already installed Codex request path. Other providers and OpenRouter's
+full passthrough catalog are unchanged. No credentials or account configuration are part of this update.
+
 ## Publication
 
 Every push to `main` triggers the GitHub Pages workflow, even when the changed paths are unrelated to the catalog. The workflow:

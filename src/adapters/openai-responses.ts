@@ -1,6 +1,6 @@
 import type { IncomingMeta, ProviderAdapter } from "./base";
 import type { AdapterEvent, FrogParsedRequest, FrogProviderConfig, FrogUsage } from "../types";
-import { cacheUsageSemanticsForProvider } from "../types";
+import { cacheUsageSemanticsForProvider, modelInList } from "../types";
 import { debugDroppedFrame } from "../debug";
 import { codexBackendHeaders, isCodexBackendBaseUrl } from "../oauth/codex";
 import { isLocalAccessSecret } from "../local-access";
@@ -328,6 +328,17 @@ export function createResponsesAdapter(provider: FrogProviderConfig): ProviderAd
       let body = sanitizeReasoningInputContent(parsed._rawBody);
       body = normalizeInputImageUrls(body);
       if (isCodexBackend) body = sanitizeCodexBackendBody(body);
+      else if (body && typeof body === "object" && !Array.isArray(body)) {
+        const raw = body as Record<string, unknown>;
+        const omitTemperature = modelInList(provider.noTemperatureModels, parsed.modelId) && "temperature" in raw;
+        const omitTopP = modelInList(provider.noTopPModels, parsed.modelId) && "top_p" in raw;
+        if (omitTemperature || omitTopP) {
+          const sanitized = { ...raw };
+          if (omitTemperature) delete sanitized.temperature;
+          if (omitTopP) delete sanitized.top_p;
+          body = sanitized;
+        }
+      }
 
       return {
         url,

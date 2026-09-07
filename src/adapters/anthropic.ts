@@ -16,9 +16,11 @@ import type {
   FrogToolResultMessage,
   FrogUsage,
 } from "../types";
-import { namespacedToolName } from "../types";
+import { modelInList, namespacedToolName } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
+import { ANTHROPIC_ADAPTIVE_THINKING_MODELS } from "../providers/registry";
 import { modelRecordValue } from "../model-capabilities";
+import { mapReasoningEffort } from "../reasoning-effort";
 import { parseDataUrl } from "./image";
 import { isLocalAccessSecret } from "../local-access";
 
@@ -354,11 +356,21 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
         body.system = system;
       }
       if (tools) body.tools = tools;
-      if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;
-      if (parsed.options.topP !== undefined) body.top_p = parsed.options.topP;
+      if (parsed.options.temperature !== undefined && !modelInList(provider.noTemperatureModels, parsed.modelId)) {
+        body.temperature = parsed.options.temperature;
+      }
+      if (parsed.options.topP !== undefined && !modelInList(provider.noTopPModels, parsed.modelId)) {
+        body.top_p = parsed.options.topP;
+      }
       if (parsed.options.stopSequences) body.stop_sequences = parsed.options.stopSequences;
 
-      if (parsed.options.reasoning) {
+      if (provider.catalogProviderId === "anthropic"
+        && ANTHROPIC_ADAPTIVE_THINKING_MODELS.includes(parsed.modelId)) {
+        // These exact verified models use adaptive thinking by default. Effort tiers alone
+        // do not establish that wire dialect for other Anthropic-compatible providers.
+        const effort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
+        if (effort !== undefined) body.output_config = { effort };
+      } else if (parsed.options.reasoning) {
         // Anthropic requires max_tokens > thinking.budget_tokens (max_tokens caps thinking +
         // visible output) and budget_tokens >= 1024. The caller's max_tokens is the hard wire cap
         // and is NEVER raised. Thinking is sent only when the cap fits the minimum budget plus the
@@ -375,7 +387,9 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
       }
 
       if (parsed.options.toolChoice) {
-        const tc = parsed.options.toolChoice;
+        const tc = modelInList(provider.autoToolChoiceOnlyModels, parsed.modelId)
+          ? (parsed.options.toolChoice === "none" ? "none" : "auto")
+          : parsed.options.toolChoice;
         if (tc === "auto") body.tool_choice = { type: "auto" };
         else if (tc === "none") body.tool_choice = { type: "none" };
         else if (tc === "required") body.tool_choice = { type: "any" };

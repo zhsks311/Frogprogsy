@@ -352,7 +352,9 @@ export function parseMessagesRequest(body: unknown): FrogParsedRequest {
   if (Array.isArray(body.stop_sequences)) options.stopSequences = body.stop_sequences.filter((s): s is string => typeof s === "string");
   const toolChoice = mapToolChoice(body.tool_choice);
   if (toolChoice !== undefined) options.toolChoice = toolChoice;
-  const reasoning = reasoningFromThinking(body.thinking);
+  const reasoning = isObj(body.output_config) && typeof body.output_config.effort === "string"
+    ? body.output_config.effort
+    : reasoningFromThinking(body.thinking);
   if (reasoning) {
     options.reasoning = reasoning;
     options.hideThinkingSummary = false;

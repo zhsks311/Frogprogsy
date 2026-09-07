@@ -67,6 +67,20 @@ describe("Claude Messages data plane", () => {
     ]);
   });
 
+  test("explicit effort reaches Responses with adaptive thinking and takes precedence over legacy budgets", () => {
+    const adapter = createResponsesAdapter({ adapter: "openai-responses", baseUrl: "https://api.openai.com/v1" });
+    for (const thinking of [{ type: "adaptive" }, { type: "enabled", budget_tokens: 4096 }]) {
+      const parsed = parseMessagesRequest({
+        model: "gpt-6-astra",
+        messages: [{ role: "user", content: "Hello" }],
+        thinking,
+        output_config: { effort: "xhigh" },
+      });
+      const body = JSON.parse(adapter.buildRequest(parsed).body);
+      expect(body.reasoning.effort).toBe("xhigh");
+    }
+  });
+
   test("non-streaming bridge returns Anthropic Message JSON with text, thinking, tool_use, and usage", () => {
     const json = buildMessageJSON([
       { type: "thinking_delta", thinking: "plan" },
