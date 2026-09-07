@@ -959,30 +959,55 @@ jobs:
           find_exact_ref_run_id() {
             local workflow="$1"
             local created_after="$2"
-            local excluded_id="${3:-}"
             gh api -X GET "repos/${REPOSITORY}/actions/workflows/${workflow}/runs" \
               -f event=workflow_dispatch -f branch="$RESULT_BRANCH" -f per_page=100 |
-              jq -r --arg sha "$RESULT_SHA" --arg branch "$RESULT_BRANCH" \
-                --arg since "$created_after" --arg excluded "$excluded_id" '
-                [.workflow_runs[]
-                  | select(
-                      .event == "workflow_dispatch"
-                      and .head_sha == $sha
-                      and .head_branch == $branch
-                      and ($since == "" or .created_at >= $since)
-                      and ($excluded == "" or (.id | tostring) != $excluded)
-                    )]
-                | sort_by(.created_at, .id)
-                | (last.id // "")'
+              jq -sr --arg sha "$RESULT_SHA" --arg branch "$RESULT_BRANCH" \
+                --arg since "$created_after" '
+                if length != 1 then
+                  error("workflow runs response must contain exactly one JSON document")
+                else
+                  .[0]
+                  | if (.workflow_runs | type) != "array" then
+                      error("workflow runs response is not an array")
+                    else
+                      [.workflow_runs[]
+                        | select(
+                            .event == "workflow_dispatch"
+                            and .head_sha == $sha
+                            and .head_branch == $branch
+                            and ($since == "" or .created_at >= $since)
+                          )]
+                      | sort_by(.created_at, .id)
+                      | if length == 0 then
+                          empty
+                        elif (last.id | type) == "number"
+                          and last.id > 0
+                          and last.id == (last.id | floor)
+                        then
+                          last.id
+                        else
+                          error("newest matching workflow run has an invalid id")
+                        end
+                    end
+                end'
+          }
+          require_positive_run_id() {
+            local run_id="$1"
+            [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || {
+              echo "::error::Exact-ref workflow run id must be a positive integer"
+              return 1
+            }
           }
           await_dispatched_run_id() {
             local workflow="$1"
             local created_after="$2"
-            local excluded_id="$3"
             local run_id=""
             for attempt in $(seq 1 30); do
-              run_id="$(find_exact_ref_run_id "$workflow" "$created_after" "$excluded_id")"
+              if ! run_id="$(find_exact_ref_run_id "$workflow" "$created_after")"; then
+                return 1
+              fi
               if [ -n "$run_id" ]; then
+                require_positive_run_id "$run_id" || return 1
                 printf '%s\n' "$run_id"
                 return 0
               fi
@@ -990,25 +1015,47 @@ jobs:
             done
             return 1
           }
+          ensure_exact_ref_run() {
+            local workflow="$1"
+            local binding_file="$2"
+            local run_id=""
+            local created_after=""
 
-          : > release-plan/ci.run-id
-          : > release-plan/package.run-id
-          revalidate_post_state
-          if [ "$(jq -r '.pushRequired' release-plan/plan.json)" = "true" ]; then
-            previous_ci_run_id="$(find_exact_ref_run_id ci.yml "" "")"
-            ci_created_after="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            gh workflow run ci.yml --repo "$REPOSITORY" --ref "$RESULT_BRANCH"
-            await_dispatched_run_id ci.yml "$ci_created_after" "$previous_ci_run_id" > release-plan/ci.run-id
+            if ! run_id="$(find_exact_ref_run_id "$workflow" "")"; then
+              return 1
+            fi
+            if [ -n "$run_id" ]; then
+              require_positive_run_id "$run_id" || return 1
+              printf '%s\n' "$run_id" > "$binding_file"
+              return 0
+            fi
+
             revalidate_post_state
-            previous_package_run_id="$(find_exact_ref_run_id package-lifecycle.yml "" "")"
-            package_created_after="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            gh workflow run package-lifecycle.yml --repo "$REPOSITORY" --ref "$RESULT_BRANCH"
-            await_dispatched_run_id package-lifecycle.yml "$package_created_after" "$previous_package_run_id" > release-plan/package.run-id
-          elif [ "$(jq -r '.effectiveSelection' release-plan/plan.json)" != "release:none" ]; then
-            find_exact_ref_run_id ci.yml "" > release-plan/ci.run-id
-            find_exact_ref_run_id package-lifecycle.yml "" > release-plan/package.run-id
-            test -s release-plan/ci.run-id
-            test -s release-plan/package.run-id
+            if ! run_id="$(find_exact_ref_run_id "$workflow" "")"; then
+              return 1
+            fi
+            if [ -n "$run_id" ]; then
+              require_positive_run_id "$run_id" || return 1
+              printf '%s\n' "$run_id" > "$binding_file"
+              return 0
+            fi
+
+            created_after="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            gh workflow run "$workflow" --repo "$REPOSITORY" --ref "$RESULT_BRANCH"
+            if ! run_id="$(await_dispatched_run_id "$workflow" "$created_after")"; then
+              return 1
+            fi
+            require_positive_run_id "$run_id" || return 1
+            printf '%s\n' "$run_id" > "$binding_file"
+            revalidate_post_state
+          }
+
+          revalidate_post_state
+          selected="$(jq -r '.effectiveSelection' release-plan/plan.json)"
+          push_required="$(jq -r '.pushRequired' release-plan/plan.json)"
+          if [ "$selected" != "release:none" ] || [ "$push_required" = "true" ]; then
+            ensure_exact_ref_run ci.yml release-plan/ci.run-id
+            ensure_exact_ref_run package-lifecycle.yml release-plan/package.run-id
           fi
           revalidate_post_state
           gh api "repos/${REPOSITORY}/statuses/${RESULT_SHA}" \
