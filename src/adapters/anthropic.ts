@@ -18,6 +18,7 @@ import type {
 } from "../types";
 import { modelInList, namespacedToolName } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
+import { ANTHROPIC_ADAPTIVE_THINKING_MODELS } from "../providers/registry";
 import { modelRecordValue } from "../model-capabilities";
 import { mapReasoningEffort } from "../reasoning-effort";
 import { parseDataUrl } from "./image";
@@ -363,9 +364,9 @@ export function createAnthropicAdapter(provider: FrogProviderConfig): ProviderAd
       }
       if (parsed.options.stopSequences) body.stop_sequences = parsed.options.stopSequences;
 
-      if (modelRecordValue(provider.modelReasoningEfforts, parsed.modelId) !== undefined) {
-        // Explicit model effort metadata selects output_config; leave thinking at the upstream
-        // default rather than sending legacy manual budgets to adaptive-thinking models.
+      if (modelInList(ANTHROPIC_ADAPTIVE_THINKING_MODELS, parsed.modelId)) {
+        // These exact verified models use adaptive thinking by default. Effort tiers alone
+        // do not establish that wire dialect for other Anthropic-compatible providers.
         const effort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
         if (effort !== undefined) body.output_config = { effort };
       } else if (parsed.options.reasoning) {

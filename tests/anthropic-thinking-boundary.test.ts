@@ -137,13 +137,13 @@ describe("Anthropic explicit model effort and request restrictions", () => {
 
   test("uses configured effort mappings without the legacy minimum token threshold", () => {
     const body = buildBody({
-      model: "custom-adaptive",
+      model,
       max_tokens: 20,
       thinking: { type: "enabled", budget_tokens: 24_576 },
     }, {
       ...provider,
-      modelReasoningEfforts: { "custom-adaptive": ["high", "xhigh"] },
-      modelReasoningEffortMap: { "custom-adaptive": { xhigh: "max" } },
+      modelReasoningEfforts: { [model]: ["high", "xhigh"] },
+      modelReasoningEffortMap: { [model]: { xhigh: "max" } },
     });
     expect(body.output_config).toEqual({ effort: "max" });
     expect(body.max_tokens).toBe(20);
