@@ -291,6 +291,74 @@ describe("frogp refresh detached lifecycle", () => {
     }
   }, 20_000);
 
+  test.skipIf(process.platform === "win32" || !localhostResolvesBothFamilies || !ipv6LoopbackAvailable)("spoofed current health on another listener cannot receive runtime credentials", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-spoofed-current-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const fixture = join(root, "listeners.ts");
+    const captured = join(root, "credential-captured");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version;
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(fixture, [
+      'import { writeFileSync } from "node:fs";',
+      'const attacker = process.argv[2] === "attacker";',
+      'const server = Bun.serve({ hostname: attacker ? "::1" : "127.0.0.1", port: Number(process.argv[3]), fetch(request) {',
+      '  if (!attacker) return new Response("unrelated");',
+      '  if (new URL(request.url).pathname === "/healthz") return Response.json({',
+      '    status: "ok", serverBuildId: `frogprogsy-server@${process.argv[4]}`, processPid: Number(process.argv[5]),',
+      '  });',
+      '  if (request.headers.get("x-frogp-local-key") === "test-only-runtime-token") writeFileSync(process.argv[6], "captured");',
+      '  return Response.json({ success: true, catalog: { added: 0 } });',
+      '} });',
+      'console.log(server.port);',
+      'await Promise.withResolvers<void>().promise;',
+    ].join("\n"));
+    const recorded = Bun.spawn([process.execPath, fixture, "recorded", "0"], { stdout: "pipe", stderr: "ignore" });
+    let attacker: { pid: number; exited: Promise<number>; kill: () => void } | undefined;
+    try {
+      const recordedOutput = recorded.stdout.getReader();
+      const announced = await recordedOutput.read();
+      recordedOutput.releaseLock();
+      const port = Number(new TextDecoder().decode(announced.value).trim());
+      attacker = Bun.spawn([process.execPath, fixture, "attacker", String(port), version, String(recorded.pid), captured], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const attackerOutput = attacker.stdout.getReader();
+      await attackerOutput.read();
+      attackerOutput.releaseLock();
+      writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+        port, hostname: "localhost", providers: {}, watchdog: { enabled: false },
+      }));
+      writeFileSync(join(frogHome, "frogp.pid"), String(recorded.pid));
+      writeFileSync(join(frogHome, "frogp.port"), String(port));
+      writeFileSync(join(frogHome, "local-access.token"), "test-only-runtime-token", { mode: 0o600 });
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          ...process.env, HOME: root, NODE_ENV: "test",
+          FROGPROGSY_HOME: frogHome, CLAUDE_HOME: claudeHome, CLAUDE_CONFIG_DIR: claudeHome,
+          FROGPROGSY_NO_CLAUDE_WRITES: "1",
+        },
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      const exitCode = await refresh.exited;
+      expect(existsSync(captured)).toBe(false);
+      expect(exitCode).toBe(1);
+      expect(() => process.kill(recorded.pid, 0)).not.toThrow();
+      expect(() => process.kill(attacker!.pid, 0)).not.toThrow();
+    } finally {
+      attacker?.kill();
+      if (attacker) await attacker.exited;
+      recorded.kill();
+      await recorded.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test.skipIf(process.platform === "win32" || !localhostResolvesBothFamilies)("refresh replaces an owned stale localhost listener when DNS has both address families", async () => {
     const root = mkdtempSync(join(tmpdir(), "frogp-refresh-localhost-"));
     const frogHome = join(root, "frog-home");

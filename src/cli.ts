@@ -402,7 +402,13 @@ async function probeProxyHealth(port?: number): Promise<ProxyHealthProbe> {
       return null;
     }
   }));
-  const current = probes.flatMap(probe => probe?.status === "current" ? [probe.endpoint] : []);
+  const recordedPid = readPid();
+  const current = probes.flatMap(probe => {
+    if (probe?.status !== "current" || recordedPid === null
+      || (probe.endpoint.processPid !== null && probe.endpoint.processPid !== recordedPid)
+      || !processOwnsListeningPort(recordedPid, p, probe.endpoint.addressKey)) return [];
+    return [probe.endpoint];
+  });
   if (current.length > 0) return { status: "current", endpoints: current };
   const stale = probes.flatMap(probe => probe?.status === "stale" ? [probe.endpoint] : []);
   if (stale.length > 0) return { status: "stale", endpoints: stale };
