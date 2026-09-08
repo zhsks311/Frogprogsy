@@ -849,11 +849,12 @@ describe("CLI subcommand help", () => {
     const refreshRequests: Array<{ path: string; origin: string | null; body: unknown }> = [];
     let writesBlocked = false;
     const server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       async fetch(request) {
         const url = new URL(request.url);
         if (url.pathname === "/healthz") {
-          return Response.json({ status: "ok", serverBuildId: `frogprogsy-server@${installedPackageVersion()}` });
+          return Response.json({ status: "ok", serverBuildId: `frogprogsy-server@${installedPackageVersion()}`, processPid: process.pid });
         }
         if (url.pathname === "/api/claude-profiles/cp_work/refresh" && request.method === "POST") {
           refreshRequests.push({
@@ -926,6 +927,7 @@ describe("CLI subcommand help", () => {
           ],
         },
       }, null, 2) + "\n");
+      writeFileSync(join(frogHome, "frogp.pid"), String(process.pid));
 
       const child = Bun.spawn(
         [process.execPath, cliPath, "claude", "reload-models", "cp_work", "--global-discovery-auth"],
