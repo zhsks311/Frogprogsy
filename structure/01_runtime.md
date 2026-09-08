@@ -26,6 +26,13 @@ restores native Claude Code for configured homes.
 `FROGP_EXTERNAL_SUPERVISOR=1` means Docker/systemd/Kubernetes already owns restart behavior, so
 frogp skips its watchdog and avoids repeated restore/reinject churn across supervised restarts.
 
+`frogp refresh` probes a bounded set of concrete addresses for a configured hostname. Replacing a stale
+runtime requires its health response, recorded PID, and listener metadata to agree on the same concrete
+endpoint; legacy health without `processPid` still requires that exact listener proof. IPv4 and IPv6
+wildcards prove ownership only for a health endpoint in their own family. For `localhost` or wildcard
+binds, same-machine credentials may reuse that verified endpoint only when it is the fixed IPv4 or IPv6
+loopback address.
+
 After the listener binds and any same-machine access token is published, `startServer` defers one ordinary
 stable-update check without awaiting it. Only a canonical Bun-global stable install contacts the fixed npm
 `latest` dist-tag endpoint. Source, development, unsupported, preview, disabled, and fresh-cache starts make
