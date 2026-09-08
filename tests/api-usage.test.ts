@@ -419,6 +419,143 @@ describe("GET /api/usage", () => {
     }
   });
 
+  test("keeps missing and invalid Anthropic input usage unavailable while accepting an explicit zero", async () => {
+    saveConfig({
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "anthropic",
+      providers: {
+        anthropic: {
+          adapter: "anthropic",
+          baseUrl: "https://anthropic-cache.test",
+          apiKey: "test-key",
+          defaultModel: "claude-sonnet",
+          models: ["claude-sonnet"],
+        },
+      },
+    } as FrogConfig);
+
+    const server = await startServer(0);
+    const originalFetch = globalThis.fetch;
+    let upstreamCalls = 0;
+    globalThis.fetch = (async (url, init) => {
+      if (!String(url).startsWith("https://anthropic-cache.test")) return originalFetch(url, init);
+      upstreamCalls += 1;
+      if (upstreamCalls === 1) {
+        return new Response([
+          "event: message_start\n",
+          "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"output_tokens\":0,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":6}}}\n\n",
+          "event: content_block_start\n",
+          "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+          "event: content_block_delta\n",
+          "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"streamed\"}}\n\n",
+          "event: message_delta\n",
+          "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",
+          "event: message_stop\n",
+          "data: {\"type\":\"message_stop\"}\n\n",
+        ].join(""), { headers: { "content-type": "text/event-stream" } });
+      }
+      return Response.json({
+        id: `msg_${upstreamCalls}`,
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet",
+        content: [{ type: "text", text: "answer" }],
+        usage: {
+          input_tokens: upstreamCalls === 2 ? "invalid" : 0,
+          output_tokens: 8,
+          cache_read_input_tokens: 4,
+          cache_creation_input_tokens: 6,
+        },
+      });
+    }) as typeof fetch;
+
+    const messageUrl = new URL("/v1/messages", server.url);
+    const usageUrl = new URL("/api/usage", server.url);
+    const requestBody = {
+      model: "anthropic/claude-sonnet",
+      max_tokens: 10,
+      messages: [{ role: "user", content: "hello" }],
+    };
+
+    try {
+      const streamed = await originalFetch(messageUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...requestBody, stream: true }),
+      });
+      expect(streamed.status).toBe(200);
+      const streamedBody = await streamed.text();
+      expect(streamedBody).toContain("\"input_tokens\":0");
+      expect(streamedBody).toContain("\"output_tokens\":8");
+
+      let usageBody = await originalFetch(usageUrl).then(response => response.json());
+      expect(usageBody.summary).toMatchObject({
+        requests: 1,
+        inputTokens: 0,
+        outputTokens: 8,
+        totalTokens: 8,
+      });
+      expect(usageBody.cacheHitRate).toMatchObject({
+        status: "unavailable",
+        hitRate: null,
+        reportedRequests: 0,
+        unavailableRequests: 1,
+      });
+
+      const invalid = await originalFetch(messageUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...requestBody, stream: false }),
+      });
+      expect(invalid.status).toBe(200);
+      expect((await invalid.json()).usage).toMatchObject({ input_tokens: 0, output_tokens: 8 });
+
+      usageBody = await originalFetch(usageUrl).then(response => response.json());
+      expect(usageBody.summary).toMatchObject({
+        requests: 2,
+        inputTokens: 0,
+        outputTokens: 16,
+        totalTokens: 16,
+      });
+      expect(usageBody.cacheHitRate).toMatchObject({
+        status: "unavailable",
+        hitRate: null,
+        reportedRequests: 0,
+        unavailableRequests: 2,
+      });
+
+      const explicitZero = await originalFetch(messageUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...requestBody, stream: false }),
+      });
+      expect(explicitZero.status).toBe(200);
+      expect((await explicitZero.json()).usage).toMatchObject({ input_tokens: 0, output_tokens: 8 });
+
+      usageBody = await originalFetch(usageUrl).then(response => response.json());
+      expect(usageBody.summary).toMatchObject({
+        requests: 3,
+        inputTokens: 0,
+        outputTokens: 24,
+        totalTokens: 24,
+      });
+      expect(usageBody.cacheHitRate).toMatchObject({
+        status: "available",
+        cacheReadInputTokens: 4,
+        cacheCreationInputTokens: 6,
+        inputTokens: 0,
+        totalInputTokens: 10,
+        hitRate: 0.4,
+        reportedRequests: 1,
+        unavailableRequests: 2,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      await server.stop(true);
+    }
+  });
+
   test("reports non-equivalent provider cache semantics as unsupported", async () => {
     writeFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
       requestId: "cache-unsupported",

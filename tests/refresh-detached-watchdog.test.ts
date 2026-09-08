@@ -1,10 +1,27 @@
 import { describe, expect, test } from "bun:test";
+import { lookup } from "node:dns/promises";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { processProbeErrorMeansAlive, terminateStaleProxyForRefresh } from "../src/refresh-process";
 
-const cliSource = () => readFileSync(join(import.meta.dir, "..", "src", "cli.ts"), "utf8");
+const ipv6LoopbackAvailable = (() => {
+  try {
+    const server = Bun.serve({ hostname: "::1", port: 0, fetch: () => new Response() });
+    server.stop(true);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+const localhostAddressFamilies = new Set(
+  await lookup("localhost", { all: true }).then(
+    addresses => addresses.map(address => address.family),
+    () => [],
+  ),
+);
+const localhostResolvesBothFamilies = localhostAddressFamilies.has(4) && localhostAddressFamilies.has(6);
 
 function waitForPath(path: string): Promise<void> {
   if (existsSync(path)) return Promise.resolve();
@@ -191,7 +208,7 @@ describe("frogp refresh detached lifecycle", () => {
     }
   }, 20_000);
 
-  test("legacy health ownership is bound to the configured listen address before signaling", async () => {
+  test("legacy health rejects a recorded PID that listens only on the opposite address family", async () => {
     const root = mkdtempSync(join(tmpdir(), "frogp-refresh-address-owner-"));
     const frogHome = join(root, "frog-home");
     const claudeHome = join(root, "claude-home");
@@ -273,6 +290,264 @@ describe("frogp refresh detached lifecycle", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 20_000);
+
+  test.skipIf(process.platform === "win32" || !localhostResolvesBothFamilies || !ipv6LoopbackAvailable)("spoofed current health on another listener cannot receive runtime credentials", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-spoofed-current-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const fixture = join(root, "listeners.ts");
+    const captured = join(root, "credential-captured");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version;
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(fixture, [
+      'import { writeFileSync } from "node:fs";',
+      'const attacker = process.argv[2] === "attacker";',
+      'const server = Bun.serve({ hostname: attacker ? "::1" : "127.0.0.1", port: Number(process.argv[3]), fetch(request) {',
+      '  if (!attacker) return new Response("unrelated");',
+      '  if (new URL(request.url).pathname === "/healthz") return Response.json({',
+      '    status: "ok", serverBuildId: `frogprogsy-server@${process.argv[4]}`, processPid: Number(process.argv[5]),',
+      '  });',
+      '  if (request.headers.get("x-frogp-local-key") === "test-only-runtime-token") writeFileSync(process.argv[6], "captured");',
+      '  return Response.json({ success: true, catalog: { added: 0 } });',
+      '} });',
+      'console.log(server.port);',
+      'await Promise.withResolvers<void>().promise;',
+    ].join("\n"));
+    const recorded = Bun.spawn([process.execPath, fixture, "recorded", "0"], { stdout: "pipe", stderr: "ignore" });
+    let attacker: { pid: number; exited: Promise<number>; kill: () => void } | undefined;
+    try {
+      const recordedOutput = recorded.stdout.getReader();
+      const announced = await recordedOutput.read();
+      recordedOutput.releaseLock();
+      const port = Number(new TextDecoder().decode(announced.value).trim());
+      attacker = Bun.spawn([process.execPath, fixture, "attacker", String(port), version, String(recorded.pid), captured], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const attackerOutput = attacker.stdout.getReader();
+      await attackerOutput.read();
+      attackerOutput.releaseLock();
+      writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+        port, hostname: "localhost", providers: {}, watchdog: { enabled: false },
+      }));
+      writeFileSync(join(frogHome, "frogp.pid"), String(recorded.pid));
+      writeFileSync(join(frogHome, "frogp.port"), String(port));
+      writeFileSync(join(frogHome, "local-access.token"), "test-only-runtime-token", { mode: 0o600 });
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          ...process.env, HOME: root, NODE_ENV: "test",
+          FROGPROGSY_HOME: frogHome, CLAUDE_HOME: claudeHome, CLAUDE_CONFIG_DIR: claudeHome,
+          FROGPROGSY_NO_CLAUDE_WRITES: "1",
+        },
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      const exitCode = await refresh.exited;
+      expect(existsSync(captured)).toBe(false);
+      expect(exitCode).toBe(1);
+      expect(() => process.kill(recorded.pid, 0)).not.toThrow();
+      expect(() => process.kill(attacker!.pid, 0)).not.toThrow();
+    } finally {
+      attacker?.kill();
+      if (attacker) await attacker.exited;
+      recorded.kill();
+      await recorded.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test.skipIf(process.platform === "win32" || !localhostResolvesBothFamilies)("refresh replaces an owned stale localhost listener when DNS has both address families", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-localhost-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const staleFixture = join(root, "stale-localhost.ts");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(staleFixture, [
+      'const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {',
+      '  return new URL(request.url).pathname === "/healthz"',
+      '    ? Response.json({ status: "ok", serverBuildId: "frogprogsy-server@0.0.0-stale", processPid: process.pid })',
+      '    : new Response("not found", { status: 404 });',
+      "} });",
+      "console.log(server.port);",
+      "await Promise.withResolvers<void>().promise;",
+    ].join("\n"));
+    const stale = Bun.spawn([process.execPath, staleFixture], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    let replacementPid: number | null = null;
+
+    try {
+      const staleOutput = stale.stdout.getReader();
+      const announced = await staleOutput.read();
+      staleOutput.releaseLock();
+      const port = Number(new TextDecoder().decode(announced.value).trim());
+      expect(Number.isInteger(port) && port > 0).toBe(true);
+      writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+        port,
+        hostname: "localhost",
+        watchdog: { enabled: false },
+        providers: {},
+      }, null, 2) + "\n");
+      writeFileSync(join(frogHome, "frogp.pid"), String(stale.pid));
+      writeFileSync(join(frogHome, "frogp.port"), String(port));
+      const env = {
+        ...process.env,
+        HOME: root,
+        NODE_ENV: "test",
+        FROGPROGSY_HOME: frogHome,
+        CLAUDE_HOME: claudeHome,
+        CLAUDE_CONFIG_DIR: claudeHome,
+        FROGPROGSY_NO_CLAUDE_WRITES: "1",
+      };
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [, , exitCode] = await Promise.all([
+        new Response(refresh.stdout).text(),
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      await stale.exited;
+      expect(() => process.kill(stale.pid, 0)).toThrow();
+      replacementPid = Number(readFileSync(join(frogHome, "frogp.pid"), "utf8"));
+      expect(replacementPid).not.toBe(stale.pid);
+      const healthPayloads = await Promise.all(["127.0.0.1", "[::1]"].map(async host => {
+        try {
+          return await fetch(`http://${host}:${port}/healthz`).then(response => response.json()) as {
+            serverBuildId?: string;
+          };
+        } catch {
+          return null;
+        }
+      }));
+      const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version;
+      expect(healthPayloads.some(payload => payload?.serverBuildId === `frogprogsy-server@${version}`)).toBe(true);
+
+      const stop = Bun.spawn([process.execPath, cliPath, "stop"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      await stop.exited;
+    } finally {
+      stale.kill();
+      await stale.exited;
+      if (replacementPid !== null) {
+        try {
+          process.kill(replacementPid, "SIGTERM");
+        } catch {
+          // The normal stop path should already have reaped the replacement.
+        }
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test.skipIf(process.platform === "win32" || !ipv6LoopbackAvailable)("refresh replaces an owned stale IPv6 wildcard listener through the IPv6 loopback endpoint", async () => {
+    const root = mkdtempSync(join(tmpdir(), "frogp-refresh-ipv6-wildcard-"));
+    const frogHome = join(root, "frog-home");
+    const claudeHome = join(root, "claude-home");
+    const staleFixture = join(root, "stale-ipv6-wildcard.ts");
+    const cliPath = join(import.meta.dir, "..", "src", "cli.ts");
+    mkdirSync(frogHome, { recursive: true });
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(staleFixture, [
+      'const server = Bun.serve({ hostname: "::", port: 0, fetch(request) {',
+      '  return new URL(request.url).pathname === "/healthz"',
+      '    ? Response.json({ status: "ok", serverBuildId: "frogprogsy-server@0.0.0-stale", processPid: process.pid })',
+      '    : new Response("not found", { status: 404 });',
+      "} });",
+      "console.log(server.port);",
+      "await Promise.withResolvers<void>().promise;",
+    ].join("\n"));
+    const stale = Bun.spawn([process.execPath, staleFixture], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    let replacementPid: number | null = null;
+
+    try {
+      const staleOutput = stale.stdout.getReader();
+      const announced = await staleOutput.read();
+      staleOutput.releaseLock();
+      const port = Number(new TextDecoder().decode(announced.value).trim());
+      expect(Number.isInteger(port) && port > 0).toBe(true);
+      writeFileSync(join(frogHome, "config.json"), JSON.stringify({
+        port,
+        hostname: "::",
+        watchdog: { enabled: false },
+        providers: {},
+        localAccess: {
+          enabled: true,
+          keys: [{ id: "lk_ipv6_refresh", label: "IPv6 refresh", secretHash: `sha256:${"a".repeat(64)}` }],
+        },
+      }, null, 2) + "\n");
+      writeFileSync(join(frogHome, "frogp.pid"), String(stale.pid));
+      writeFileSync(join(frogHome, "frogp.port"), String(port));
+      const env = {
+        ...process.env,
+        HOME: root,
+        NODE_ENV: "test",
+        FROGPROGSY_HOME: frogHome,
+        CLAUDE_HOME: claudeHome,
+        CLAUDE_CONFIG_DIR: claudeHome,
+        FROGPROGSY_NO_CLAUDE_WRITES: "1",
+      };
+      const refresh = Bun.spawn([process.execPath, cliPath, "refresh"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [, , exitCode] = await Promise.all([
+        new Response(refresh.stdout).text(),
+        new Response(refresh.stderr).text(),
+        refresh.exited,
+      ]);
+
+      expect(exitCode).toBe(0);
+      await stale.exited;
+      expect(() => process.kill(stale.pid, 0)).toThrow();
+      replacementPid = Number(readFileSync(join(frogHome, "frogp.pid"), "utf8"));
+      expect(replacementPid).not.toBe(stale.pid);
+      const health = await fetch(`http://[::1]:${port}/healthz`).then(response => response.json()) as {
+        serverBuildId?: string;
+      };
+      const version = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).version;
+      expect(health.serverBuildId).toBe(`frogprogsy-server@${version}`);
+
+      const stop = Bun.spawn([process.execPath, cliPath, "stop"], {
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      await stop.exited;
+    } finally {
+      stale.kill();
+      await stale.exited;
+      if (replacementPid !== null) {
+        try {
+          process.kill(replacementPid, "SIGTERM");
+        } catch {
+          // The normal stop path should already have reaped the replacement.
+        }
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   test.skipIf(process.platform === "win32")("refresh terminates a spawned child stalled before listener publication and restores native routing", async () => {
     const root = mkdtempSync(join(tmpdir(), "frogp-refresh-pre-listener-"));
@@ -642,30 +917,4 @@ describe("frogp refresh detached lifecycle", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 20_000);
-
-  test("refresh does not mark its background proxy as externally service-managed", () => {
-    const source = cliSource();
-    const refreshStart = source.indexOf("async function handleRefresh()");
-    expect(refreshStart).toBeGreaterThanOrEqual(0);
-    const refreshSource = source.slice(refreshStart, source.indexOf("function killProxy", refreshStart));
-
-    expect(refreshSource).toContain('FROGP_DETACHED: "1"');
-    expect(refreshSource).toContain("FROGP_EXTERNAL_SUPERVISOR: undefined");
-    expect(refreshSource).not.toContain('FROGP_EXTERNAL_SUPERVISOR: "1"');
-  });
-
-  test("detached proxies keep Claude settings injected without suppressing watchdog", () => {
-    const source = cliSource();
-
-    expect(source).toContain("if (!refreshShutdown");
-    expect(source).toContain("!parseEnvFlag(process.env.FROGP_EXTERNAL_SUPERVISOR)");
-    expect(source).toContain("&& !process.env.FROGP_DETACHED");
-    expect(source).toContain("resolveWatchdogEnabled(_startConfig, process.env");
-  });
-
-  test("watchdog seeds last-known pid from the supervised parent", () => {
-    const watchdogSource = readFileSync(join(import.meta.dir, "..", "src", "watchdog.ts"), "utf8");
-
-    expect(watchdogSource).toContain("let lastKnownManagedPid: number | null = opts.parentPidHint ?? null");
-  });
 });

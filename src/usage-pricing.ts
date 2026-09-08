@@ -90,7 +90,7 @@ function roundMoney(value: number): number {
 }
 
 function usageTokens(usage: FrogUsage): number {
-  return usage.inputTokens + usage.outputTokens;
+  return (usage.inputTokens ?? 0) + usage.outputTokens;
 }
 
 function persistedTokens(entry: PersistedUsageEntry): number {
@@ -141,9 +141,10 @@ function tokenCost(tokens: number, pricePerMTok: number | undefined): number {
 
 function costForUsage(usage: FrogUsage, price: UsagePrice): Pick<UsagePricingSummary, "inputCost" | "outputCost" | "cachedInputCost" | "reasoningOutputCost"> {
   const cachedInputTokens = Math.max(0, usage.cachedInputTokens ?? 0);
+  const reportedInputTokens = usage.inputTokens ?? 0;
   const inputTokens = price.cachedInputPerMTok === undefined
-    ? usage.inputTokens
-    : Math.max(0, usage.inputTokens - cachedInputTokens);
+    ? reportedInputTokens
+    : Math.max(0, reportedInputTokens - cachedInputTokens);
   return {
     inputCost: tokenCost(inputTokens, price.inputPerMTok),
     outputCost: tokenCost(usage.outputTokens, price.outputPerMTok),
@@ -178,7 +179,7 @@ function addUnpriced(map: Map<string, UsagePricingUnpricedEntry>, entry: Persist
     map.set(key, item);
   }
   item.requests += 1;
-  item.inputTokens += usage.inputTokens;
+  item.inputTokens += usage.inputTokens ?? 0;
   item.outputTokens += usage.outputTokens;
   item.cachedInputTokens += usage.cachedInputTokens ?? 0;
   item.reasoningOutputTokens += usage.reasoningOutputTokens ?? 0;

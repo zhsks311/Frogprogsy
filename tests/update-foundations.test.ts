@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join, resolve } from "node:path";
-import { healthHost, loopbackManagementBase, readBoundedJson } from "../src/cli-local-api";
+import { loopbackManagementBase, readBoundedJson } from "../src/cli-local-api";
 import { detectInstallIdentity, installIdentityHint } from "../src/install-identity";
 import { compareSemVer, parseCanonicalStableSemVer, parseSemVer } from "../src/semver";
 
@@ -33,10 +33,17 @@ describe("safe local management client", () => {
     expect(loopbackManagementBase({}, 3764)).toBe("http://127.0.0.1:3764");
     expect(loopbackManagementBase({ hostname: "0.0.0.0" }, 3764)).toBe("http://127.0.0.1:3764");
     expect(loopbackManagementBase({ hostname: "localhost" }, 3764)).toBe("http://127.0.0.1:3764");
+    expect(loopbackManagementBase({ hostname: "localhost" }, 3764, "[::1]")).toBe("http://[::1]:3764");
     expect(loopbackManagementBase({ hostname: "::1" }, 3764)).toBe("http://[::1]:3764");
-    expect(healthHost("::1")).toBe("[::1]");
+    expect(loopbackManagementBase({ hostname: "::" }, 3764)).toBe("http://[::1]:3764");
     expect(() => loopbackManagementBase({ hostname: "relay.example" }, 3764)).toThrow(/never sent/);
     expect(() => loopbackManagementBase({ hostname: "192.0.2.10" }, 3764)).toThrow(/never sent/);
+    expect(() => loopbackManagementBase(
+      { hostname: "localhost" },
+      3764,
+      "relay.example" as "[::1]",
+    )).toThrow(/verified loopback/);
+    expect(() => loopbackManagementBase({ hostname: "::" }, 3764, "127.0.0.1")).toThrow(/address family/);
   });
 
   test("rejects oversized local JSON before parsing", async () => {

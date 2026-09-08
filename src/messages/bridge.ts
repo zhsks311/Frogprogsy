@@ -8,7 +8,7 @@ function uuid(prefix = "msg"): string {
 function usageFromAdapter(usage: FrogUsage | undefined): Record<string, unknown> {
   if (!usage) return { input_tokens: 0, output_tokens: 0 };
   const out: Record<string, unknown> = {
-    input_tokens: usage.inputTokens,
+    input_tokens: usage.inputTokens ?? 0,
     output_tokens: usage.outputTokens,
   };
   if (usage.cacheReadInputTokens !== undefined) out.cache_read_input_tokens = usage.cacheReadInputTokens;
