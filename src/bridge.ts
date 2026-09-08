@@ -11,10 +11,11 @@ function sseEvent(name: string, data: Record<string, unknown>): string {
 
 function responsesUsage(usage: FrogUsage | undefined): Record<string, unknown> {
   if (!usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+  const inputTokens = usage.inputTokens ?? 0;
   const out: Record<string, unknown> = {
-    input_tokens: usage.inputTokens,
+    input_tokens: inputTokens,
     output_tokens: usage.outputTokens,
-    total_tokens: usage.inputTokens + usage.outputTokens,
+    total_tokens: inputTokens + usage.outputTokens,
   };
   if (usage.cachedInputTokens !== undefined) {
     out.input_tokens_details = { cached_tokens: usage.cachedInputTokens };

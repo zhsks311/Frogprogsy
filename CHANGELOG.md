@@ -21,6 +21,8 @@
 - OpenAI Chat routes now fail closed on truncated or stalled streams, preserve max-token and retry metadata, and keep parallel tool calls and failed tool results distinct in Claude Messages. Codex Responses streams now count lifecycle and keepalive frames as activity and preserve terminal frames without a trailing newline.
 - Claude Fable 5.1 requests now use adaptive-thinking effort and supported tool choices, while API-key GPT-6 Astra requests omit unsupported sampling parameters. These two models require a 0.0.7 or newer client; catalog-only updates do not enable them on older installations.
 - Managed Claude Fable 5 also uses its documented always-on adaptive thinking. Messages-to-Responses requests now map effort through the selected provider/model while preserving native Responses effort values.
+- Missing or invalid Anthropic plain-input usage remains unavailable for cache-rate calculation instead of becoming a misleading zero; explicit zero input and protocol-required wire usage fields remain supported.
+- Refresh pins health checks and process ownership to the same concrete listener address, supports multi-address localhost and IPv6 wildcard binds, and preserves unrelated processes and native-routing rollback.
 
 ## 0.0.3
 

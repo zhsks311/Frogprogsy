@@ -242,7 +242,8 @@ export type CacheUsageSemantics =
   | "openai_input_total_includes_cached";
 
 export interface FrogUsage {
-  inputTokens: number;
+  /** Exact provider-reported input count; absent when the upstream omitted or invalidated it. */
+  inputTokens?: number;
   outputTokens: number;
   /** Exact combined cache read + creation count when both buckets are known. */
   cachedInputTokens?: number;

@@ -68,7 +68,6 @@ describe("Anthropic Messages bridge", () => {
       {
         type: "done",
         usage: {
-          inputTokens: 0,
           outputTokens: 5,
           cachedInputTokens: 8,
           cacheReadInputTokens: 2,

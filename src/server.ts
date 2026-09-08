@@ -2024,7 +2024,7 @@ function recordLogUsage(ctx: RequestLogContext, usage: FrogUsage | undefined): v
   ctx.entry.upstream = {
     ...(ctx.entry.upstream ?? {}),
     usage: {
-      inputTokens: usage.inputTokens,
+      ...(usage.inputTokens !== undefined ? { inputTokens: usage.inputTokens } : {}),
       outputTokens: usage.outputTokens,
       ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
       ...(usage.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
@@ -2180,9 +2180,9 @@ function setRouteLog(
 
 function usageFromLogEntry(entry: RequestLogEntry): FrogUsage | undefined {
   const usage = entry.upstream?.usage;
-  if (typeof usage?.inputTokens !== "number" || typeof usage.outputTokens !== "number") return undefined;
+  if (typeof usage?.outputTokens !== "number") return undefined;
   return {
-    inputTokens: usage.inputTokens,
+    ...(typeof usage.inputTokens === "number" ? { inputTokens: usage.inputTokens } : {}),
     outputTokens: usage.outputTokens,
     ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
     ...(typeof usage.cacheReadInputTokens === "number" ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),

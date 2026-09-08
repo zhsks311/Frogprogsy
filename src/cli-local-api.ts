@@ -1,12 +1,13 @@
 import type { FrogConfig } from "./types";
 
-export function healthHost(hostname?: string): string {
-  if (!hostname || hostname === "0.0.0.0" || hostname === "::") return "127.0.0.1";
-  return hostname === "::1" || hostname === "[::1]" ? "[::1]" : hostname;
-}
+export type LoopbackManagementHost = "127.0.0.1" | "[::1]";
 
-/** Runtime same-machine credentials are valid only on an independently fixed loopback destination. */
-export function loopbackManagementBase(config: Pick<FrogConfig, "hostname">, port: number): string {
+/** Runtime same-machine credentials use only fixed loopback destinations, optionally pinned to a verified family. */
+export function loopbackManagementBase(
+  config: Pick<FrogConfig, "hostname">,
+  port: number,
+  verifiedHost?: LoopbackManagementHost,
+): string {
   const hostname = config.hostname?.trim().toLowerCase();
   if (hostname
     && hostname !== "0.0.0.0"
@@ -17,7 +18,16 @@ export function loopbackManagementBase(config: Pick<FrogConfig, "hostname">, por
     && hostname !== "[::1]") {
     throw new Error("same-machine management credentials are never sent to a non-loopback hostname");
   }
-  const destination = hostname === "::1" || hostname === "[::1]" ? "[::1]" : "127.0.0.1";
+  if (verifiedHost !== undefined && verifiedHost !== "127.0.0.1" && verifiedHost !== "[::1]") {
+    throw new Error("same-machine management credentials require a verified loopback destination");
+  }
+  const configuredDestination = hostname === "::" || hostname === "::1" || hostname === "[::1]"
+    ? "[::1]"
+    : "127.0.0.1";
+  if (verifiedHost !== undefined && hostname !== "localhost" && verifiedHost !== configuredDestination) {
+    throw new Error("same-machine management credentials require the configured address family");
+  }
+  const destination = verifiedHost ?? configuredDestination;
   return `http://${destination}:${port}`;
 }
 

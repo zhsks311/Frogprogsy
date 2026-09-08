@@ -156,12 +156,12 @@ function bumpStatus(totals: UsageSummaryTotals, status: UsageStatus): void {
 
 function addTokens(totals: UsageSummaryTotals, entry: PersistedUsageEntry): void {
   if (!entry.usage) return;
-  totals.inputTokens += entry.usage.inputTokens;
+  totals.inputTokens += entry.usage.inputTokens ?? 0;
   totals.outputTokens += entry.usage.outputTokens;
   if (typeof entry.usage.cachedInputTokens === "number") totals.cachedInputTokens += entry.usage.cachedInputTokens;
   if (typeof entry.usage.reasoningOutputTokens === "number") totals.reasoningOutputTokens += entry.usage.reasoningOutputTokens;
   if (typeof entry.totalTokens === "number") totals.totalTokens += entry.totalTokens;
-  else totals.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
+  else totals.totalTokens += (entry.usage.inputTokens ?? 0) + entry.usage.outputTokens;
 }
 
 function finalizeCoverage(totals: UsageSummaryTotals): void {
@@ -306,7 +306,7 @@ function buildDayGrid(range: UsageRange, since: number | null, now: number, entr
     day.requests += 1;
     if (entry.usageStatus === "reported") day.reportedRequests += 1;
     if (typeof entry.totalTokens === "number") day.totalTokens += entry.totalTokens;
-    else if (entry.usage) day.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
+    else if (entry.usage) day.totalTokens += (entry.usage.inputTokens ?? 0) + entry.usage.outputTokens;
   }
   void since;
   return [...grid.values()].sort((a, b) => a.date.localeCompare(b.date));
@@ -335,10 +335,10 @@ function buildModels(entries: PersistedUsageEntry[], totalRequests: number): Usa
     model.requests += 1;
     if (entry.usageStatus === "reported") model.reportedRequests += 1;
     if (entry.usage) {
-      model.inputTokens += entry.usage.inputTokens;
+      model.inputTokens += entry.usage.inputTokens ?? 0;
       model.outputTokens += entry.usage.outputTokens;
       if (typeof entry.totalTokens === "number") model.totalTokens += entry.totalTokens;
-      else model.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
+      else model.totalTokens += (entry.usage.inputTokens ?? 0) + entry.usage.outputTokens;
     }
   }
   const models = [...byKey.values()];
@@ -365,7 +365,7 @@ function buildProviders(entries: PersistedUsageEntry[], totalRequests: number): 
     if (entry.usageStatus === "reported") provider.reportedRequests += 1;
     if (entry.usage) {
       if (typeof entry.totalTokens === "number") provider.totalTokens += entry.totalTokens;
-      else provider.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
+      else provider.totalTokens += (entry.usage.inputTokens ?? 0) + entry.usage.outputTokens;
     }
   }
   const providers = [...byKey.values()];
