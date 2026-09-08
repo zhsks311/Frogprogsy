@@ -371,6 +371,7 @@ async function probeProxyHealth(port?: number): Promise<ProxyHealthProbe> {
     try {
       const response = await fetch(`http://${target.urlHost}:${p}/healthz`, {
         signal: AbortSignal.timeout(750),
+        redirect: "error",
       });
       if (!response.ok) return null;
       const payload = await readBoundedJson(response, 4 * 1024);
@@ -1048,8 +1049,14 @@ async function resolveHealthProbeTargets(hostname?: string): Promise<readonly He
     : configuredHost === "::"
       ? "::1"
       : configuredHost.replace(/^\[|\]$/g, "");
+  let lookupTimer: NodeJS.Timeout | undefined;
   try {
-    const addresses = await lookup(probeHost, { all: true, verbatim: true });
+    const addresses = await Promise.race([
+      lookup(probeHost, { all: true, verbatim: true }),
+      new Promise<never>((_, reject) => {
+        lookupTimer = setTimeout(() => reject(new Error("health address lookup timed out")), 750);
+      }),
+    ]);
     const targets = new Map<string, HealthProbeTarget>();
     for (const { address, family } of addresses.slice(0, 8)) {
       const key = addressKey(address);
@@ -1067,6 +1074,8 @@ async function resolveHealthProbeTargets(hostname?: string): Promise<readonly He
     return [...targets.values()];
   } catch {
     return [];
+  } finally {
+    clearTimeout(lookupTimer);
   }
 }
 
