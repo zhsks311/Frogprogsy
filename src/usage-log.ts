@@ -30,7 +30,7 @@ export function usageLogPath(): string {
 
 export function usageTotalTokens(usage: FrogUsage | undefined): number | undefined {
   if (!usage) return undefined;
-  return usage.inputTokens + usage.outputTokens;
+  return (usage.inputTokens ?? 0) + usage.outputTokens;
 }
 
 export function usageStatusForFinalLog(usage: FrogUsage | undefined): UsageStatus {

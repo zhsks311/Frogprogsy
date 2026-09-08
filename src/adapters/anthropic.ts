@@ -173,7 +173,7 @@ function usageFromAnthropic(usage: Record<string, number> | undefined): FrogUsag
   const hasCompleteCacheTotal = cacheReadInputTokens !== undefined
     && cacheCreationInputTokens !== undefined;
   return {
-    inputTokens: inputTokens ?? 0,
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
     outputTokens: outputTokens ?? 0,
     ...(hasCompleteCacheTotal ? { cachedInputTokens: cacheReadInputTokens + cacheCreationInputTokens } : {}),
     ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
