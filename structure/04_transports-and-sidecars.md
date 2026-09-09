@@ -35,6 +35,22 @@ cancels the upstream request if no real events arrive, preventing indefinitely h
 
 ## Reasoning and tool-result compatibility
 
+Messages-to-Responses conversion emits every non-empty thinking summary as
+`{ type: "summary_text", text: ... }`. Empty thinking keeps an empty summary array.
+The shared converter preserves the order of thinking, text, tool calls, and tool results;
+Codex, OpenAI Responses, and the Azure Responses wrapper must retain this required summary type.
+
+Array-valued `function_call_output.output` uses input-content blocks (`input_text` and
+`input_image` for Messages tool results); assistant message text remains `output_text`.
+Plain text-only tool results remain strings. Unsupported non-empty image detail is rejected,
+not silently dropped to the provider's default.
+
+The producer's item, content, tool, and request types are inferred from known generated
+variants in `src/responses/schema.ts`. Missing summary discriminators and incorrect tool-result
+block kinds therefore fail typechecking. The generated union excludes the tolerant legacy
+input parser's catch-all, without changing that parser or adding a full outgoing-payload
+schema parse to each request. This is not a claim of complete provider-specific replay metadata support.
+
 Native OpenAI Responses upstream sanitizes routed reasoning history so `reasoning` input items do not send
 non-empty `content` arrays to upstream models that reject them. Chat Completions bridging repairs
 orphan `toolResult` messages by inserting a synthetic assistant `tool_call` before tool messages.
