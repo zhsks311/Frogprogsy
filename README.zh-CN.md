@@ -23,8 +23,6 @@ frogp --version
 bun add -g frogprogsy@preview
 ```
 
-`frogp update` 始终把 Bun 管理的安装切换到稳定版 `latest`。要继续使用预览版，请用 Bun 重新安装 `frogprogsy@preview`。
-
 对于普通的 Bun 全局稳定版安装，proxy 启动后会在后台检查 npm 稳定版发布信息，并在
 dashboard 和 `frogp status` 中显示可用版本。它不会自动安装或重启。可以在
 **详细设置**中关闭自动检查；显式的 `frogp status --refresh-update` 与 `frogp update`
@@ -141,6 +139,45 @@ claude "解释这个项目的入口点"
 ```
 
 要路由到其他 model，或使用 `provider/model` alias，请继续阅读[模型路由](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/model-routing/)。
+
+## 更新稳定版
+
+如果使用 Bun 从软件包仓库全局安装了 frogprogsy，请先等待正在处理的请求结束，
+再更新到最新稳定版并确认安装后的版本：
+
+```bash
+frogp update
+frogp version
+```
+
+成功安装新版本后，`frogp update` 通常会停止并重新启动代理。如果已是最新版本，则安装和
+重启都会跳过。要稍后自行重启，请使用 `frogp update --no-restart`。如果代理由外部
+进程管理工具管理，请通过该工具重启。
+
+也可以直接用 Bun 更新全局软件包：
+
+```bash
+bun update -g --latest frogprogsy
+frogp version
+```
+
+`-g` 选择 Bun 的全局软件包，而不是当前项目的依赖；`--latest` 允许超出已保存的版本
+范围更新到最新版。Bun 安装时通常会在版本前添加 `^`，保存允许更新的范围。
+例如，已保存的 `^0.0.4` 不包含 `0.0.7`，因此运行 `bun update -g frogprogsy` 后仍可能停留在 `0.0.4`。
+
+Bun 命令本身不会重启正在运行的代理。如果版本发生了变化，请先等待正在处理的请求结束；
+对于由 frogp 管理的代理，再明确执行：
+
+```bash
+frogp stop
+frogp start
+```
+
+`frogp update` 适用于稳定版渠道；它不会跟随不断移动的 `preview` 标签，也不会用较旧的稳定版
+替换较新的预览版。要继续跟随预览版，请用 Bun 安装 `frogprogsy@preview`；要固定某个预览版，
+请安装确切的预览版本。要明确返回稳定版，请运行 `bun add -g frogprogsy@latest`。
+`frogp update` 不会更新源码安装或开发软件包：源码检出目录使用 `git pull && bun install` 更新，
+开发软件包使用 `bun run dev:package reinstall --yes` 替换。
 
 ## 指定 auto-mode 审查模型（预览版）
 

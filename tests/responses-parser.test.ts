@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
+import { generatedResponsesRequestSchema } from "../src/responses/schema";
 import type { FrogAssistantMessage, FrogContentPart, FrogToolCall, FrogToolResultMessage } from "../src/types";
 
 function assistantOf(request: ReturnType<typeof parseRequest>, index = 0): FrogAssistantMessage {
@@ -127,6 +128,24 @@ describe("Responses request parser — input items", () => {
     expect(parts[1]).toMatchObject({ type: "thinking", thinking: "raw only" });
     expect(parts[1]).not.toHaveProperty("itemId");
     expect(JSON.parse((parts[0] as { signature: string }).signature)).toMatchObject({ id: "rs_1" });
+  });
+
+  test("generated request schema rejects untyped summaries while tolerant legacy parsing still accepts them", () => {
+    const legacyBody = {
+      model: "gpt-5",
+      input: [{ type: "reasoning", summary: [{ text: "legacy summary" }], content: [] }],
+      stream: false,
+    };
+
+    expect(generatedResponsesRequestSchema.safeParse(legacyBody).success).toBe(false);
+    expect(assistantOf(parseRequest(legacyBody)).content[0]).toMatchObject({
+      type: "thinking",
+      thinking: "legacy summary",
+    });
+    expect(generatedResponsesRequestSchema.safeParse({
+      ...legacyBody,
+      input: [{ type: "reasoning", summary: [{ type: "summary_text", text: "typed summary" }], content: [] }],
+    }).success).toBe(true);
   });
 
   test("function_call items carry parsed arguments and tolerate empty or non-JSON arguments", () => {

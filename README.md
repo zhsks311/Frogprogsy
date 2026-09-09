@@ -23,8 +23,6 @@ The untagged package follows the stable `latest` channel. To try a prerelease, i
 bun add -g frogprogsy@preview
 ```
 
-`frogp update` always moves a Bun-managed install to stable `latest`. To stay on the prerelease channel, reinstall `frogprogsy@preview` with Bun.
-
 On a normal Bun-global stable install, proxy startup checks npm's stable release metadata in the background
 and shows an available version in the dashboard and `frogp status`. It never installs or restarts
 automatically. Disable automatic checks in **Details**; explicit `frogp status --refresh-update` and
@@ -141,6 +139,46 @@ claude "Explain this project's entry points"
 ```
 
 To route to another model or use a `provider/model` alias, continue with [model routing](https://zhsks311.github.io/Frogprogsy/guides/model-routing/).
+
+## Update a stable installation
+
+For a Bun-managed global registry install, finish active requests, then check for a newer stable
+`latest` release and verify the installed version:
+
+```bash
+frogp update
+frogp version
+```
+
+After installing a newer version, `frogp update` normally stops and starts the proxy. It skips both
+installation and restart when the installed version is already current. Use `frogp update --no-restart`
+to defer that restart. If an external supervisor owns the proxy, restart it through that supervisor.
+
+As a manual alternative, update the global package directly with Bun:
+
+```bash
+bun update -g --latest frogprogsy
+frogp version
+```
+
+`-g` selects Bun's global package instead of a dependency in the current project, while `--latest`
+bypasses the saved version range. Bun normally saves a caret range: for example, a saved `^0.0.4`
+does not include `0.0.7`, so `bun update -g frogprogsy` can remain on `0.0.4`.
+
+Bun itself does not restart a running proxy. If the version changed, finish active requests and, for
+a frogp-managed proxy, restart it explicitly:
+
+```bash
+frogp stop
+frogp start
+```
+
+`frogp update` is the stable-channel workflow; it does not track the moving `preview` tag or replace
+a newer preview with an older stable release. To follow preview, install `frogprogsy@preview` with Bun,
+or install an exact prerelease version to pin it. To return explicitly to stable, run
+`bun add -g frogprogsy@latest`. `frogp update` does not update source or development-package installs:
+update a source checkout with `git pull && bun install`, or replace a development package with
+`bun run dev:package reinstall --yes`.
 
 ## Auto-mode review routing (preview)
 
