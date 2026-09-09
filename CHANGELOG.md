@@ -17,7 +17,7 @@
 
 ### Fixed
 
-- Messages-to-Responses conversation replay now includes the required `summary_text` type, fixing missing `input[N].summary[M].type` errors when earlier Claude thinking blocks are sent to Codex or other Responses routes.
+- Messages-to-Responses conversation replay now includes the required `summary_text` type, fixing missing `input[N].summary[M].type` errors. Multimodal tool results now use `input_text` rather than `output_text`. Generated requests use schema-derived types so these invalid block kinds fail typechecking instead of reaching Codex or other Responses routes.
 - Prepare release recovery now reuses or dispatches each missing exact-head CI and Package lifecycle run even when no new preparation commit was pushed, and rejects invalid run IDs before binding.
 - OpenAI Chat routes now fail closed on truncated or stalled streams, preserve max-token and retry metadata, and keep parallel tool calls and failed tool results distinct in Claude Messages. Codex Responses streams now count lifecycle and keepalive frames as activity and preserve terminal frames without a trailing newline.
 - Claude Fable 5.1 requests now use adaptive-thinking effort and supported tool choices, while API-key GPT-6 Astra requests omit unsupported sampling parameters. These two models require a 0.0.7 or newer client; catalog-only updates do not enable them on older installations.

@@ -12,6 +12,13 @@ import type {
   FrogToolResultMessage,
   FrogWebSearchRequest,
 } from "../types";
+import type {
+  GeneratedResponsesInputContent,
+  GeneratedResponsesInputItem,
+  GeneratedResponsesOutputContent,
+  GeneratedResponsesRequest,
+  GeneratedResponsesTool,
+} from "../responses/schema";
 
 function isObj(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -238,18 +245,26 @@ function reasoningFromThinking(thinking: unknown): string | undefined {
   return "minimal";
 }
 
-function toResponsesInput(messages: FrogMessage[]): unknown[] {
-  const input: unknown[] = [];
+function toResponsesImageContent(imageUrl: string, detail?: string): GeneratedResponsesInputContent {
+  if (detail === undefined || detail === "") return { type: "input_image", image_url: imageUrl };
+  if (detail === "auto" || detail === "low" || detail === "high") {
+    return { type: "input_image", image_url: imageUrl, detail };
+  }
+  throw new Error("messages parse error: image detail must be auto, low, or high");
+}
+
+function toResponsesInput(messages: FrogMessage[]): GeneratedResponsesInputItem[] {
+  const input: GeneratedResponsesInputItem[] = [];
   for (const msg of messages) {
     if (msg.role === "user" || msg.role === "developer") {
-      const content = typeof msg.content === "string"
+      const content: GeneratedResponsesInputContent[] = typeof msg.content === "string"
         ? [{ type: "input_text", text: msg.content }]
         : msg.content.map(part => part.type === "image"
-          ? { type: "input_image", image_url: part.imageUrl, ...(part.detail ? { detail: part.detail } : {}) }
+          ? toResponsesImageContent(part.imageUrl, part.detail)
           : { type: "input_text", text: part.text });
       input.push({ type: "message", role: msg.role, content });
     } else if (msg.role === "assistant") {
-      const messageContent: unknown[] = [];
+      const messageContent: GeneratedResponsesOutputContent[] = [];
       const flushAssistantMessage = () => {
         if (messageContent.length === 0) return;
         input.push({ type: "message", role: "assistant", content: [...messageContent] });
@@ -273,18 +288,18 @@ function toResponsesInput(messages: FrogMessage[]): unknown[] {
       }
       flushAssistantMessage();
     } else if (msg.role === "toolResult") {
-      const content = typeof msg.content === "string"
+      const content: string | GeneratedResponsesInputContent[] = typeof msg.content === "string"
         ? msg.content
         : msg.content.map(part => part.type === "image"
-          ? { type: "input_image", image_url: part.imageUrl, ...(part.detail ? { detail: part.detail } : {}) }
-          : { type: "output_text", text: part.text });
+          ? toResponsesImageContent(part.imageUrl, part.detail)
+          : { type: "input_text", text: part.text });
       input.push({ type: "function_call_output", call_id: msg.toolCallId, output: content });
     }
   }
   return input;
 }
 
-function toResponsesTools(tools: FrogTool[] | undefined): unknown[] | undefined {
+function toResponsesTools(tools: FrogTool[] | undefined): GeneratedResponsesTool[] | undefined {
   if (!tools || tools.length === 0) return undefined;
   return tools.map(tool => ({
     type: "function",
@@ -294,8 +309,8 @@ function toResponsesTools(tools: FrogTool[] | undefined): unknown[] | undefined 
   }));
 }
 
-export function buildResponsesBody(parsed: FrogParsedRequest, source: Record<string, unknown>): Record<string, unknown> {
-  const body: Record<string, unknown> = {
+export function buildResponsesBody(parsed: FrogParsedRequest, source: Record<string, unknown>): GeneratedResponsesRequest {
+  const body: GeneratedResponsesRequest = {
     model: parsed.modelId,
     input: toResponsesInput(parsed.context.messages),
     stream: parsed.stream,

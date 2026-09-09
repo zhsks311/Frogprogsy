@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildMessageJSON, bridgeToMessagesSSE, formatAnthropicErrorResponse } from "../src/messages/bridge";
-import { estimateMessagesInputTokens, parseMessagesRequest } from "../src/messages/parser";
+import { buildResponsesBody, estimateMessagesInputTokens, parseMessagesRequest } from "../src/messages/parser";
 import { createResponsesAdapter } from "../src/adapters/openai-responses";
 import { buildAnthropicModelsListFromAliases } from "../src/server";
 import type { AdapterEvent } from "../src/types";
@@ -29,22 +29,72 @@ async function collectSse(stream: ReadableStream<Uint8Array>): Promise<{ event?:
     });
 }
 
+function assistantContentFromSse(
+  frames: Array<{ event?: string; data: Record<string, unknown> }>,
+): Record<string, unknown>[] {
+  const content: Array<Record<string, unknown> | undefined> = [];
+  const toolArguments = new Map<number, string>();
+  for (const frame of frames) {
+    const index = typeof frame.data.index === "number" ? frame.data.index : undefined;
+    if (index === undefined) continue;
+    if (frame.event === "content_block_start") {
+      const block = frame.data.content_block;
+      if (block && typeof block === "object" && !Array.isArray(block)) {
+        content[index] = { ...(block as Record<string, unknown>) };
+        if (content[index]?.type === "tool_use") toolArguments.set(index, "");
+      }
+      continue;
+    }
+    if (frame.event !== "content_block_delta" || !content[index]) continue;
+    const delta = frame.data.delta;
+    if (!delta || typeof delta !== "object" || Array.isArray(delta)) continue;
+    const block = content[index]!;
+    const record = delta as Record<string, unknown>;
+    if (record.type === "thinking_delta" && typeof record.thinking === "string") {
+      block.thinking = `${typeof block.thinking === "string" ? block.thinking : ""}${record.thinking}`;
+    } else if (record.type === "text_delta" && typeof record.text === "string") {
+      block.text = `${typeof block.text === "string" ? block.text : ""}${record.text}`;
+    } else if (record.type === "input_json_delta" && typeof record.partial_json === "string") {
+      toolArguments.set(index, `${toolArguments.get(index) ?? ""}${record.partial_json}`);
+    }
+  }
+  return content.flatMap((block, index) => {
+    if (!block) return [];
+    const argumentsJson = toolArguments.get(index);
+    if (argumentsJson !== undefined) block.input = argumentsJson ? JSON.parse(argumentsJson) : {};
+    return [block];
+  });
+}
+
 describe("Claude Messages data plane", () => {
-  test("sends thinking summaries and tool history as valid ordered Responses input", () => {
+  test("sends multiple and empty thinking summaries plus multimodal tool history as valid ordered Responses input", () => {
     const parsed = parseMessagesRequest({
       model: "provider/model-a",
       system: [{ type: "text", text: "system" }],
       messages: [
         { role: "user", content: [{ type: "text", text: "hello" }] },
         { role: "assistant", content: [
-          { type: "thinking", thinking: "plan", signature: "sig" },
+          { type: "thinking", thinking: "plan one", signature: "sig-1" },
+          { type: "thinking", thinking: "", signature: "sig-empty" },
           { type: "text", text: "before tool" },
+          { type: "thinking", thinking: "plan two", signature: "sig-2" },
           { type: "tool_use", id: "toolu_1", name: "read_file", input: { path: "README.md" } },
         ] },
-        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] },
+        {
+          role: "user",
+          content: [{
+            type: "tool_result",
+            tool_use_id: "toolu_1",
+            content: [
+              { type: "text", text: "file bytes" },
+              { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+            ],
+          }],
+        },
       ],
       tools: [{ name: "read_file", description: "Read", input_schema: { type: "object" } }],
-      thinking: { type: "enabled", budget_tokens: 4096 },
+      thinking: { type: "adaptive" },
+      output_config: { effort: "high" },
       max_tokens: 100,
       stream: false,
     });
@@ -53,13 +103,129 @@ describe("Claude Messages data plane", () => {
     const raw = JSON.parse(adapter.buildRequest(parsed).body) as Record<string, unknown>;
     expect(raw.model).toBe("provider/model-a");
     expect(raw.instructions).toBe("system");
+    expect(raw.reasoning).toEqual({ effort: "high", summary: "auto" });
     expect(raw.input).toEqual([
       { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
-      { type: "reasoning", summary: [{ type: "summary_text", text: "plan" }], content: [] },
+      { type: "reasoning", summary: [{ type: "summary_text", text: "plan one" }], content: [] },
+      { type: "reasoning", summary: [], content: [] },
       { type: "message", role: "assistant", content: [{ type: "output_text", text: "before tool" }] },
+      { type: "reasoning", summary: [{ type: "summary_text", text: "plan two" }], content: [] },
       { type: "function_call", call_id: "toolu_1", name: "read_file", arguments: "{\"path\":\"README.md\"}" },
-      { type: "function_call_output", call_id: "toolu_1", output: "ok" },
+      {
+        type: "function_call_output",
+        call_id: "toolu_1",
+        output: [
+          { type: "input_text", text: "file bytes" },
+          { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+        ],
+      },
     ]);
+  });
+
+  test("rejects unsupported image fidelity instead of silently dropping the requested detail", () => {
+    const parsed = parseMessagesRequest({ model: "provider/model-a", messages: [] });
+    parsed.context.messages.push({
+      role: "user",
+      content: [{ type: "image", imageUrl: "https://example.test/image.png", detail: "unsupported" }],
+      timestamp: 0,
+    });
+    expect(() => buildResponsesBody(parsed, {})).toThrow(Error);
+  });
+
+  test("replays adaptive-effort reasoning and a tool result through JSON and SSE Messages bridges", async () => {
+    const adapter = createResponsesAdapter({ adapter: "openai-responses", baseUrl: "https://api.openai.test/v1" });
+    const firstTurn = parseMessagesRequest({
+      model: "provider/model-a",
+      messages: [{ role: "user", content: "inspect the file" }],
+      thinking: { type: "adaptive" },
+      output_config: { effort: "high" },
+    });
+    const jsonEvents = await adapter.parseResponse!(new Response(JSON.stringify({
+      status: "completed",
+      output: [
+        { type: "reasoning", summary: [{ type: "summary_text", text: "inspect " }] },
+        { type: "reasoning", summary: [] },
+        { type: "reasoning", summary: [{ type: "summary_text", text: "then read" }] },
+        { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"README.md\"}" },
+      ],
+      usage: { input_tokens: 4, output_tokens: 3 },
+    }), { headers: { "content-type": "application/json" } }));
+    const jsonMessage = buildMessageJSON(jsonEvents, firstTurn.modelId, firstTurn.options);
+
+    const upstreamSse = new Response([
+      'event: response.reasoning_summary_text.delta',
+      'data: {"type":"response.reasoning_summary_text.delta","delta":"inspect "}',
+      "",
+      'event: response.reasoning_summary_text.delta',
+      'data: {"type":"response.reasoning_summary_text.delta","delta":"then read"}',
+      "",
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":""}}',
+      "",
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}}',
+      "",
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":4,"output_tokens":3}}}',
+      "",
+    ].join("\n"));
+    const sseEvents: AdapterEvent[] = [];
+    for await (const event of adapter.parseStream(upstreamSse)) sseEvents.push(event);
+    const downstreamFrames = await collectSse(bridgeToMessagesSSE(
+      replay(sseEvents),
+      firstTurn.modelId,
+      undefined,
+      60_000,
+      firstTurn.options,
+    ));
+
+    const responseSurfaces = [
+      { stream: false, content: jsonMessage.content as Record<string, unknown>[] },
+      { stream: true, content: assistantContentFromSse(downstreamFrames) },
+    ];
+    for (const surface of responseSurfaces) {
+      expect(surface.content).toEqual([
+        { type: "thinking", thinking: "inspect then read" },
+        { type: "tool_use", id: "call_1", name: "read_file", input: { path: "README.md" } },
+      ]);
+      const nextTurn = parseMessagesRequest({
+        model: "provider/model-a",
+        messages: [
+          { role: "user", content: "inspect the file" },
+          { role: "assistant", content: surface.content },
+          {
+            role: "user",
+            content: [{
+              type: "tool_result",
+              tool_use_id: "call_1",
+              content: [
+                { type: "text", text: "file bytes" },
+                { type: "image", source: { type: "url", url: "https://example.test/shot.png" } },
+              ],
+            }],
+          },
+        ],
+        thinking: { type: "adaptive" },
+        output_config: { effort: "high" },
+        stream: surface.stream,
+      });
+      const nextBody = JSON.parse(adapter.buildRequest(nextTurn).body);
+      expect(nextBody.reasoning).toEqual({ effort: "high", summary: "auto" });
+      expect(nextBody.stream).toBe(surface.stream);
+      expect(nextBody.input).toEqual([
+        { type: "message", role: "user", content: [{ type: "input_text", text: "inspect the file" }] },
+        { type: "reasoning", summary: [{ type: "summary_text", text: "inspect then read" }], content: [] },
+        { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"README.md\"}" },
+        {
+          type: "function_call_output",
+          call_id: "call_1",
+          output: [
+            { type: "input_text", text: "file bytes" },
+            { type: "input_image", image_url: "https://example.test/shot.png" },
+          ],
+        },
+      ]);
+    }
   });
 
   test("explicit effort reaches Responses with adaptive thinking and takes precedence over legacy budgets", () => {

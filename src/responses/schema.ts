@@ -24,6 +24,10 @@ const reasoningTextSchema = z.object({ type: z.literal("reasoning_text"), text: 
 const inputContentBlockSchema = z.union([inputTextSchema, plainTextSchema, inputImageBlockSchema, inputFileBlockSchema]);
 const outputContentBlockSchema = z.union([outputTextSchema, plainTextSchema, outputRefusalSchema]);
 
+// The Messages bridge only emits canonical Responses input blocks. Keep this narrower than the
+// tolerant inbound schemas above so generated requests cannot type-check through a legacy shape.
+export const generatedInputContentBlockSchema = z.union([inputTextSchema, inputImageBlockSchema, inputFileBlockSchema]);
+
 const userMessageItemSchema = z.object({
   type: z.literal("message").optional(),
   role: z.union([z.literal("user"), z.literal("developer")]),
@@ -81,6 +85,35 @@ export const inputItemSchema = z.union([
   customToolCallItemSchema,
   customToolCallOutputItemSchema,
   z.object({ type: z.string() }).loose(),
+]);
+
+const generatedUserMessageItemSchema = userMessageItemSchema.extend({
+  type: z.literal("message"),
+  content: z.array(generatedInputContentBlockSchema),
+});
+const generatedAssistantMessageItemSchema = assistantMessageItemSchema.extend({
+  type: z.literal("message"),
+  content: z.array(outputTextSchema),
+});
+const generatedReasoningItemSchema = reasoningItemSchema.extend({
+  summary: z.array(summaryTextSchema),
+  content: z.array(reasoningTextSchema),
+});
+const generatedFunctionCallItemSchema = functionCallItemSchema.extend({
+  arguments: z.string(),
+});
+const generatedFunctionCallOutputItemSchema = functionCallOutputItemSchema.extend({
+  output: z.union([z.string(), z.array(generatedInputContentBlockSchema)]),
+});
+
+// Known-only output of the shared Messages-to-Responses producer. Unlike inputItemSchema, this
+// deliberately has no loose future-item branch: malformed known items must fail at compile time.
+export const generatedInputItemSchema = z.union([
+  generatedUserMessageItemSchema,
+  generatedAssistantMessageItemSchema,
+  generatedReasoningItemSchema,
+  generatedFunctionCallItemSchema,
+  generatedFunctionCallOutputItemSchema,
 ]);
 
 export const toolSchema = z.object({
@@ -144,3 +177,16 @@ export const responsesRequestSchema = z.object({
   text: z.unknown().optional(),
   truncation: z.unknown().optional(),
 });
+
+export const generatedResponsesRequestSchema = responsesRequestSchema.extend({
+  input: z.array(generatedInputItemSchema),
+  instructions: z.string().optional(),
+  tools: z.array(toolSchema).optional(),
+  stream: z.boolean(),
+});
+
+export type GeneratedResponsesInputContent = z.infer<typeof generatedInputContentBlockSchema>;
+export type GeneratedResponsesInputItem = z.infer<typeof generatedInputItemSchema>;
+export type GeneratedResponsesOutputContent = z.infer<typeof outputTextSchema>;
+export type GeneratedResponsesRequest = z.infer<typeof generatedResponsesRequestSchema>;
+export type GeneratedResponsesTool = z.infer<typeof toolSchema>;
