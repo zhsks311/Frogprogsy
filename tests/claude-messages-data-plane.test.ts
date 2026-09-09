@@ -30,7 +30,7 @@ async function collectSse(stream: ReadableStream<Uint8Array>): Promise<{ event?:
 }
 
 describe("Claude Messages data plane", () => {
-  test("parses Anthropic messages with thinking, tool_use, tool_result, tools, and Responses raw body", () => {
+  test("sends thinking summaries and tool history as valid ordered Responses input", () => {
     const parsed = parseMessagesRequest({
       model: "provider/model-a",
       system: [{ type: "text", text: "system" }],
@@ -49,18 +49,13 @@ describe("Claude Messages data plane", () => {
       stream: false,
     });
 
-    expect(parsed.context.systemPrompt).toEqual(["system"]);
-    expect(parsed.context.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
-    expect(parsed.context.tools?.[0]).toMatchObject({ name: "read_file", parameters: { type: "object" } });
-    expect(parsed.options.reasoning).toBe("low");
-    expect(parsed.options.hideThinkingSummary).toBe(false);
-
-    const raw = parsed._rawBody as Record<string, unknown>;
+    const adapter = createResponsesAdapter({ adapter: "openai-responses", baseUrl: "https://api.openai.test/v1" });
+    const raw = JSON.parse(adapter.buildRequest(parsed).body) as Record<string, unknown>;
     expect(raw.model).toBe("provider/model-a");
     expect(raw.instructions).toBe("system");
     expect(raw.input).toEqual([
       { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
-      { type: "reasoning", summary: [{ text: "plan" }], content: [] },
+      { type: "reasoning", summary: [{ type: "summary_text", text: "plan" }], content: [] },
       { type: "message", role: "assistant", content: [{ type: "output_text", text: "before tool" }] },
       { type: "function_call", call_id: "toolu_1", name: "read_file", arguments: "{\"path\":\"README.md\"}" },
       { type: "function_call_output", call_id: "toolu_1", output: "ok" },

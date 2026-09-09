@@ -35,6 +35,11 @@ cancels the upstream request if no real events arrive, preventing indefinitely h
 
 ## Reasoning and tool-result compatibility
 
+Messages-to-Responses conversion emits every non-empty thinking summary as
+`{ type: "summary_text", text: ... }`. Empty thinking keeps an empty summary array.
+The shared converter preserves the order of thinking, text, tool calls, and tool results;
+Codex, OpenAI Responses, and the Azure Responses wrapper must retain this required summary type.
+
 Native OpenAI Responses upstream sanitizes routed reasoning history so `reasoning` input items do not send
 non-empty `content` arrays to upstream models that reject them. Chat Completions bridging repairs
 orphan `toolResult` messages by inserting a synthetic assistant `tool_call` before tool messages.

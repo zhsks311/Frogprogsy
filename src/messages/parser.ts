@@ -260,7 +260,7 @@ function toResponsesInput(messages: FrogMessage[]): unknown[] {
           messageContent.push({ type: "output_text", text: part.text });
         } else if (part.type === "thinking") {
           flushAssistantMessage();
-          input.push({ type: "reasoning", summary: part.thinking ? [{ text: part.thinking }] : [], content: [] });
+          input.push({ type: "reasoning", summary: part.thinking ? [{ type: "summary_text", text: part.thinking }] : [], content: [] });
         } else if (part.type === "toolCall") {
           flushAssistantMessage();
           input.push({
