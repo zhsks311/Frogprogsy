@@ -23,8 +23,6 @@ frogp --version
 bun add -g frogprogsy@preview
 ```
 
-`frogp update`는 Bun으로 설치한 패키지를 항상 안정판 `latest`로 옮깁니다. 시험판을 계속 쓰려면 Bun으로 `frogprogsy@preview`를 다시 설치하세요.
-
 일반 Bun 전역 안정판 설치에서는 프록시 시작 뒤 npm 안정판 릴리스 정보를 백그라운드에서 확인하고
 대시보드와 `frogp status`에 사용 가능한 버전을 표시합니다. 자동 설치나 재시작은 하지 않습니다.
 **자세한 설정**에서 자동 확인을 끌 수 있으며, 명시적인 `frogp status --refresh-update`와
@@ -141,6 +139,47 @@ claude "이 프로젝트의 진입점을 설명해 줘"
 ```
 
 다른 모델로 보내거나 `provider/model` 값을 직접 쓰는 방법은 [모델 선택 규칙](https://zhsks311.github.io/Frogprogsy/ko/guides/model-routing/)에서 이어서 확인하세요.
+
+## 안정판 업데이트
+
+Bun으로 전역 설치한 공식 배포판이라면, 먼저 진행 중인 요청이 끝날 때까지 기다린 다음
+최신 안정판으로 업데이트하고 설치된 버전을 확인하세요.
+
+```bash
+frogp update
+frogp version
+```
+
+`frogp update`가 새 버전을 설치하면 보통 프록시를 멈췄다가 다시 시작합니다. 이미 최신이면
+설치와 재시작을 모두 건너뜁니다. 재시작을 나중에 직접 하려면 `frogp update --no-restart`를
+사용하세요. 외부 관리 프로그램이 프록시를 관리한다면 그 프로그램을 통해 재시작하세요.
+
+대신 Bun으로 전역 패키지를 직접 업데이트할 수도 있습니다.
+
+```bash
+bun update -g --latest frogprogsy
+frogp version
+```
+
+`-g`는 현재 프로젝트에 설치된 패키지가 아니라 Bun 전역 패키지를 선택합니다. `--latest`는
+저장된 버전 범위를 넘어 최신판으로 업데이트합니다. Bun은 보통 설치할 때 버전 앞에 `^`를 붙여
+허용 범위를 저장합니다. 예를 들어 `^0.0.4`에는 `0.0.7`이 포함되지 않으므로
+`bun update -g frogprogsy`를 실행해도 `0.0.4`에 머물 수 있습니다.
+
+Bun 명령 자체는 실행 중인 프록시를 재시작하지 않습니다. 버전이 바뀌었다면 진행 중인 요청이
+끝난 뒤, frogp가 관리하는 프록시는 다음과 같이 직접 재시작하세요.
+
+```bash
+frogp stop
+frogp start
+```
+
+`frogp update`는 안정판용입니다. 이동하는 `preview` 태그를 따라가지 않으며, 더 새로운 시험판을
+그보다 낮은 안정판으로 바꾸지도 않습니다. 시험판을 계속 따라가려면 Bun으로
+`frogprogsy@preview`를 설치하고, 특정 시험판을 유지하려면 정확한 버전을 설치하세요. 안정판으로
+명시적으로 돌아가려면 `bun add -g frogprogsy@latest`를 실행하세요. `frogp update`는 소스 설치나
+개발 패키지를 업데이트하지 않습니다. 소스 저장소는 `git pull && bun install`로 업데이트하고,
+개발 패키지는 `bun run dev:package reinstall --yes`로 교체하세요.
 
 ## auto mode 모델 지정하기 (시험판)
 
