@@ -681,6 +681,10 @@ describe("model continuity reference inventory", () => {
       "mix-judge",
       "mix-synthesizer",
     ]);
+
+    input.config.modelMixing!.coordinator = { provider: "missing", model: "coordinator" };
+    expect(collectModelContinuityReferences(input).find(row => row.id === "mix-coordinator"))
+      .toMatchObject({ active: true, status: "policy_invalid", actionRequired: true });
   });
 
   test("hidden active targets still require action while inactive saved targets remain diagnostic", () => {

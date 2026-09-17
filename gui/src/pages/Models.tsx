@@ -695,7 +695,6 @@ function ContinuityReferenceCard({
   const [replacement, setReplacement] = useState("");
   const [saving, setSaving] = useState(false);
   const fieldId = useId();
-  const purpose = continuityPurpose(reference, t);
   const location = continuityLocation(reference, t);
 
   useEffect(() => {
@@ -1124,9 +1123,11 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
   const featuredSavingRef = useRef(false);
   const featuredLoadSeqRef = useRef(0);
   const continuityLoadSeqRef = useRef(0);
+  const continuityMutationsRef = useRef(0);
   const modelControlsRef = useRef<HTMLElement | null>(null);
 
   const loadFeatured = async (force = false) => {
+    if (continuityMutationsRef.current > 0) return;
     if (!force && (featuredDirtyRef.current || featuredSavingRef.current)) return;
     const requestId = ++featuredLoadSeqRef.current;
     try {
@@ -1134,6 +1135,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
       if (!res.ok) throw new Error("featured load failed");
       const data = parseFeaturedModels(await res.json());
       if (requestId !== featuredLoadSeqRef.current) return;
+      if (continuityMutationsRef.current > 0) return;
       if (!force && (featuredDirtyRef.current || featuredSavingRef.current)) return;
       setFeaturedAvailable(data.available);
       setFeaturedChosen(data.chosen);
@@ -1323,41 +1325,47 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     action: ModelContinuityAction,
     successMessage: TKey,
   ): Promise<ModelContinuityActionResult> => {
+    const savedBefore = [...featuredSavedRef.current];
+    featuredLoadSeqRef.current += 1;
+    continuityMutationsRef.current += 1;
     setContinuityStatus("");
-    const result = await postModelContinuityAction(
-      (input, init) => fetch(input, init),
-      apiBase,
-      action,
-      loadContinuity,
-    );
-    if (result.ok) {
-      const savedBefore = featuredSavedRef.current;
-      const savedAfter = reconcileFeaturedDraft(savedBefore, savedBefore, action).saved;
-      featuredSavedRef.current = savedAfter;
-      setFeaturedChosen(current => reconcileFeaturedDraft(current, savedBefore, action).draft);
-      const [, continuityReloaded] = await Promise.all([
-        loadModels(),
-        loadContinuity(),
-      ]);
-      if (continuityReloaded === "superseded") return "superseded";
-      if (continuityReloaded === "applied") {
-        setContinuityOk(true);
-        setContinuityStatus(t(successMessage));
+    try {
+      const result = await postModelContinuityAction(
+        (input, init) => fetch(input, init),
+        apiBase,
+        action,
+        loadContinuity,
+      );
+      if (result.ok) {
+        const savedAfter = reconcileFeaturedDraft(savedBefore, savedBefore, action).saved;
+        featuredSavedRef.current = savedAfter;
+        setFeaturedChosen(current => reconcileFeaturedDraft(current, savedBefore, action).draft);
+        const [, continuityReloaded] = await Promise.all([
+          loadModels(),
+          loadContinuity(),
+        ]);
+        if (continuityReloaded === "superseded") return "superseded";
+        if (continuityReloaded === "applied") {
+          setContinuityOk(true);
+          setContinuityStatus(t(successMessage));
+        }
+        return "applied";
       }
-      return "applied";
+      if (result.superseded) return "superseded";
+      setContinuityOk(false);
+      if (result.reloadFailed) {
+        setContinuityStatus(t("models.continuity.loadFailed"));
+      } else if (result.stale) {
+        setContinuityStatus(t("models.continuity.stale"));
+      } else if (result.message) {
+        setContinuityStatus(t("models.continuity.saveFailedWithReason", { reason: result.message }));
+      } else {
+        setContinuityStatus(t("models.continuity.saveFailed"));
+      }
+      return "failed";
+    } finally {
+      continuityMutationsRef.current -= 1;
     }
-    if (result.superseded) return "superseded";
-    setContinuityOk(false);
-    if (result.reloadFailed) {
-      setContinuityStatus(t("models.continuity.loadFailed"));
-    } else if (result.stale) {
-      setContinuityStatus(t("models.continuity.stale"));
-    } else if (result.message) {
-      setContinuityStatus(t("models.continuity.saveFailedWithReason", { reason: result.message }));
-    } else {
-      setContinuityStatus(t("models.continuity.saveFailed"));
-    }
-    return "failed";
   };
 
 

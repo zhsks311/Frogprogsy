@@ -558,7 +558,6 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
       : -1;
     const coordinatorActive = (routeMode && mode === "coordinator")
       || (fusionMode
-        && isConfiguredTarget(config, mixing.coordinator)
         && (
           !isConfiguredTarget(config, mixing.fusion?.judge)
           || !isConfiguredTarget(config, mixing.fusion?.synthesizer)
