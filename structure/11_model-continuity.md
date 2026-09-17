@@ -4,7 +4,7 @@
 
 ## Goal
 
-FrogProgsy must tell users when a configured model has been retired and let them replace every active model reference from the dashboard or CLI. Ordinary model requests may use an explicit fallback sequence when the user opts in. FrogProgsy must not infer replacements from model names, prices, families, or provider defaults.
+FrogProgsy must tell users when an active configured model needs attention and let them change or remove the exact affected setting from the dashboard or CLI. Saved but inactive settings and past-session aliases remain visible as diagnostics without being presented as required work. Ordinary model requests may use an explicit fallback sequence when the user opts in. FrogProgsy must not infer replacements from model names, prices, families, or provider defaults.
 
 This design separates two conditions:
 
@@ -15,26 +15,30 @@ A missing entry in a live provider `/models` response is not retirement evidence
 
 ## Scope
 
-The continuity inventory reports every model setting that currently affects execution or Claude Code model exposure:
+The continuity inventory reports saved model settings, their current applicability, and configured gateway aliases:
 
-- provider defaults;
-- the long-context target;
-- featured `subagentModels` entries;
-- the auto-mode classifier target;
-- model-mixing coordinator, agents, pipeline stages, panel, judge, synthesizer, and rules;
-- web-search and image helper targets; and
-- configured gateway aliases, including catalog-confirmed retired aliases needed by existing Claude Code sessions.
+- every provider default, which is always active;
+- valid long-context targets and every explicit `subagentModels` entry;
+- the auto-mode classifier target, active only when classifier routing is enabled;
+- all saved model-mixing coordinator, agent, pipeline, panel, judge, synthesizer, and rule targets, with applicability derived from the enabled combine/mode path;
+- web-search and image helper targets, including their runtime default provider/model when omitted, active only when the helper is enabled;
+- each saved continuity-policy primary plus each ordered fallback candidate, active only when its automatic mode is not `off`; a faulty candidate is attributed to its own target and exact owner/index instead of making a healthy policy primary look faulty; and
+- configured gateway aliases, including catalog-confirmed retired aliases needed by existing Claude Code sessions. Aliases are diagnostic history, not active settings.
 
 The inventory excludes model metadata and permission lists such as `disabledModels`, `userModels`, fixed allowlists, capability maps, and wire model ids. It also excludes typed fields that no runtime path reads. The feature must not activate dormant `shadowCompare.secondary` or `searchProviders.*.model` behavior.
 
-All inventoried references support diagnosis. References with mutable configuration owners support an explicit permanent replacement. Automatic fallback applies only to ordinary routed model requests. It does not apply to:
+All inventoried references support diagnosis. Each row explicitly carries `active`, `actionRequired`, and `removable`. `actionRequired` is true only when a currently applicable setting is not ready; summary counts distinguish unique affected models from affected setting locations. Invalid enabled targets stay in the report so users can repair or remove them. Hidden active targets still require attention, while hidden inactive targets remain diagnostic.
+
+References with mutable configuration owners support an explicit permanent replacement. Optional owners may instead be removed: singleton blocks are deleted, indexed entries are spliced while preserving explicit empty arrays, helpers are disabled while unrelated helper options remain, and a continuity policy or one exact fallback candidate can be deleted without changing unrelated model settings, the policy mode, or sibling candidates. Required provider defaults must be replaced. Visibility and `subagentModels` priority remain independent settings.
+
+Automatic fallback applies only to ordinary routed model requests. It does not apply to:
 
 - the auto-mode classifier, which remains pinned to one explicit target;
 - model-mixing internal coordinator, panel, judge, synthesizer, or pipeline calls;
 - web-search or image helper calls; or
 - `subagentModels` list positions, which control catalog priority but do not identify runtime request provenance.
 
-These excluded execution paths still report retired targets and support permanent replacement.
+These excluded execution paths still report saved targets and support explicit configuration edits.
 
 ## Configuration
 
@@ -66,16 +70,16 @@ Policy validation may report missing authentication, but it does not reject a co
 
 The existing `fallbackProviders` setting remains independent and never contributes a continuity candidate. Effective configuration keeps a retired managed provider default unchanged so the inventory can diagnose it. Only an explicit `replace` action mutates its owner; an opted-in exact continuity sequence may temporarily route an ordinary request elsewhere.
 
-## Inventory and permanent replacement
+## Inventory and setting changes
 
-`GET /api/model-continuity` returns a normalized inventory. Each row contains a stable reference id, owner kind, human-facing purpose, current target, retirement and authentication state, automatic-fallback eligibility, and any matching route policy.
+`GET /api/model-continuity` returns a normalized inventory plus `{actionableModelCount,actionableReferenceCount}` summary counts. Each row contains a stable reference id, owner kind, human-facing purpose, current target, retirement and authentication state, `active`, `actionRequired`, `removable`, automatic-fallback eligibility, and any matching route policy. `continuity-policy-candidate` rows additionally carry `policyPrimary` and zero-based `policyFallbackIndex` so clients can edit the owning policy while grouping the warning under the candidate target.
 
-Reference ids identify configuration owners for diagnosis and permanent replacement. They are not runtime fallback keys. The runtime cannot always infer whether a direct Claude Code request originated from a provider default, a featured subagent choice, or another setting that names the same model.
+Reference ids identify configuration owners for diagnosis, replacement, or removal. They are not runtime fallback keys. The runtime cannot always infer whether a direct Claude Code request originated from a provider default, a featured subagent choice, or another setting that names the same model.
 
-A permanent replacement request includes the reference id and the target observed by the caller. The server rejects the write when the current target differs. The server then uses the existing owner-specific validation, config save, and catalog refresh path. It must not perform arbitrary JSON-path mutation.
-Owner semantics constrain permanent replacement. A provider's `defaultModel` may change only to another model at that same configured provider; changing the global default provider remains the existing provider-management action. Owners that already store both provider and model may replace both fields. A gateway-alias tombstone has no mutable config owner, so users respond by setting a route policy rather than rewriting past Claude Code session state.
+Replacement and removal requests include the reference id and target observed by the caller. The server rejects a write when the current target differs. It then uses owner-specific validation, config save, and catalog refresh paths; it never performs arbitrary JSON-path mutation.
+Owner semantics constrain changes. A provider's `defaultModel` may change only to another model at that same configured provider and cannot be removed; changing the global default provider remains the existing provider-management action. Owners that store both provider and model may replace both fields. A gateway alias has no mutable config owner and never becomes required work merely because its historical target retired.
 
-The dashboard provides one section on the existing Models page. Problems appear first. Each problem states the affected feature, current target, reason, and primary action. Eligible ordinary route targets also expose the ordered fallback sequence and automatic mode. Normal references remain collapsed. No new top-level page, history store, or background worker is added.
+The dashboard provides one section on the existing Models page. Required work is grouped by target and shows honest model and location counts. Each problem states the exact owner role/index, current target, reason, and a change or removal action. Eligible ordinary route targets also expose the ordered fallback sequence and automatic mode. Diagnostic and ready references remain collapsed. Successful continuity, visibility, and subagent-priority saves reload the report without coupling those settings together; a continuity change reconciles only its exact subagent owner and preserves unrelated unsaved first-shown-order edits. Visibility changes never mutate priority order. A saved priority name that is absent from available candidates remains visible as unavailable but is not reintroduced as a selectable model.
 
 The CLI uses the running proxy as the source of truth:
 
@@ -83,14 +87,15 @@ The CLI uses the running proxy as the source of truth:
 frogp models continuity [--json]
 frogp models continuity set <provider/model> --fallback <provider/model>... --auto off|retired|transient|all
 frogp models continuity replace <reference-id> <provider/model>
+frogp models continuity remove <reference-id>
 ```
 
-Human output states the problem, impact, and next executable command. JSON output uses stable enums shared with the management API.
+Human output groups required work by model, lists affected locations, and prints executable change or removal commands. Inactive and past-session references appear only as diagnostics. JSON output uses stable enums shared with the management API.
 
 The management API consists of:
 
 - `GET /api/model-continuity`; and
-- `POST /api/model-continuity` with `set` or `replace` actions.
+- `POST /api/model-continuity` with `set`, `replace`, or `remove` actions.
 
 ## Retired aliases
 
@@ -150,9 +155,9 @@ Automatic resolution never mutates the persisted primary setting. Only the expli
 Focused unit, API, CLI, GUI, and end-to-end verification covers these observable contracts:
 
 1. **Inventory**
-   - finds every in-scope active reference;
-   - distinguishes execution targets, catalog-priority entries, and inactive typed fields; and
-   - replaces the correct owner when the same target appears in multiple settings.
+   - finds every in-scope saved reference and evaluates current applicability;
+   - separates required work from inactive and past-session diagnostics with honest model/location counts; and
+   - changes or removes the correct owner when the same target appears in multiple settings.
 2. **Validation**
    - defaults to `off`;
    - preserves exact fallback order;

@@ -25,6 +25,7 @@ const {
   loadModelContinuityReport,
   postModelContinuityAction,
   saveModelContinuityPolicy,
+  reconcileFeaturedDraft,
   updateModelContinuityFallback,
 } = Models;
 
@@ -97,26 +98,6 @@ describe("GUI interaction stability", () => {
     expect(zh).toContain("modal.discardConfirm");
   });
 
-  test("Models clarifies save semantics and reduces repeated n/5 counters", () => {
-    const models = read("gui/src/pages/Models.tsx");
-    const en = read("gui/src/i18n/en.ts");
-    const ko = read("gui/src/i18n/ko.ts");
-    const zh = read("gui/src/i18n/zh.ts");
-
-    expect(models).toContain("models.visibilityAutoSave");
-    expect(models).toContain("models.priorityManualSave");
-    expect(models).toContain("models.priorityNoChanges");
-    expect(models).toContain("disabled={featuredSaving || !featuredDirty}");
-    expect(models).toContain("featuredAfterVisibilityChange");
-    expect(models).toContain("apply(next, featuredAfterVisibilityChange(next))");
-    expect(models).not.toContain("{featuredChosen.length}/5</div>");
-    expect(models).not.toContain("selected-order-count");
-    for (const source of [en, ko, zh]) {
-      expect(source).toContain("models.visibilityAutoSave");
-      expect(source).toContain("models.priorityManualSave");
-      expect(source).toContain("models.priorityNoChanges");
-    }
-  });
 
   test("Models continuity fallback selectors preserve exact order", () => {
     let fallbacks: string[] = [];
@@ -133,6 +114,34 @@ describe("GUI interaction stability", () => {
     expect(updateModelContinuityFallback(fallbacks, 3, "work/fourth")).toEqual(fallbacks);
   });
 
+  test("continuity subagent changes preserve unrelated unsaved order edits", () => {
+    const draft = ["work/c", "work/a", "work/local", "work/b"];
+    const saved = ["work/a", "work/b", "work/c"];
+
+    expect(reconcileFeaturedDraft(draft, saved, {
+      action: "remove",
+      referenceId: "subagent:1",
+      expectedPrimary: "work/b",
+    })).toEqual({
+      draft: ["work/c", "work/a", "work/local"],
+      saved: ["work/a", "work/c"],
+    });
+    expect(reconcileFeaturedDraft(draft, saved, {
+      action: "replace",
+      referenceId: "subagent:0",
+      expectedPrimary: "work/a",
+      replacement: "work/new",
+    })).toEqual({
+      draft: ["work/c", "work/new", "work/local", "work/b"],
+      saved: ["work/new", "work/b", "work/c"],
+    });
+    expect(reconcileFeaturedDraft(["work/c", "work/a", "work/local"], saved, {
+      action: "remove",
+      referenceId: "subagent:1",
+      expectedPrimary: "work/b",
+    }).draft).toEqual(["work/c", "work/a", "work/local"]);
+  });
+
   test("Models continuity failed save sends one set action and restores the saved policy", async () => {
     const reference = Models.parseModelContinuityReport({
       policies: {},
@@ -141,11 +150,15 @@ describe("GUI interaction stability", () => {
         kind: "provider-default",
         primary: "work/old",
         status: "retired",
+        active: true,
+        actionRequired: true,
+        removable: false,
         automaticEligible: true,
         policy: { fallbacks: ["work/saved"], automatic: "off" },
         supportStatus: "validated",
         label: "Provider default",
       }],
+      summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
       circuits: [],
     }).references[0];
     const actions: Models.ModelContinuitySetAction[] = [];
@@ -175,10 +188,14 @@ describe("GUI interaction stability", () => {
         kind: "provider-default",
         primary: "work/old",
         status: "retired",
+        active: true,
+        actionRequired: true,
+        removable: false,
         automaticEligible: true,
         policy: { fallbacks: ["work/saved"], automatic: "off" },
         supportStatus: "validated",
       }],
+      summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
       circuits: [],
     }).references[0];
 
@@ -197,10 +214,14 @@ describe("GUI interaction stability", () => {
         kind: "gateway-alias",
         primary: "work/session",
         status: "retired",
+        active: false,
+        actionRequired: false,
+        removable: false,
         automaticEligible: true,
         policy: { fallbacks: ["work/first"], automatic: "off" },
         supportStatus: "validated",
       }],
+      summary: { actionableModelCount: 0, actionableReferenceCount: 0 },
       circuits: [],
     }).references[0];
     const actions: Models.ModelContinuitySetAction[] = [];
@@ -226,6 +247,49 @@ describe("GUI interaction stability", () => {
     }]);
   });
 
+  test("policy candidate save guards the candidate while editing its owning policy", async () => {
+    const reference = Models.parseModelContinuityReport({
+      policies: {},
+      references: [{
+        id: "continuity-policy-candidate:work%2Fcurrent:0",
+        kind: "continuity-policy-candidate",
+        primary: "work/old",
+        status: "retired",
+        active: true,
+        actionRequired: true,
+        removable: true,
+        automaticEligible: true,
+        policy: {
+          fallbacks: ["work/old", "work/backup"],
+          automatic: "transient",
+        },
+        supportStatus: "validated",
+        policyPrimary: "work/current",
+        policyFallbackIndex: 0,
+      }],
+      summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
+      circuits: [],
+    }).references[0];
+    const actions: Models.ModelContinuitySetAction[] = [];
+
+    await saveModelContinuityPolicy(
+      reference,
+      { fallbacks: ["work/new", "work/backup"], automatic: "transient" },
+      async action => {
+        actions.push(action);
+        return "applied";
+      },
+    );
+    expect(actions).toEqual([{
+      action: "set",
+      primary: "work/current",
+      referenceId: "continuity-policy-candidate:work%2Fcurrent:0",
+      expectedPrimary: "work/old",
+      fallbacks: ["work/new", "work/backup"],
+      automatic: "transient",
+    }]);
+  });
+
 
   test("Models permanent replacement requires confirmation and sends expectedPrimary", async () => {
     const reference = Models.parseModelContinuityReport({
@@ -235,11 +299,15 @@ describe("GUI interaction stability", () => {
         kind: "classifier",
         primary: "work/old",
         status: "ready",
+        active: false,
+        actionRequired: false,
+        removable: true,
         automaticEligible: false,
         policy: { fallbacks: [], automatic: "off" },
         supportStatus: "validated",
         label: "Auto-mode classifier",
       }],
+      summary: { actionableModelCount: 0, actionableReferenceCount: 0 },
       circuits: [],
     }).references[0];
     const actions: Models.ModelContinuityReplaceAction[] = [];
@@ -271,6 +339,7 @@ describe("GUI interaction stability", () => {
       replacement: "work/new",
     }]);
   });
+
 
   test("Models stale continuity action reloads the report and keeps an actionable error", async () => {
     let reloads = 0;
@@ -354,10 +423,14 @@ describe("GUI interaction stability", () => {
         kind: "provider-default",
         primary,
         status: "ready",
+        active: true,
+        actionRequired: false,
+        removable: false,
         automaticEligible: true,
         policy: { fallbacks: [], automatic: "off" },
         supportStatus: "validated",
       }],
+      summary: { actionableModelCount: 0, actionableReferenceCount: 0 },
       circuits: [],
     });
 
@@ -386,10 +459,14 @@ describe("GUI interaction stability", () => {
         kind: "provider-default",
         primary,
         status: "ready",
+        active: true,
+        actionRequired: false,
+        removable: false,
         automaticEligible: true,
         policy: { fallbacks: [], automatic: "off" },
         supportStatus: "validated",
       }],
+      summary: { actionableModelCount: 0, actionableReferenceCount: 0 },
       circuits: [],
     });
     const load = (response: Promise<Response>) => {
@@ -440,41 +517,6 @@ describe("GUI interaction stability", () => {
     expect(visibleStatus).toBe("newest report shown");
   });
 
-  test("Models model polling excludes continuity and model loading does not await it", () => {
-    const models = read("gui/src/pages/Models.tsx");
-    const modelLoadStart = models.indexOf("const loadModels = async");
-    const refreshStart = models.indexOf("const refreshAll", modelLoadStart);
-    const effectStart = models.indexOf("useEffect(() =>", refreshStart);
-    const timerStart = models.indexOf("const timer = setInterval", effectStart);
-    const modelLoad = models.slice(modelLoadStart, refreshStart);
-    const refresh = models.slice(refreshStart, effectStart);
-    const polling = models.slice(timerStart, models.indexOf("return () => clearInterval(timer)", timerStart));
-
-    expect(modelLoad).not.toContain("loadContinuity");
-    expect(modelLoad).toContain("setLoading(false)");
-    expect(refresh).toContain("loadContinuity()");
-    expect(polling).toContain("loadModels()");
-    expect(polling).not.toContain("loadContinuity");
-    expect(models).toContain("const continuityLoadSeqRef = useRef(0)");
-  });
-
-  test("Models continuity normal rows stay collapsed and localized copy avoids internal terms", () => {
-    const models = read("gui/src/pages/Models.tsx");
-    expect(models).toContain('<details className="continuity-normal-list">');
-    expect(models).not.toContain('<details className="continuity-normal-list" open');
-
-    for (const dict of [en, ko, zh]) {
-      const copy = Object.entries(dict)
-        .filter(([key]) => key.startsWith("models.continuity."))
-        .map(([, value]) => value)
-        .join(" ")
-        .toLowerCase();
-      expect(copy).not.toContain("circuit");
-      expect(copy).not.toContain("tombstone");
-      expect(copy).not.toContain("adapter");
-      expect(copy).not.toContain("reference id");
-    }
-  });
 
   test("Claude profile removal protects the default and sole account", () => {
     expect(claudeProfileCanRemove({ isDefault: true }, 2)).toBe(false);

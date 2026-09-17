@@ -16,7 +16,7 @@ export { runWithWebSearch } from "./loop";
 export { buildWebSearchTool, extractHostedWebSearch, WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
 export { executeSearchEvidence, type PanelSearchTier, type SearchEvidence } from "./panel-search";
 
-const DEFAULT_FALLBACK_MODEL = "gpt-5.4-mini";
+export const DEFAULT_WEB_SEARCH_FALLBACK_MODEL = "gpt-5.4-mini";
 // "low" is the lightest effort the ChatGPT backend allows with web_search ("minimal" is rejected:
 // "tools cannot be used with reasoning.effort 'minimal'") — keeps the fallback fast/cheap.
 const DEFAULT_FALLBACK_REASONING = "low";
@@ -119,7 +119,7 @@ function fallbackSettings(
   modelId: string,
 ): WebSearchFallbackSettings {
   return {
-    model: cfg.model ?? DEFAULT_FALLBACK_MODEL,
+    model: cfg.model ?? DEFAULT_WEB_SEARCH_FALLBACK_MODEL,
     reasoning: cfg.reasoning ?? DEFAULT_FALLBACK_REASONING,
     timeoutMs: cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     describeImages: supportsImageInput(resolveModelCapabilities(providerName, provider, modelId)) === false,

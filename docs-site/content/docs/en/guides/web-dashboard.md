@@ -42,11 +42,11 @@ Use **Claude Code Homes** when Claude Code's `/model` picker is stale. Refresh t
 
 ## Replacing models that have ended
 
-The Models page checks model replacement status immediately below the page summary and before the visibility and first-shown-order controls. Models that have ended, need sign-in, or have invalid replacement settings are open first. Healthy settings stay in one collapsed section so the next action remains clear.
+The Models page checks model settings immediately below the page summary and before the visibility and first-shown-order controls. It groups required work by model, shows both the number of affected models and exact setting locations, and opens only currently active settings that need a change. If a saved fallback is faulty, the card names that fallback target and its exact position in the owning policy instead of marking a healthy policy primary as faulty. Saved but inactive settings and past-session model names remain available in the collapsed diagnostics section without being presented as required work.
 
 For ordinary model requests, you can save up to three exact alternative models in order. Automatic protection can remain off, apply only when a model has ended, apply only to temporary failures, or cover both cases. This is a temporary request-time choice: it keeps the configured model unchanged and tries the saved alternatives only when the selected condition occurs.
 
-Auto-mode classification, model mixing, helper models, and subagent models are manual-only because those settings have a specific job and must not silently switch to a model with different behavior. Use **Replace permanently** for them. Permanent replacement changes the saved model used by future requests; it asks for confirmation and is different from temporarily trying an alternative.
+Auto-mode classification, model mixing, helper models, and subagent models are manual-only because those settings have a specific job and must not silently switch to a model with different behavior. Each card names the exact role or list index. Use **Replace permanently**, or **Remove this setting** when the location is optional. Provider defaults must be replaced. Removing a helper disables that helper while keeping its other options; removing an indexed model keeps an explicit empty list when it was the final entry. Model visibility and first-shown subagent priority remain independent: changing one does not silently rewrite the other, and a continuity action preserves unrelated unsaved order edits. A saved first-shown name that is no longer available remains visible as unavailable, but it is not offered as a model candidate.
 
 ## Model Mixing page
 

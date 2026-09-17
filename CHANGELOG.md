@@ -24,6 +24,7 @@
 - Managed Claude Fable 5 also uses its documented always-on adaptive thinking. Messages-to-Responses requests now map effort through the selected provider/model while preserving native Responses effort values.
 - Missing or invalid Anthropic plain-input usage remains unavailable for cache-rate calculation instead of becoming a misleading zero; explicit zero input and protocol-required wire usage fields remain supported.
 - Refresh pins health checks and process ownership to the same concrete listener address, supports multi-address localhost and IPv6 wildcard binds, and preserves unrelated processes and native-routing rollback.
+- Model continuity warnings now distinguish active settings that require action from inactive and past-session diagnostics, group duplicate targets with honest model/location counts, attribute faulty saved fallbacks to the candidate and exact policy position instead of a healthy primary, cover runtime mixing fallbacks, classifier, helper, subagent, and saved policy references, and support exact optional-setting removal. The Models page also preserves unrelated unsaved priority edits and keeps unavailable saved names visible without offering them as candidates.
 
 ## 0.0.3
 

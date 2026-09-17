@@ -128,7 +128,7 @@ frogp claude reload-models <profile-id>
 
 FrogProgsy 会在 proxy 启动时检查经过验证的最新模型资料。安装版本自带的 catalog 只记录各 provider 路径已验证的当前 model ID、context limit 和 Claude Code 输入能力；即使名称相同，也不会套用其他登录方式或 gateway 的值。要启用更新后的列表，请重启 proxy；检查失败时，FrogProgsy 会比较上次验证后保存的副本与当前安装版本自带的模型资料，并使用 catalog revision 较高的一份。API key、已选默认模型和手动添加的模型不会改变。运行 `frogp models` 可以查看每个模型是**已验证**还是**仅发现**，以及当前模型资料的来源。
 
-已配置的模型停止提供或暂时失败时，可以在 dashboard **Models** 页面或 `frogp models continuity` 中查看受影响的设置和精确修复操作。自动替代在你显式启用前保持关闭，也不会自动改写已选择的模型。完整说明见 [frogp 命令](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/cli/#models)、[配置参考](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/configuration/#模型连续性)与[仪表盘流程](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/web-dashboard/#替换已停止提供的模型)。
+正在使用的设置所选模型停止提供或无法使用时，dashboard **Models** 页面和 `frogp models continuity` 会按模型分组准确的受影响设置，并分别显示模型数和使用位置数。已保存的替代模型有问题时，会显示该替代模型及其在所属规则中的准确位置，而不会把正常的规则主模型标记为故障。你可以更换模型、删除可选设置，或配置明确的替代模型；未启用的已保存设置与旧会话名称只作为诊断信息保留。自动替代在你显式启用前保持关闭，也不会自动改写已选择的模型。完整说明见 [frogp 命令](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/cli/#models)、[配置参考](https://zhsks311.github.io/Frogprogsy/zh-cn/reference/configuration/#模型连续性)与[仪表盘流程](https://zhsks311.github.io/Frogprogsy/zh-cn/guides/web-dashboard/#替换已停止提供的模型)。
 
 `frogp start`/`frogp refresh` 会在 `~/.frogprogsy/bin` 为每个附加 Claude 账户生成一个快捷命令，例如 `claude-work` 或 `claude-personal`。默认账户使用普通的 `claude` 命令，该名称始终保留给用户安装的 Claude Code。请将快捷命令目录追加到 `PATH` 末尾。Proxy 停止时，账户快捷命令会按所选目录直通原生 Claude Code。
 

@@ -52,6 +52,8 @@ import {
   normalizeContinuityPolicy,
   qualifiedModelTarget,
   replaceModelContinuityReference,
+  removeModelContinuityReference,
+  summarizeModelContinuityReferences,
   validateContinuityPolicy,
   type ContinuityReason,
   type ModelContinuityReference,
@@ -3215,12 +3217,18 @@ type ModelContinuityAction =
     fallbacks: string[];
     automatic: ModelContinuityAutomatic;
     referenceId?: string;
+    expectedPrimary?: string;
   }
   | {
     action: "replace";
     referenceId: string;
     expectedPrimary: string;
     replacement: string;
+  }
+  | {
+    action: "remove";
+    referenceId: string;
+    expectedPrimary: string;
   };
 
 type ModelContinuityActionParseResult =
@@ -3239,11 +3247,11 @@ function parseModelContinuityAction(body: unknown): ModelContinuityActionParseRe
   if (!isPlainJsonObject(body)) {
     return { ok: false, code: "invalid_request", error: "request body must be an object" };
   }
-  if (body.action !== "set" && body.action !== "replace") {
-    return { ok: false, code: "invalid_action", error: "action must be set or replace" };
+  if (body.action !== "set" && body.action !== "replace" && body.action !== "remove") {
+    return { ok: false, code: "invalid_action", error: "action must be set, replace, or remove" };
   }
   if (body.action === "set") {
-    const allowed = ["action", "primary", "fallbacks", "automatic", "referenceId"] as const;
+    const allowed = ["action", "primary", "fallbacks", "automatic", "referenceId", "expectedPrimary"] as const;
     if (
       !hasOnlyKeys(body, allowed)
       || typeof body.primary !== "string"
@@ -3251,11 +3259,12 @@ function parseModelContinuityAction(body: unknown): ModelContinuityActionParseRe
       || !body.fallbacks.every(fallback => typeof fallback === "string")
       || !isModelContinuityAutomatic(body.automatic)
       || (body.referenceId !== undefined && typeof body.referenceId !== "string")
+      || (body.expectedPrimary !== undefined && typeof body.expectedPrimary !== "string")
     ) {
       return {
         ok: false,
         code: "invalid_request",
-        error: "set requires only primary, string fallbacks, automatic, and optional referenceId",
+        error: "set requires only primary, string fallbacks, automatic, optional referenceId, and optional expectedPrimary",
       };
     }
     return {
@@ -3266,6 +3275,30 @@ function parseModelContinuityAction(body: unknown): ModelContinuityActionParseRe
         fallbacks: body.fallbacks,
         automatic: body.automatic,
         ...(body.referenceId === undefined ? {} : { referenceId: body.referenceId }),
+        ...(body.expectedPrimary === undefined ? {} : { expectedPrimary: body.expectedPrimary }),
+      },
+    };
+  }
+
+  if (body.action === "remove") {
+    const allowed = ["action", "referenceId", "expectedPrimary"] as const;
+    if (
+      !hasOnlyKeys(body, allowed)
+      || typeof body.referenceId !== "string"
+      || typeof body.expectedPrimary !== "string"
+    ) {
+      return {
+        ok: false,
+        code: "invalid_request",
+        error: "remove requires only referenceId and expectedPrimary",
+      };
+    }
+    return {
+      ok: true,
+      action: {
+        action: "remove",
+        referenceId: body.referenceId,
+        expectedPrimary: body.expectedPrimary,
       },
     };
   }
@@ -3305,6 +3338,7 @@ function compareModelContinuityReferences(
   left: ModelContinuityReference,
   right: ModelContinuityReference,
 ): number {
+  if (left.actionRequired !== right.actionRequired) return left.actionRequired ? -1 : 1;
   const severity = MODEL_CONTINUITY_STATUS_ORDER[left.status] - MODEL_CONTINUITY_STATUS_ORDER[right.status];
   if (severity !== 0) return severity;
   const label = left.label.localeCompare(right.label);
@@ -4212,7 +4246,12 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
         retryAt: entry.until,
       }))
       .sort((left, right) => left.primary.localeCompare(right.primary));
-    return jsonResponse({ policies, references, circuits });
+    return jsonResponse({
+      policies,
+      references,
+      summary: summarizeModelContinuityReferences(references),
+      circuits,
+    });
   }
 
   if (url.pathname === "/api/model-continuity" && req.method === "POST") {
@@ -4238,7 +4277,17 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
         if (!reference) {
           return jsonResponse({ error: "unknown model reference", code: "invalid_reference" }, 400);
         }
-        if (reference.primary !== action.primary) {
+        const policyPrimary = reference.policyPrimary ?? reference.primary;
+        if (policyPrimary !== action.primary) {
+          return jsonResponse({
+            error: "model reference changed; reload and retry",
+            code: "stale_reference",
+          }, 409);
+        }
+        if (
+          reference.kind === "continuity-policy-candidate"
+          && action.expectedPrimary !== reference.primary
+        ) {
           return jsonResponse({
             error: "model reference changed; reload and retry",
             code: "stale_reference",
@@ -4277,6 +4326,34 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       const persistFailure = persistModelContinuity(snapshot);
       if (persistFailure) return persistFailure;
       return jsonResponse({ ok: true, policy: validation.policy, warnings: validation.warnings });
+    }
+
+    if (parsed.action.action === "remove") {
+      const action = parsed.action;
+      const reference = references.find(candidate => candidate.id === action.referenceId);
+      if (!reference) {
+        return jsonResponse({ error: "unknown model reference", code: "invalid_reference" }, 400);
+      }
+      if (reference.primary !== action.expectedPrimary) {
+        return jsonResponse({
+          error: "model reference changed; reload and retry",
+          code: "stale_reference",
+        }, 409);
+      }
+      const snapshot = structuredClone(config);
+      const removed = removeModelContinuityReference({
+        config,
+        referenceId: action.referenceId,
+        expectedPrimary: action.expectedPrimary,
+      });
+      if (!removed.ok) {
+        const code = removed.status === 409 ? "stale_reference" : "invalid_removal";
+        return jsonResponse({ error: removed.error, code }, removed.status);
+      }
+      const persistFailure = persistModelContinuity(snapshot);
+      if (persistFailure) return persistFailure;
+      await refreshClaudeCodeCatalogBestEffort();
+      return jsonResponse({ ok: true });
     }
 
     const action = parsed.action;

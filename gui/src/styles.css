@@ -564,6 +564,17 @@ select.input { appearance: none; }
   display: grid;
   gap: 12px;
 }
+.continuity-target-group {
+  display: grid;
+  gap: 10px;
+}
+.continuity-target-group > h4 {
+  font-size: 14px;
+}
+.continuity-target-group > p {
+  color: var(--muted);
+  font-size: 12px;
+}
 .continuity-automatic-list > h4 { font-size: 14px; }
 .continuity-card {
   min-width: 0;

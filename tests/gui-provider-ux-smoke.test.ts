@@ -46,6 +46,9 @@ const STUB_CONTINUITY_REPORT = {
       kind: "provider-default",
       primary: "work/old",
       status: "retired",
+      active: true,
+      actionRequired: true,
+      removable: false,
       automaticEligible: true,
       policy: { fallbacks: ["work/new", "codex/gpt-5.5"], automatic: "off" },
       supportStatus: "validated",
@@ -56,6 +59,9 @@ const STUB_CONTINUITY_REPORT = {
       kind: "classifier",
       primary: "work/classifier",
       status: "ready",
+      active: false,
+      actionRequired: false,
+      removable: true,
       automaticEligible: false,
       policy: { fallbacks: [], automatic: "off" },
       supportStatus: "validated",
@@ -66,12 +72,16 @@ const STUB_CONTINUITY_REPORT = {
       kind: "mix-agent",
       primary: "work/mixer",
       status: "ready",
+      active: false,
+      actionRequired: false,
+      removable: true,
       automaticEligible: false,
       policy: { fallbacks: [], automatic: "off" },
       supportStatus: "discovered",
       label: "Mixing agent",
     },
   ],
+  summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
   circuits: [
     { primary: "work/old", reason: "http_5xx", retryAt: 1_786_707_630_000 },
   ],
@@ -458,21 +468,83 @@ describe("model continuity UX", () => {
     ]);
   });
 
-  test("problem card leads with impact and action, not internal reference id", () => {
+  test("cards distinguish exact model-mixing owners that share one model", () => {
+    const shared = {
+      primary: "work/old",
+      status: "retired",
+      active: true,
+      actionRequired: true,
+      removable: true,
+      automaticEligible: false,
+      policy: { fallbacks: [], automatic: "off" },
+      supportStatus: "validated",
+    };
+    const report = parseModelContinuityReport({
+      policies: {},
+      references: [
+        { ...shared, id: "mix-coordinator", kind: "mix-coordinator" },
+        { ...shared, id: "mix-agent:0", kind: "mix-agent" },
+      ],
+      summary: { actionableModelCount: 1, actionableReferenceCount: 2 },
+      circuits: [],
+    });
     const markup = renderToStaticMarkup(
       React.createElement(ModelContinuityPanel, {
-        report: parseModelContinuityReport(STUB_CONTINUITY_REPORT),
-        selectableModels: ["work/new", "codex/gpt-5.5", "work/backup"],
+        report,
+        selectableModels: ["work/new"],
         t: tKo,
         onSet: async () => "applied",
         onReplace: async () => "applied",
+        onRemove: async () => "applied",
       }),
     );
 
-    expect(markup).toContain("기본 모델에서 선택한 모델의 제공이 끝났습니다");
-    expect(markup).toContain("이 모델을 사용하는 새 요청은 시작할 수 없습니다");
-    expect(markup).toContain("영구 교체");
-    expect(markup).not.toContain("provider-default:work");
+    expect(markup).toContain("모델 조합 코디네이터");
+    expect(markup).toContain("모델 조합 에이전트 1");
+  });
+
+  test("policy fallback card identifies its owner and exact candidate index", () => {
+    const report = parseModelContinuityReport({
+      policies: {
+        "work/current": {
+          fallbacks: ["work/old", "work/backup"],
+          automatic: "transient",
+        },
+      },
+      references: [{
+        id: "continuity-policy-candidate:work%2Fcurrent:0",
+        kind: "continuity-policy-candidate",
+        primary: "work/old",
+        status: "retired",
+        active: true,
+        actionRequired: true,
+        removable: true,
+        automaticEligible: true,
+        policy: {
+          fallbacks: ["work/old", "work/backup"],
+          automatic: "transient",
+        },
+        supportStatus: "validated",
+        policyPrimary: "work/current",
+        policyFallbackIndex: 0,
+      }],
+      summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
+      circuits: [],
+    });
+    const markup = renderToStaticMarkup(
+      React.createElement(ModelContinuityPanel, {
+        report,
+        selectableModels: ["work/current", "work/backup", "work/new"],
+        t: tKo,
+        onSet: async () => "applied",
+        onReplace: async () => "applied",
+        onRemove: async () => "applied",
+      }),
+    );
+
+    expect(markup).toContain("work/current 자동 대응 규칙의 1번째 대체 모델");
+    expect(markup).toContain("work/old");
+    expect(markup).toContain('aria-label="이 설정 삭제"');
   });
   test("retired actions precede active fallback status and collapsed normal rows", () => {
     const markup = renderToStaticMarkup(
@@ -482,6 +554,7 @@ describe("model continuity UX", () => {
         t: tKo,
         onSet: async () => "applied",
         onReplace: async () => "applied",
+        onRemove: async () => "applied",
       }),
     );
     const attention = markup.indexOf("기본 모델에서 선택한 모델의 제공이 끝났습니다");
@@ -498,6 +571,7 @@ describe("model continuity UX", () => {
     const report = parseModelContinuityReport({
       policies: {},
       references: [STUB_CONTINUITY_REPORT.references[1]],
+      summary: { actionableModelCount: 0, actionableReferenceCount: 0 },
       circuits: [],
     });
     const markup = renderToStaticMarkup(
@@ -507,11 +581,10 @@ describe("model continuity UX", () => {
         t: tKo,
         onSet: async () => "applied",
         onReplace: async () => "applied",
+        onRemove: async () => "applied",
       }),
     );
 
-    expect(markup).toContain("auto mode");
-    expect(markup).toContain("영구 교체만 사용할 수 있습니다");
     expect(markup).not.toContain("자동 대응 범위");
     expect(markup).toContain('<details class="continuity-normal-list">');
     expect(markup).not.toContain('<details class="continuity-normal-list" open');
@@ -526,11 +599,15 @@ describe("model continuity UX", () => {
         kind: "gateway-alias",
         primary: "work/session",
         status: "retired",
+        active: false,
+        actionRequired: false,
+        removable: false,
         automaticEligible: true,
         policy: { fallbacks: ["work/first"], automatic: "retired" },
         supportStatus: "validated",
         label: "Saved session model",
       }],
+      summary: { actionableModelCount: 0, actionableReferenceCount: 0 },
       circuits: [],
     });
     const markup = renderToStaticMarkup(
@@ -540,12 +617,15 @@ describe("model continuity UX", () => {
         t: tKo,
         onSet: async () => "applied",
         onReplace: async () => "applied",
+        onRemove: async () => "applied",
       }),
     );
 
     expect(markup).toContain('aria-label="자동 대응 범위"');
     expect(markup).toContain('aria-label="자동 대응 저장"');
     expect(markup).toContain("저장된 세션 모델은 위의 대체 설정을 따릅니다");
+    expect(markup).toContain("참고 정보");
+    expect(markup).not.toContain("조치 필요");
     expect(markup).not.toContain('aria-label="영구 교체 모델"');
     expect(markup).not.toContain('aria-label="영구 교체"');
   });
@@ -559,6 +639,7 @@ describe("model continuity UX", () => {
         t: tKo,
         onSet: async () => "applied",
         onReplace: async () => "applied",
+        onRemove: async () => "applied",
       }),
     );
     const labels = [

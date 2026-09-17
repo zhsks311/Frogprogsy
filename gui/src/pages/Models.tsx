@@ -8,7 +8,7 @@ import type { DeepLinkTarget } from "../navigation";
 export type ModelSupportStatus = "validated" | "discovered" | "unknown";
 interface ModelRow { provider: string; id: string; namespaced: string; disabled: boolean; authReady: boolean; supportStatus: ModelSupportStatus }
 interface FeaturedModelsResponse { available?: string[]; chosen?: string[] }
-interface ModelControlRow { provider: string | null; id: string; namespaced: string; disabled: boolean; canHide: boolean; authReady: boolean; supportStatus: ModelSupportStatus }
+interface ModelControlRow { provider: string | null; id: string; namespaced: string; disabled: boolean; canHide: boolean; authReady: boolean; supportStatus: ModelSupportStatus; available?: boolean }
 interface ProviderVisibilitySummary { provider: string; visible: number; hidden: number }
 
 export interface ModelCatalogStatus {
@@ -133,6 +133,8 @@ export type ModelContinuityReferenceKind =
   | "mix-rule"
   | "web-search-helper"
   | "image-helper"
+  | "continuity-policy"
+  | "continuity-policy-candidate"
   | "gateway-alias";
 export type ModelContinuityReason =
   | "retired"
@@ -154,15 +156,24 @@ export interface ModelContinuityReference {
   kind: ModelContinuityReferenceKind;
   primary: string;
   status: ModelContinuityStatus;
+  active: boolean;
+  actionRequired: boolean;
+  removable: boolean;
   automaticEligible: boolean;
   policy: ModelContinuityPolicy;
   supportStatus: ModelSupportStatus;
   label?: string;
+  policyPrimary?: string;
+  policyFallbackIndex?: number;
 }
 
 export interface ModelContinuityReport {
   policies: Record<string, ModelContinuityPolicy>;
   references: ModelContinuityReference[];
+  summary: {
+    actionableModelCount: number;
+    actionableReferenceCount: number;
+  };
   circuits: Array<{ primary: string; reason: ModelContinuityReason; retryAt: number }>;
 }
 
@@ -172,6 +183,7 @@ export interface ModelContinuitySetAction {
   referenceId: string;
   fallbacks: string[];
   automatic: ModelContinuityAutomatic;
+  expectedPrimary?: string;
 }
 
 export interface ModelContinuityReplaceAction {
@@ -181,7 +193,54 @@ export interface ModelContinuityReplaceAction {
   replacement: string;
 }
 
-export type ModelContinuityAction = ModelContinuitySetAction | ModelContinuityReplaceAction;
+export interface ModelContinuityRemoveAction {
+  action: "remove";
+  referenceId: string;
+  expectedPrimary: string;
+}
+
+export type ModelContinuityAction =
+  | ModelContinuitySetAction
+  | ModelContinuityReplaceAction
+  | ModelContinuityRemoveAction;
+
+export function reconcileFeaturedDraft(
+  draft: readonly string[],
+  saved: readonly string[],
+  action: ModelContinuityAction,
+): { draft: string[]; saved: string[] } {
+  const nextDraft = [...draft];
+  const nextSaved = [...saved];
+  if (action.action !== "replace" && action.action !== "remove") {
+    return { draft: nextDraft, saved: nextSaved };
+  }
+  const match = /^subagent:(0|[1-9]\d*)$/.exec(action.referenceId);
+  if (!match) return { draft: nextDraft, saved: nextSaved };
+  const savedIndex = Number(match[1]);
+  const selected = saved[savedIndex];
+  if (selected === undefined) return { draft: nextDraft, saved: nextSaved };
+
+  let selectedOccurrence = 0;
+  for (let index = 0; index < savedIndex; index += 1) {
+    if (saved[index] === selected) selectedOccurrence += 1;
+  }
+  let draftOccurrence = 0;
+  const draftIndex = draft.findIndex(model => {
+    if (model !== selected) return false;
+    if (draftOccurrence === selectedOccurrence) return true;
+    draftOccurrence += 1;
+    return false;
+  });
+
+  if (action.action === "replace") {
+    nextSaved[savedIndex] = action.replacement;
+    if (draftIndex >= 0) nextDraft[draftIndex] = action.replacement;
+  } else {
+    nextSaved.splice(savedIndex, 1);
+    if (draftIndex >= 0) nextDraft.splice(draftIndex, 1);
+  }
+  return { draft: nextDraft, saved: nextSaved };
+}
 
 const CONTINUITY_AUTOMATIC_VALUES: Record<ModelContinuityAutomatic, true> = {
   off: true,
@@ -209,6 +268,8 @@ const CONTINUITY_REFERENCE_KINDS: Record<ModelContinuityReferenceKind, true> = {
   "mix-rule": true,
   "web-search-helper": true,
   "image-helper": true,
+  "continuity-policy": true,
+  "continuity-policy-candidate": true,
   "gateway-alias": true,
 };
 const CONTINUITY_REASON_VALUES: Record<ModelContinuityReason, true> = {
@@ -259,7 +320,17 @@ function parseModelContinuityPolicy(value: unknown): ModelContinuityPolicy {
 export function parseModelContinuityReport(value: unknown): ModelContinuityReport {
   const report = recordValue(value, "model continuity response must be an object");
   const rawPolicies = recordValue(report.policies, "invalid model continuity policies");
-  if (!Array.isArray(report.references) || !Array.isArray(report.circuits)) {
+  const summary = recordValue(report.summary, "invalid model continuity summary");
+  if (
+    !Array.isArray(report.references)
+    || !Array.isArray(report.circuits)
+    || typeof summary.actionableModelCount !== "number"
+    || !Number.isInteger(summary.actionableModelCount)
+    || summary.actionableModelCount < 0
+    || typeof summary.actionableReferenceCount !== "number"
+    || !Number.isInteger(summary.actionableReferenceCount)
+    || summary.actionableReferenceCount < 0
+  ) {
     throw new Error("invalid model continuity response lists");
   }
 
@@ -277,8 +348,13 @@ export function parseModelContinuityReport(value: unknown): ModelContinuityRepor
     if (CONTINUITY_STATUS_VALUES[reference.status as ModelContinuityStatus] !== true) {
       throw new Error("invalid model continuity reference status");
     }
-    if (typeof reference.automaticEligible !== "boolean") {
-      throw new Error("invalid model continuity automatic eligibility");
+    if (
+      typeof reference.active !== "boolean"
+      || typeof reference.actionRequired !== "boolean"
+      || typeof reference.removable !== "boolean"
+      || typeof reference.automaticEligible !== "boolean"
+    ) {
+      throw new Error("invalid model continuity reference applicability");
     }
     if (CONTINUITY_SUPPORT_VALUES[reference.supportStatus as ModelSupportStatus] !== true) {
       throw new Error("invalid model continuity support status");
@@ -286,15 +362,42 @@ export function parseModelContinuityReport(value: unknown): ModelContinuityRepor
     if (reference.label !== undefined && typeof reference.label !== "string") {
       throw new Error("invalid model continuity display label");
     }
+    if (
+      reference.policyPrimary !== undefined
+      && (typeof reference.policyPrimary !== "string" || reference.policyPrimary.trim() === "")
+    ) {
+      throw new Error("invalid model continuity policy owner");
+    }
+    if (
+      reference.policyFallbackIndex !== undefined
+      && (
+        typeof reference.policyFallbackIndex !== "number"
+        || !Number.isInteger(reference.policyFallbackIndex)
+        || reference.policyFallbackIndex < 0
+      )
+    ) {
+      throw new Error("invalid model continuity policy fallback index");
+    }
+    if (
+      reference.kind === "continuity-policy-candidate"
+      && (typeof reference.policyPrimary !== "string" || reference.policyFallbackIndex === undefined)
+    ) {
+      throw new Error("invalid model continuity policy candidate owner");
+    }
     return {
       id: requiredString(reference.id, "invalid model continuity reference id"),
       kind: reference.kind as ModelContinuityReferenceKind,
       primary: requiredString(reference.primary, "invalid model continuity primary target"),
       status: reference.status as ModelContinuityStatus,
+      active: reference.active,
+      actionRequired: reference.actionRequired,
+      removable: reference.removable,
       automaticEligible: reference.automaticEligible,
       policy: parseModelContinuityPolicy(reference.policy),
       supportStatus: reference.supportStatus as ModelSupportStatus,
       ...(reference.label === undefined ? {} : { label: reference.label }),
+      ...(reference.policyPrimary === undefined ? {} : { policyPrimary: reference.policyPrimary }),
+      ...(reference.policyFallbackIndex === undefined ? {} : { policyFallbackIndex: reference.policyFallbackIndex }),
     };
   });
 
@@ -313,7 +416,15 @@ export function parseModelContinuityReport(value: unknown): ModelContinuityRepor
     };
   });
 
-  return { policies, references, circuits };
+  return {
+    policies,
+    references,
+    summary: {
+      actionableModelCount: summary.actionableModelCount,
+      actionableReferenceCount: summary.actionableReferenceCount,
+    },
+    circuits,
+  };
 }
 
 export function updateModelContinuityFallback(
@@ -338,9 +449,12 @@ export async function saveModelContinuityPolicy(
   try {
     const result = await send({
       action: "set",
-      primary: reference.primary,
+      primary: reference.policyPrimary ?? reference.primary,
       referenceId: reference.id,
       fallbacks: [...draft.fallbacks],
+      ...(reference.kind === "continuity-policy-candidate"
+        ? { expectedPrimary: reference.primary }
+        : {}),
       automatic: draft.automatic,
     });
     if (result === "applied") {
@@ -365,6 +479,19 @@ export async function confirmModelContinuityReplacement(
     referenceId: reference.id,
     expectedPrimary: reference.primary,
     replacement,
+  });
+}
+
+export async function confirmModelContinuityRemoval(
+  reference: ModelContinuityReference,
+  confirm: () => boolean,
+  send: (action: ModelContinuityRemoveAction) => Promise<ModelContinuityActionResult>,
+): Promise<ModelContinuityActionResult> {
+  if (!reference.removable || !confirm()) return "failed";
+  return send({
+    action: "remove",
+    referenceId: reference.id,
+    expectedPrimary: reference.primary,
   });
 }
 
@@ -406,6 +533,7 @@ type ModelContinuityLoadCallbacks = {
   settled: () => void;
 };
 
+
 export async function loadModelContinuityReport(
   request: (input: string) => Promise<Response>,
   apiBase: string,
@@ -442,6 +570,8 @@ const CONTINUITY_PURPOSE_KEYS: Record<ModelContinuityReferenceKind, TKey> = {
   "mix-rule": "models.continuity.purpose.mixing",
   "web-search-helper": "models.continuity.purpose.webSearch",
   "image-helper": "models.continuity.purpose.image",
+  "continuity-policy": "models.continuity.purpose.policy",
+  "continuity-policy-candidate": "models.continuity.purpose.policyFallback",
   "gateway-alias": "models.continuity.purpose.savedName",
 };
 const CONTINUITY_REASON_KEYS: Record<ModelContinuityReason, TKey> = {
@@ -464,11 +594,61 @@ function continuityPurpose(reference: ModelContinuityReference, t: TFn): string 
   return t(CONTINUITY_PURPOSE_KEYS[reference.kind]);
 }
 
+function continuityLocation(reference: ModelContinuityReference, t: TFn): string {
+  const indexedLocation = (key: TKey): string => {
+    const index = Number(reference.id.slice(reference.id.lastIndexOf(":") + 1)) + 1;
+    return t(key, { n: index });
+  };
+  switch (reference.kind) {
+    case "provider-default":
+      return t("models.continuity.location.providerDefault", {
+        provider: reference.id.slice("provider-default:".length),
+      });
+    case "long-context":
+      return t("models.continuity.location.longContext");
+    case "subagent":
+      return indexedLocation("models.continuity.location.subagent");
+    case "classifier":
+      return t("models.continuity.location.classifier");
+    case "mix-coordinator":
+      return t("models.continuity.location.mixCoordinator");
+    case "mix-agent":
+      return indexedLocation("models.continuity.location.mixAgent");
+    case "mix-pipeline":
+      return indexedLocation("models.continuity.location.mixPipeline");
+    case "mix-panel":
+      return indexedLocation("models.continuity.location.mixPanel");
+    case "mix-judge":
+      return t("models.continuity.location.mixJudge");
+    case "mix-synthesizer":
+      return t("models.continuity.location.mixSynthesizer");
+    case "mix-rule":
+      return indexedLocation("models.continuity.location.mixRule");
+    case "web-search-helper":
+      return t("models.continuity.location.webSearch");
+    case "image-helper":
+      return t("models.continuity.location.image");
+    case "continuity-policy":
+      return t("models.continuity.location.policy", { model: reference.primary });
+    case "gateway-alias":
+      return t("models.continuity.location.savedName", { model: reference.primary });
+    case "continuity-policy-candidate":
+      return t("models.continuity.location.policyFallback", {
+        model: reference.policyPrimary ?? "",
+        n: (reference.policyFallbackIndex ?? 0) + 1,
+      });
+  }
+}
+
 function continuityProblemTitle(reference: ModelContinuityReference, t: TFn): string {
   const purpose = continuityPurpose(reference, t);
   if (reference.status === "retired") return t("models.continuity.problem.retired", { purpose });
   if (reference.status === "authentication_required") return t("models.continuity.problem.authentication", { purpose });
-  if (reference.status === "policy_invalid") return t("models.continuity.problem.policy", { purpose });
+  if (reference.status === "policy_invalid") {
+    return reference.kind === "continuity-policy"
+      ? t("models.continuity.problem.policy", { purpose })
+      : t("models.continuity.problem.targetSettings", { purpose });
+  }
   if (reference.policy.automatic !== "off" && reference.automaticEligible) {
     return t("models.continuity.problem.automatic", { purpose });
   }
@@ -476,9 +656,16 @@ function continuityProblemTitle(reference: ModelContinuityReference, t: TFn): st
 }
 
 function continuityImpact(reference: ModelContinuityReference, t: TFn): string {
+  if (!reference.actionRequired && reference.status !== "ready") {
+    return t("models.continuity.impact.inactive");
+  }
   if (reference.status === "retired") return t("models.continuity.impact.retired");
   if (reference.status === "authentication_required") return t("models.continuity.impact.authentication");
-  if (reference.status === "policy_invalid") return t("models.continuity.impact.policy");
+  if (reference.status === "policy_invalid") {
+    return reference.kind === "continuity-policy"
+      ? t("models.continuity.impact.policy")
+      : t("models.continuity.impact.targetSettings");
+  }
   return t("models.continuity.impact.ready");
 }
 
@@ -492,12 +679,14 @@ function ContinuityReferenceCard({
   t,
   onSet,
   onReplace,
+  onRemove,
 }: {
   reference: ModelContinuityReference;
   selectableModels: readonly string[];
   t: TFn;
   onSet: (action: ModelContinuitySetAction) => Promise<ModelContinuityActionResult>;
   onReplace: (action: ModelContinuityReplaceAction) => Promise<ModelContinuityActionResult>;
+  onRemove: (action: ModelContinuityRemoveAction) => Promise<ModelContinuityActionResult>;
 }) {
   const [draft, setDraft] = useState<ModelContinuityPolicy>({
     fallbacks: [...reference.policy.fallbacks],
@@ -507,6 +696,7 @@ function ContinuityReferenceCard({
   const [saving, setSaving] = useState(false);
   const fieldId = useId();
   const purpose = continuityPurpose(reference, t);
+  const location = continuityLocation(reference, t);
 
   useEffect(() => {
     setDraft({ fallbacks: [...reference.policy.fallbacks], automatic: reference.policy.automatic });
@@ -531,7 +721,7 @@ function ContinuityReferenceCard({
       const replaced = await confirmModelContinuityReplacement(
         reference,
         replacement,
-        () => window.confirm(t("models.continuity.replaceConfirm", { purpose, model: replacement })),
+        () => window.confirm(t("models.continuity.replaceConfirm", { purpose: location, model: replacement })),
         onReplace,
       );
       if (replaced === "applied") setReplacement("");
@@ -540,21 +730,52 @@ function ContinuityReferenceCard({
     }
   };
 
-  const candidateModels = selectableModels.filter(model => model !== reference.primary);
+  const remove = async () => {
+    if (saving || !reference.removable) return;
+    setSaving(true);
+    try {
+      await confirmModelContinuityRemoval(
+        reference,
+        () => window.confirm(t("models.continuity.removeConfirm", { location })),
+        onRemove,
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const policyCandidateModels = selectableModels.filter(
+    model => model !== (reference.policyPrimary ?? reference.primary),
+  );
+  const replacementModels = selectableModels.filter(model =>
+    model !== reference.primary
+    && (
+      reference.kind !== "continuity-policy-candidate"
+      || (
+        model !== reference.policyPrimary
+        && !reference.policy.fallbacks.includes(model)
+      )
+    )
+  );
 
   return (
-    <article className={`continuity-card${reference.status === "ready" ? "" : " attention"}`}>
+    <article className={`continuity-card${reference.actionRequired ? " attention" : ""}`}>
       <div className="continuity-card-head">
         <div>
           <h4>{continuityProblemTitle(reference, t)}</h4>
           <p>{continuityImpact(reference, t)}</p>
         </div>
-        <span className={`badge ${reference.status === "ready" ? "badge-green" : "badge-amber"}`}>
-          {reference.status === "ready" ? t("models.continuity.status.ready") : t("models.continuity.status.attention")}
+        <span className={`badge ${reference.actionRequired ? "badge-amber" : "badge-green"}`}>
+          {reference.actionRequired
+            ? t("models.continuity.status.attention")
+            : reference.status === "ready"
+              ? t("models.continuity.status.ready")
+              : t("models.continuity.status.diagnostic")}
         </span>
       </div>
 
       <dl className="continuity-facts">
+        <div><dt>{t("models.continuity.location")}</dt><dd>{location}</dd></div>
         <div><dt>{t("models.continuity.currentModel")}</dt><dd><code className="text-anywhere">{reference.primary}</code></dd></div>
         <div>
           <dt>{t("models.continuity.reason")}</dt>
@@ -595,7 +816,7 @@ function ContinuityReferenceCard({
           <div className="continuity-fallback-fields">
             {CONTINUITY_FALLBACK_LABEL_KEYS.map((labelKey, index) => {
               const currentValue = draft.fallbacks[index] ?? "";
-              const options = candidateModels.filter(model =>
+              const options = policyCandidateModels.filter(model =>
                 model === currentValue || !draft.fallbacks.some((selected, selectedIndex) => selectedIndex !== index && selected === model)
               );
               const enabled = index === 0 || Boolean(draft.fallbacks[index - 1]);
@@ -614,7 +835,7 @@ function ContinuityReferenceCard({
                     }))}
                   >
                     <option value="">{t("models.continuity.fallback.none")}</option>
-                    {currentValue && !candidateModels.includes(currentValue) && (
+                    {currentValue && !policyCandidateModels.includes(currentValue) && (
                       <option value={currentValue}>{currentValue} · {t("models.continuity.fallback.unavailable")}</option>
                     )}
                     {options.map(model => <option key={model} value={model}>{model}</option>)}
@@ -635,11 +856,26 @@ function ContinuityReferenceCard({
           </button>
         </div>
       ) : (
-        <p className="continuity-manual-only">{t("models.continuity.manualOnly")}</p>
+        <p className="continuity-manual-only">
+          {t(reference.removable ? "models.continuity.manualOptional" : "models.continuity.manualOnly")}
+        </p>
       )}
 
       {reference.kind === "gateway-alias" ? (
         <p className="continuity-manual-only">{t("models.continuity.savedSessionPolicyOnly")}</p>
+      ) : reference.kind === "continuity-policy" ? (
+        <div className="continuity-replace">
+          <p className="continuity-manual-only">{t("models.continuity.policyOnly")}</p>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={saving}
+            aria-label={t("models.continuity.remove")}
+            onClick={() => void remove()}
+          >
+            {t("models.continuity.remove")}
+          </button>
+        </div>
       ) : (
         <div className="continuity-replace">
           <div className="continuity-field">
@@ -653,7 +889,7 @@ function ContinuityReferenceCard({
               onChange={event => setReplacement(event.target.value)}
             >
               <option value="">{t("models.continuity.replaceChoose")}</option>
-              {candidateModels.map(model => <option key={model} value={model}>{model}</option>)}
+              {replacementModels.map(model => <option key={model} value={model}>{model}</option>)}
             </select>
           </div>
           <button
@@ -665,6 +901,17 @@ function ContinuityReferenceCard({
           >
             {saving ? t("prov.savingDefault") : t("models.continuity.replace")}
           </button>
+          {reference.removable && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={saving}
+              aria-label={t("models.continuity.remove")}
+              onClick={() => void remove()}
+            >
+              {t("models.continuity.remove")}
+            </button>
+          )}
         </div>
       )}
     </article>
@@ -677,23 +924,38 @@ export function ModelContinuityPanel({
   t,
   onSet,
   onReplace,
+  onRemove,
 }: {
   report: ModelContinuityReport;
   selectableModels?: readonly string[];
   t: TFn;
   onSet: (action: ModelContinuitySetAction) => Promise<ModelContinuityActionResult>;
   onReplace: (action: ModelContinuityReplaceAction) => Promise<ModelContinuityActionResult>;
+  onRemove: (action: ModelContinuityRemoveAction) => Promise<ModelContinuityActionResult>;
 }) {
-  const attention = report.references.filter(reference => reference.status !== "ready");
+  const attention = report.references.filter(reference => reference.actionRequired);
+  const brokenPolicyPrimaries = new Set(attention
+    .filter(reference => reference.kind === "continuity-policy-candidate")
+    .map(reference => reference.policyPrimary));
   const automatic = report.references.filter(reference =>
-    reference.status === "ready"
+    !reference.actionRequired
+    && reference.active
+    && reference.status === "ready"
     && reference.automaticEligible
     && reference.policy.automatic !== "off"
+    && reference.kind !== "continuity-policy-candidate"
+    && !(reference.kind === "continuity-policy" && brokenPolicyPrimaries.has(reference.primary))
   );
+  const automaticIds = new Set(automatic.map(reference => reference.id));
   const normal = report.references.filter(reference =>
-    reference.status === "ready"
-    && (!reference.automaticEligible || reference.policy.automatic === "off")
+    !reference.actionRequired && !automaticIds.has(reference.id)
   );
+  const attentionGroups = new Map<string, ModelContinuityReference[]>();
+  for (const reference of attention) {
+    const group = attentionGroups.get(reference.primary) ?? [];
+    group.push(reference);
+    attentionGroups.set(reference.primary, group);
+  }
 
   return (
     <section className="panel continuity-panel" aria-labelledby="model-continuity-title">
@@ -705,7 +967,10 @@ export function ModelContinuityPanel({
         </div>
         <span className={`badge ${attention.length > 0 ? "badge-amber" : "badge-green"}`}>
           {attention.length > 0
-            ? t("models.continuity.attentionCount", { n: attention.length })
+            ? t("models.continuity.attentionCount", {
+              models: report.summary.actionableModelCount,
+              references: report.summary.actionableReferenceCount,
+            })
             : t("models.continuity.status.ready")}
         </span>
       </div>
@@ -713,15 +978,22 @@ export function ModelContinuityPanel({
 
       {attention.length > 0 && (
         <div className="continuity-card-list">
-          {attention.map(reference => (
-            <ContinuityReferenceCard
-              key={reference.id}
-              reference={reference}
-              selectableModels={selectableModels}
-              t={t}
-              onSet={onSet}
-              onReplace={onReplace}
-            />
+          {[...attentionGroups.entries()].map(([primary, references]) => (
+            <section className="continuity-target-group" key={primary}>
+              <h4><code className="text-anywhere">{primary}</code></h4>
+              <p>{t("models.continuity.locationCount", { n: references.length })}</p>
+              {references.map(reference => (
+                <ContinuityReferenceCard
+                  key={reference.id}
+                  reference={reference}
+                  selectableModels={selectableModels}
+                  t={t}
+                  onSet={onSet}
+                  onReplace={onReplace}
+                  onRemove={onRemove}
+                />
+              ))}
+            </section>
           ))}
         </div>
       )}
@@ -751,6 +1023,7 @@ export function ModelContinuityPanel({
               t={t}
               onSet={onSet}
               onReplace={onReplace}
+              onRemove={onRemove}
             />
           ))}
         </div>
@@ -768,6 +1041,7 @@ export function ModelContinuityPanel({
                 t={t}
                 onSet={onSet}
                 onReplace={onReplace}
+                onRemove={onRemove}
               />
             ))}
           </div>
@@ -846,6 +1120,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
   const [draggedFeatured, setDraggedFeatured] = useState<string | null>(null);
   const [dragOverFeatured, setDragOverFeatured] = useState<string | null>(null);
   const featuredDirtyRef = useRef(false);
+  const featuredSavedRef = useRef<string[]>([]);
   const featuredSavingRef = useRef(false);
   const featuredLoadSeqRef = useRef(0);
   const continuityLoadSeqRef = useRef(0);
@@ -861,7 +1136,8 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
       if (requestId !== featuredLoadSeqRef.current) return;
       if (!force && (featuredDirtyRef.current || featuredSavingRef.current)) return;
       setFeaturedAvailable(data.available);
-      setFeaturedChosen(data.chosen.filter(model => data.available.includes(model)));
+      setFeaturedChosen(data.chosen);
+      featuredSavedRef.current = [...data.chosen];
       featuredDirtyRef.current = false;
       setFeaturedDirty(false);
     } catch {
@@ -1022,6 +1298,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
         canHide: false,
         authReady: true,
         supportStatus: "unknown",
+        available: false,
       };
     });
   }, [controlRows, featuredChosen]);
@@ -1054,10 +1331,13 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
       loadContinuity,
     );
     if (result.ok) {
+      const savedBefore = featuredSavedRef.current;
+      const savedAfter = reconcileFeaturedDraft(savedBefore, savedBefore, action).saved;
+      featuredSavedRef.current = savedAfter;
+      setFeaturedChosen(current => reconcileFeaturedDraft(current, savedBefore, action).draft);
       const [, continuityReloaded] = await Promise.all([
         loadModels(),
         loadContinuity(),
-        loadFeatured(true),
       ]);
       if (continuityReloaded === "superseded") return "superseded";
       if (continuityReloaded === "applied") {
@@ -1082,30 +1362,29 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
 
 
 
-  const apply = async (next: Set<string>, nextFeatured?: string[]) => {
+  const apply = async (next: Set<string>) => {
     setBusy(true);
     busyRef.current = true;
     setStatus("");
     try {
-      const r = await fetch(`${apiBase}/api/disabled-models`, {
+      const response = await fetch(`${apiBase}/api/disabled-models`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ models: [...next] }),
       });
-      if (r.ok) {
+      if (response.ok) {
         setDisabled(next);
         setOk(true);
         setStatus(t("models.applied"));
-        if (nextFeatured) {
-          setFeaturedChosen(nextFeatured);
-          void saveFeatured(nextFeatured);
-        } else {
-          loadFeatured();
-        }
+        void loadFeatured();
+        void loadContinuity();
+      } else {
+        setOk(false);
+        setStatus(t("models.saveFailed"));
       }
-      else { setOk(false); setStatus(t("models.saveFailed")); }
     } catch {
-      setOk(false); setStatus(t("models.networkError"));
+      setOk(false);
+      setStatus(t("models.networkError"));
     } finally {
       setBusy(false);
       busyRef.current = false;
@@ -1118,7 +1397,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
       setFeaturedStatus(t("models.priorityNoChanges"));
       return;
     }
-    const visibleModels = modelsToSave.filter(model => !disabled.has(model));
+    const chosenModels = [...modelsToSave];
     setFeaturedStatus("");
     setFeaturedSaving(true);
     featuredSavingRef.current = true;
@@ -1126,17 +1405,19 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
       const res = await fetch(`${apiBase}/api/subagent-models`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ models: visibleModels }),
+        body: JSON.stringify({ models: chosenModels }),
       });
       const data = await res.json().catch(() => ({})) as { applied?: unknown; error?: string };
       const applied = Array.isArray(data.applied)
         ? data.applied.filter((model): model is string => typeof model === "string")
-        : visibleModels;
+        : chosenModels;
       setFeaturedOk(res.ok);
       if (res.ok) {
         setFeaturedChosen(applied);
+        featuredSavedRef.current = [...applied];
         featuredDirtyRef.current = false;
         setFeaturedDirty(false);
+        void loadContinuity();
       }
       setFeaturedStatus(res.ok
         ? t("models.featuredSaved", { n: applied.length, cmd: "frogp refresh" })
@@ -1154,16 +1435,12 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     void saveFeatured();
   };
 
-  const featuredAfterVisibilityChange = (nextDisabled: Set<string>): string[] | undefined => {
-    const nextFeatured = featuredChosen.filter(model => !nextDisabled.has(model));
-    return nextFeatured.length === featuredChosen.length ? undefined : nextFeatured;
-  };
 
   const toggle = (row: ModelControlRow) => {
     if (!row.canHide) return;
     const next = new Set(disabled);
     if (next.has(row.namespaced)) next.delete(row.namespaced); else next.add(row.namespaced);
-    apply(next, featuredAfterVisibilityChange(next));
+    void apply(next);
   };
 
   const toggleProvider = (rows: ModelControlRow[], enable: boolean) => {
@@ -1172,7 +1449,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
       if (!row.canHide) continue;
       if (enable) next.delete(row.namespaced); else next.add(row.namespaced);
     }
-    apply(next, featuredAfterVisibilityChange(next));
+    void apply(next);
   };
 
   const toggleCollapse = (p: string) => {
@@ -1180,7 +1457,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
   };
 
   const toggleFeatured = (row: ModelControlRow) => {
-    if (row.disabled) return;
+    if (row.disabled && !featuredChosen.includes(row.namespaced)) return;
     if (!row.authReady && !featuredChosen.includes(row.namespaced)) return;
     setFeaturedStatus("");
     setFeaturedChosen(prev => {
@@ -1277,6 +1554,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
           t={t}
           onSet={action => submitContinuityAction(action, "models.continuity.saved")}
           onReplace={action => submitContinuityAction(action, "models.continuity.replaced")}
+          onRemove={action => submitContinuityAction(action, "models.continuity.removed")}
         />
       )}
 
@@ -1338,12 +1616,15 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
                         <code className="mono text-anywhere">{row.id}</code>
                         {row.provider && <span className="model-provider-tag">{row.provider}</span>}
                         {!row.authReady && <span className="badge badge-amber">{t("models.authLoginRequired")}</span>}
+                        {row.available === false && <span className="badge badge-amber">{t("models.priorityUnavailableSaved")}</span>}
                         <ModelSupportStatusBadge status={row.supportStatus} t={t} />
                       </div>
                       <div className="model-control-meta">
-                        {row.authReady
-                          ? t("models.orderDragHint")
-                          : <Trans k="models.authNotReadyMeta" cmd={row.provider ? `frogp login ${row.provider}` : "frogp login"} />}
+                        {row.available === false
+                          ? t("models.priorityUnavailableSavedMeta")
+                          : row.authReady
+                            ? t("models.orderDragHint")
+                            : <Trans k="models.authNotReadyMeta" cmd={row.provider ? `frogp login ${row.provider}` : "frogp login"} />}
                       </div>
                     </div>
                     <div className="selected-order-actions">
