@@ -538,6 +538,12 @@ select.input { appearance: none; }
   font-size: 13.5px;
   line-height: 1.45;
 }
+.continuity-controls {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
 .continuity-panel {
   display: grid;
   gap: 16px;

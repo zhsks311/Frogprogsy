@@ -1124,6 +1124,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
   const featuredLoadSeqRef = useRef(0);
   const continuityLoadSeqRef = useRef(0);
   const continuityMutationsRef = useRef(0);
+  const [continuitySaving, setContinuitySaving] = useState(false);
   const modelControlsRef = useRef<HTMLElement | null>(null);
 
   const loadFeatured = async (force = false) => {
@@ -1325,9 +1326,11 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
     action: ModelContinuityAction,
     successMessage: TKey,
   ): Promise<ModelContinuityActionResult> => {
+    if (continuityMutationsRef.current > 0 || featuredSavingRef.current) return "superseded";
     const savedBefore = [...featuredSavedRef.current];
     featuredLoadSeqRef.current += 1;
     continuityMutationsRef.current += 1;
+    setContinuitySaving(true);
     setContinuityStatus("");
     try {
       const result = await postModelContinuityAction(
@@ -1365,6 +1368,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
       return "failed";
     } finally {
       continuityMutationsRef.current -= 1;
+      setContinuitySaving(false);
     }
   };
 
@@ -1400,6 +1404,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
   };
 
   const saveFeatured = async (modelsToSave = featuredChosen) => {
+    if (continuityMutationsRef.current > 0) return;
     if (modelsToSave === featuredChosen && !featuredDirtyRef.current) {
       setFeaturedOk(true);
       setFeaturedStatus(t("models.priorityNoChanges"));
@@ -1556,14 +1561,16 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
       )}
       {continuityStatus && <Notice tone={continuityOk ? "ok" : "err"}>{continuityStatus}</Notice>}
       {continuityReport && (
-        <ModelContinuityPanel
-          report={continuityReport}
-          selectableModels={selectableContinuityModels}
-          t={t}
-          onSet={action => submitContinuityAction(action, "models.continuity.saved")}
-          onReplace={action => submitContinuityAction(action, "models.continuity.replaced")}
-          onRemove={action => submitContinuityAction(action, "models.continuity.removed")}
-        />
+        <fieldset className="continuity-controls" disabled={continuitySaving || featuredSaving} aria-busy={continuitySaving}>
+          <ModelContinuityPanel
+            report={continuityReport}
+            selectableModels={selectableContinuityModels}
+            t={t}
+            onSet={action => submitContinuityAction(action, "models.continuity.saved")}
+            onReplace={action => submitContinuityAction(action, "models.continuity.replaced")}
+            onRemove={action => submitContinuityAction(action, "models.continuity.removed")}
+          />
+        </fieldset>
       )}
 
       {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
@@ -1665,7 +1672,7 @@ export default function Models({ apiBase, target }: { apiBase: string; target?: 
           </div>
           <div className="model-save-group">
             {featuredDirty && <span className="model-save-note">{t("models.priorityDirty")}</span>}
-            <button className="btn btn-primary" onClick={saveFeaturedChanges} disabled={featuredSaving || !featuredDirty}>
+            <button className="btn btn-primary" onClick={saveFeaturedChanges} disabled={featuredSaving || continuitySaving || !featuredDirty}>
               {featuredSaving ? t("prov.savingDefault") : t("models.prioritySave")}
             </button>
           </div>
