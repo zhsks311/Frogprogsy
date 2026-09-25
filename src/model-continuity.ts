@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   resolveAutoModeClassifierTarget,
   validateClassifierModel,
@@ -152,6 +153,7 @@ export interface ModelContinuityReference {
   label: string;
   policyPrimary?: string;
   policyFallbackIndex?: number;
+  ownerRevision?: string;
 }
 
 export interface ModelContinuitySummary {
@@ -172,7 +174,7 @@ export interface ReplaceModelContinuityReferenceInput {
   expectedPrimary: string;
   replacement: string;
   models?: readonly ModelContinuityModelRow[];
-  validateTarget: (target: string) => string | null;
+  validateTarget: (target: string, kind: MutableReferenceOwner["kind"]) => string | null;
 }
 
 export type ReplaceModelContinuityReferenceResult =
@@ -197,6 +199,7 @@ interface ReferenceOwner {
   active: boolean;
   policyPrimary?: string;
   policyFallbackIndex?: number;
+  ownerRevision?: string;
 }
 
 interface MutableReferenceOwner {
@@ -224,14 +227,7 @@ export function collectModelContinuityReferences(
 ): ModelContinuityReference[] {
   const owners = collectReferenceOwners(input.config);
   const rows = new Map(input.models.map(model => [model.namespaced, model]));
-  const disabledTargets = new Set(input.config.disabledModels ?? []);
-  const activeOrRetiredAliases = input.aliases.filter(alias => {
-    if (!input.config.providers[alias.provider]) return false;
-    if (input.retiredTargets.has(alias.routeKey)) return true;
-    const row = rows.get(alias.routeKey);
-    return row !== undefined && row.disabled !== true && !disabledTargets.has(alias.routeKey);
-  });
-  for (const alias of activeOrRetiredAliases) {
+  for (const alias of input.aliases.filter(alias => input.config.providers[alias.provider] !== undefined)) {
     owners.push({
       id: `gateway-alias:${alias.alias}`,
       kind: "gateway-alias",
@@ -267,12 +263,20 @@ export function collectModelContinuityReferences(
     const policyPrimary = owner.policyPrimary ?? owner.primary;
     const policy = normalizeContinuityPolicy(input.config.modelContinuity?.[policyPrimary]);
     const automaticEligible = NON_AUTOMATIC_KINDS[owner.kind] !== true;
+    const structureValid = owner.kind === "continuity-policy"
+      ? isContinuityAutomatic(policy.automatic)
+      : owner.kind === "continuity-policy-candidate"
+        ? continuityPolicyCandidateStructureValid(
+          owner.policyPrimary!,
+          owner.policyFallbackIndex!,
+          policy,
+        )
+        : true;
     const status = referenceStatus(
       owner.primary,
-      owner.kind === "continuity-policy",
+      structureValid,
       input,
       row,
-      policy,
     );
     return {
       ...owner,
@@ -344,7 +348,7 @@ export function replaceModelContinuityReference(
     };
   }
 
-  const targetError = input.validateTarget(input.replacement);
+  const targetError = input.validateTarget(input.replacement, owner.kind);
   if (targetError) return { ok: false, status: 400, error: targetError };
   if (owner.kind === "classifier") {
     const candidateConfig: FrogConfig = {
@@ -517,6 +521,7 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
       true,
     ));
   }
+  const subagentRevision = modelContinuityOwnerRevision(config.subagentModels ?? []);
   for (const [index, configuredModel] of (config.subagentModels ?? []).entries()) {
     if (typeof configuredModel !== "string") continue;
     owners.push({
@@ -525,6 +530,7 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
       primary: resolvedSubagentPrimary(config, configuredModel),
       label: `Subagent model ${index + 1}`,
       active: true,
+      ownerRevision: subagentRevision,
     });
   }
   if (config.autoModeClassifier) {
@@ -553,9 +559,47 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
       : (mixing.agents ?? []).some(target =>
         isPipelineRole(target.role) && isConfiguredTarget(config, target)
       );
-    const pipelineFallbackAgentIndex = pipelineMode && !pipelineHasResolvedStage
+    const firstConfiguredAgentIndex = enabled
       ? (mixing.agents ?? []).findIndex(target => isConfiguredTarget(config, target))
       : -1;
+    const pipelineFallbackAgentIndex = pipelineMode && !pipelineHasResolvedStage
+      ? firstConfiguredAgentIndex
+      : -1;
+    const selectedPipelineIndexes = new Set<number>();
+    const seenPipelineRoles = new Set<string>();
+    for (const [index, target] of (mixing.pipeline ?? []).entries()) {
+      if (!isConfiguredTarget(config, target) || seenPipelineRoles.has(target.role)) continue;
+      seenPipelineRoles.add(target.role);
+      selectedPipelineIndexes.add(index);
+    }
+    const selectedAgentRoleIndexes = new Set<number>();
+    for (const role of ["thinker", "worker", "verifier"] as const) {
+      const index = (mixing.agents ?? []).findIndex(
+        target => target.role === role && isConfiguredTarget(config, target),
+      );
+      if (index >= 0) selectedAgentRoleIndexes.add(index);
+    }
+    const configuredBudgetCalls = Math.max(1, mixing.fusion?.multiround?.budgetCalls ?? 12);
+    const fusionPanelLimit = mixing.fusion?.multiround?.enabled === true
+      ? Math.min(8, Math.max(0, Math.trunc(configuredBudgetCalls - 1)))
+      : 8;
+    const selectedFusionAgentIndexes = firstConfiguredIndexes(
+      config,
+      mixing.agents ?? [],
+      fusionPanelLimit,
+    );
+    const selectedFusionPanelIndexes = firstConfiguredIndexes(
+      config,
+      mixing.fusion?.panel ?? [],
+      fusionPanelLimit,
+    );
+    const firstConfiguredCatchAllRule = (mixing.rules ?? []).findIndex(
+      target => isConfiguredTarget(config, target) && isCatchAllMixRule(target),
+    );
+    const agentRevision = modelContinuityOwnerRevision(mixing.agents ?? []);
+    const pipelineRevision = modelContinuityOwnerRevision(mixing.pipeline ?? []);
+    const panelRevision = modelContinuityOwnerRevision(mixing.fusion?.panel ?? []);
+    const ruleRevision = modelContinuityOwnerRevision(mixing.rules ?? []);
     const coordinatorActive = (routeMode && mode === "coordinator")
       || (fusionMode
         && (
@@ -575,38 +619,58 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
     }
     for (const [index, target] of (mixing.agents ?? []).entries()) {
       const pipelineRole = isPipelineRole(target.role);
-      const active = routeMode
-        || (pipelineMode && !explicitPipeline && pipelineRole)
+      const configured = isConfiguredTarget(config, target);
+      const active = (routeMode && mode !== "rules")
+        || (enabled && index === firstConfiguredAgentIndex)
+        || (pipelineMode
+          && !explicitPipeline
+          && pipelineRole
+          && (!configured || selectedAgentRoleIndexes.has(index)))
         || (pipelineMode && index === pipelineFallbackAgentIndex)
-        || (fusionMode && !explicitPanel);
-      owners.push(targetOwner(
-        `mix-agent:${index}`,
-        "mix-agent",
-        target.provider,
-        target.model,
-        `Mixing agent ${index + 1}`,
-        active,
-      ));
+        || (fusionMode
+          && !explicitPanel
+          && (!configured || selectedFusionAgentIndexes.has(index)));
+      owners.push({
+        ...targetOwner(
+          `mix-agent:${index}`,
+          "mix-agent",
+          target.provider,
+          target.model,
+          `Mixing agent ${index + 1}`,
+          active,
+        ),
+        ownerRevision: agentRevision,
+      });
     }
     for (const [index, target] of (mixing.pipeline ?? []).entries()) {
-      owners.push(targetOwner(
-        `mix-pipeline:${index}`,
-        "mix-pipeline",
-        target.provider,
-        target.model,
-        `Mixing pipeline stage ${index + 1}`,
-        pipelineMode && explicitPipeline,
-      ));
+      owners.push({
+        ...targetOwner(
+          `mix-pipeline:${index}`,
+          "mix-pipeline",
+          target.provider,
+          target.model,
+          `Mixing pipeline stage ${index + 1}`,
+          pipelineMode
+            && explicitPipeline
+            && (!isConfiguredTarget(config, target) || selectedPipelineIndexes.has(index)),
+        ),
+        ownerRevision: pipelineRevision,
+      });
     }
     for (const [index, target] of (mixing.fusion?.panel ?? []).entries()) {
-      owners.push(targetOwner(
-        `mix-panel:${index}`,
-        "mix-panel",
-        target.provider,
-        target.model,
-        `Mixing panel member ${index + 1}`,
-        fusionMode && explicitPanel,
-      ));
+      owners.push({
+        ...targetOwner(
+          `mix-panel:${index}`,
+          "mix-panel",
+          target.provider,
+          target.model,
+          `Mixing panel member ${index + 1}`,
+          fusionMode
+            && explicitPanel
+            && (!isConfiguredTarget(config, target) || selectedFusionPanelIndexes.has(index)),
+        ),
+        ownerRevision: panelRevision,
+      });
     }
     if (mixing.fusion?.judge) {
       owners.push(targetOwner(
@@ -629,14 +693,19 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
       ));
     }
     for (const [index, target] of (mixing.rules ?? []).entries()) {
-      owners.push(targetOwner(
-        `mix-rule:${index}`,
-        "mix-rule",
-        target.provider,
-        target.model,
-        `Mixing rule ${index + 1}`,
-        routeMode && mode === "rules",
-      ));
+      owners.push({
+        ...targetOwner(
+          `mix-rule:${index}`,
+          "mix-rule",
+          target.provider,
+          target.model,
+          `Mixing rule ${index + 1}`,
+          routeMode
+            && mode === "rules"
+            && (firstConfiguredCatchAllRule < 0 || index <= firstConfiguredCatchAllRule),
+        ),
+        ownerRevision: ruleRevision,
+      });
     }
   }
 
@@ -679,9 +748,7 @@ function helperTarget(
   defaultModel: string,
 ): { provider: string; model: string } | null {
   if (!settings) return null;
-  const provider = settings.provider
-    ?? findOpenAIResponsesFallbackProviderEntry(config)?.name
-    ?? "";
+  const provider = findOpenAIResponsesFallbackProviderEntry(config, settings.provider)?.name ?? "";
   return { provider, model: settings.model ?? defaultModel };
 }
 
@@ -718,6 +785,40 @@ function isPipelineRole(role: string | undefined): boolean {
   return role === "thinker" || role === "worker" || role === "verifier";
 }
 
+function firstConfiguredIndexes(
+  config: FrogConfig,
+  targets: readonly { provider?: string; model?: string }[],
+  limit: number,
+): ReadonlySet<number> {
+  const selected = new Set<number>();
+  for (const [index, target] of targets.entries()) {
+    if (!isConfiguredTarget(config, target)) continue;
+    if (selected.size >= limit) break;
+    selected.add(index);
+  }
+  return selected;
+}
+
+function isCatchAllMixRule(target: {
+  match?: {
+    taskKeywords?: string[];
+    difficulty?: string;
+    hint?: string;
+  };
+}): boolean {
+  const match = target.match;
+  return !match
+    || (
+      (match.taskKeywords === undefined || match.taskKeywords.length === 0)
+      && match.difficulty === undefined
+      && match.hint === undefined
+    );
+}
+
+export function modelContinuityOwnerRevision(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
 function referenceRemovable(config: FrogConfig, owner: ReferenceOwner): boolean {
   if (owner.kind === "provider-default" || owner.kind === "gateway-alias") return false;
   if (owner.kind === "classifier") return config.autoModeClassifierEnabled !== true;
@@ -726,10 +827,9 @@ function referenceRemovable(config: FrogConfig, owner: ReferenceOwner): boolean 
 
 function referenceStatus(
   primary: string,
-  validatePolicy: boolean,
+  structureValid: boolean,
   input: CollectModelContinuityReferencesInput,
   row: ModelContinuityModelRow | undefined,
-  policy: ModelContinuityPolicy,
 ): ModelContinuityReference["status"] {
   if (input.retiredTargets.has(primary)) return "retired";
   const primaryTarget = qualifiedModelTarget(primary);
@@ -739,26 +839,23 @@ function referenceStatus(
     || !row
     || row.disabled === true
     || (input.config.disabledModels ?? []).includes(primary)
+    || !structureValid
   ) {
-    return "policy_invalid";
-  }
-  if (validatePolicy && !continuityPolicyStructureValid(primary, policy)) {
     return "policy_invalid";
   }
   if (row.authReady === false) return "authentication_required";
   return "ready";
 }
 
-function continuityPolicyStructureValid(primary: string, policy: ModelContinuityPolicy): boolean {
-  if (!isContinuityAutomatic(policy.automatic) || policy.fallbacks.length > MAX_CONTINUITY_FALLBACKS) {
-    return false;
-  }
-  const seen = new Set<string>();
-  for (const fallback of policy.fallbacks) {
-    if (fallback === primary || seen.has(fallback)) return false;
-    seen.add(fallback);
-  }
-  return true;
+function continuityPolicyCandidateStructureValid(
+  policyPrimary: string,
+  index: number,
+  policy: ModelContinuityPolicy,
+): boolean {
+  if (index >= MAX_CONTINUITY_FALLBACKS) return false;
+  const candidate = policy.fallbacks[index];
+  if (candidate === policyPrimary) return false;
+  return !policy.fallbacks.slice(0, index).includes(candidate);
 }
 
 function findRemovalReferencePrimary(config: FrogConfig, referenceId: string): string | null {

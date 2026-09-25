@@ -1141,6 +1141,85 @@ describe("Claude Code home management API", () => {
     expect(cfg.disabledModels).toEqual(["test/alpha"]);
   });
 
+  test("subagent order revisions reject stale dashboard writes and keep unconditional clients compatible", async () => {
+    const cfg = config();
+    let saves = 0;
+    let refreshes = 0;
+    const deps = {
+      saveConfig: () => { saves += 1; },
+      refreshClaudeCodeCatalog: async () => { refreshes += 1; },
+    };
+    const endpoint = new URL("http://localhost/api/subagent-models");
+    const first = await __requestLogTest.handleManagementAPI(
+      new Request(endpoint),
+      endpoint,
+      cfg,
+      deps,
+    );
+    const firstSnapshot = await json(first!);
+    expect(firstSnapshot.revision).toBeString();
+
+    cfg.subagentModels = ["test/alpha"];
+    const stale = await __requestLogTest.handleManagementAPI(
+      new Request(endpoint, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          models: ["test/beta"],
+          expectedRevision: firstSnapshot.revision,
+        }),
+      }),
+      endpoint,
+      cfg,
+      deps,
+    );
+    expect(stale?.status).toBe(409);
+    expect(await json(stale!)).toMatchObject({ code: "stale_reference" });
+    expect(cfg.subagentModels).toEqual(["test/alpha"]);
+    expect(saves).toBe(0);
+    expect(refreshes).toBe(0);
+
+    const second = await __requestLogTest.handleManagementAPI(
+      new Request(endpoint),
+      endpoint,
+      cfg,
+      deps,
+    );
+    const secondSnapshot = await json(second!);
+    const guarded = await __requestLogTest.handleManagementAPI(
+      new Request(endpoint, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          models: ["test/beta"],
+          expectedRevision: secondSnapshot.revision,
+        }),
+      }),
+      endpoint,
+      cfg,
+      deps,
+    );
+    expect(guarded?.status).toBe(200);
+    const guardedBody = await json(guarded!);
+    expect(guardedBody.applied).toEqual(["test/beta"]);
+    expect(guardedBody.revision).not.toBe(secondSnapshot.revision);
+
+    const compatible = await __requestLogTest.handleManagementAPI(
+      new Request(endpoint, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ models: ["test/alpha"] }),
+      }),
+      endpoint,
+      cfg,
+      deps,
+    );
+    expect(compatible?.status).toBe(200);
+    expect(cfg.subagentModels).toEqual(["test/alpha"]);
+    expect(saves).toBe(2);
+    expect(refreshes).toBe(2);
+  });
+
   test("renamed Anthropic forward models retain per-model context metadata", async () => {
     const cfg = config();
     delete cfg.providers.anthropic;

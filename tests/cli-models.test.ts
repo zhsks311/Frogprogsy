@@ -51,6 +51,7 @@ const STUB_CONTINUITY_REPORT = {
       policy: { fallbacks: [], automatic: "off" },
       supportStatus: "validated",
       label: "Subagent 1",
+      ownerRevision: "subagent-owner-revision",
     },
   ],
   summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
@@ -526,6 +527,85 @@ describe("frogp models", () => {
         replacement: "work/new",
       });
       expect(result.stdout).not.toContain("provider-default:work");
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("remove forwards the indexed owner revision from the fresh report", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const { server, port, actions } = startStubProxy();
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync([
+        "models", "continuity", "remove", "subagent:0",
+      ], home);
+      expect(result.status).toBe(0);
+      expect(actions.at(-1)).toEqual({
+        action: "remove",
+        referenceId: "subagent:0",
+        expectedPrimary: "codex/gpt-x",
+        expectedOwnerRevision: "subagent-owner-revision",
+      });
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    {
+      name: "replace",
+      args: ["models", "continuity", "replace", "continuity-policy-candidate:work%2Fcurrent:0", "work/new"],
+      expected: {
+        action: "replace",
+        referenceId: "continuity-policy-candidate:work%2Fcurrent:0",
+        expectedPrimary: "work/old",
+        expectedPolicy: { fallbacks: ["work/old", "work/backup"], automatic: "all" },
+        replacement: "work/new",
+      },
+    },
+    {
+      name: "remove",
+      args: ["models", "continuity", "remove", "continuity-policy-candidate:work%2Fcurrent:0"],
+      expected: {
+        action: "remove",
+        referenceId: "continuity-policy-candidate:work%2Fcurrent:0",
+        expectedPrimary: "work/old",
+        expectedPolicy: { fallbacks: ["work/old", "work/backup"], automatic: "all" },
+      },
+    },
+  ])("$name sends the complete observed policy for a candidate mutation", async ({ args, expected }) => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const continuityReport = {
+      policies: {
+        "work/current": { fallbacks: ["work/old", "work/backup"], automatic: "all" },
+      },
+      references: [{
+        id: "continuity-policy-candidate:work%2Fcurrent:0",
+        kind: "continuity-policy-candidate",
+        primary: "work/old",
+        status: "retired",
+        active: true,
+        actionRequired: true,
+        removable: true,
+        automaticEligible: true,
+        policy: { fallbacks: ["work/old", "work/backup"], automatic: "all" },
+        supportStatus: "validated",
+        label: "Fallback 1 for work/current",
+        policyPrimary: "work/current",
+        policyFallbackIndex: 0,
+      }],
+      summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
+      circuits: [],
+    };
+    const { server, port, actions } = startStubProxy({ continuityReport });
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync(args, home);
+      expect(result.status).toBe(0);
+      expect(actions.at(-1)).toEqual(expected);
     } finally {
       server.stop(true);
       rmSync(home, { recursive: true, force: true });

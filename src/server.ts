@@ -29,7 +29,7 @@ import {
 } from "./oauth/index";
 import { isAllowedClaudeGrantBaseUrl, resolveProviderAuth } from "./provider-auth";
 import { authorizeLocalAccess, generateLocalAccessSecret, isLocalAccessEnabled, isLocalAccessSecret, LOCAL_ACCESS_HEADER, localAccessConfigIssue, registerLocalAccessKeys, setRuntimeAccessToken, type LocalAccessDenied } from "./local-access";
-import { applyProviderConfigHints, type CatalogModel } from "./claude-catalog";
+import { applyProviderConfigHints, listCatalogNativeSlugs, type CatalogModel } from "./claude-catalog";
 import { getJawcodeModelMetadata } from "./generated/jawcode-model-metadata";
 import type { ClaudeCodeCatalogRefreshResult, ClaudeCodeGatewayModelsCacheSyncResult } from "./claude-refresh";
 import { buildWebSearchTool, planWebSearch, resolveWebSearchLadderPlan, runWithWebSearch } from "./web-search-fallback";
@@ -50,6 +50,7 @@ import {
   continuityCandidates,
   isContinuityEligibleHttpFailure,
   normalizeContinuityPolicy,
+  modelContinuityOwnerRevision,
   qualifiedModelTarget,
   replaceModelContinuityReference,
   removeModelContinuityReference,
@@ -65,7 +66,10 @@ import { appendUsageEntry, readUsageEntries, usageStatusForFinalLog, usageTotalT
 import { parseRange, summarizeUsage } from "./usage-summary";
 import { classifierSettingsSnapshot, resolveAutoModeClassifierTarget, validateClassifierModel } from "./classifier-settings";
 import { resolveModelCapabilities, supportsImageInput, supportsNativeWebSearch } from "./model-capabilities";
-import { isOpenAIResponsesFallbackProvider } from "./fallback-openai-responses";
+import {
+  findOpenAIResponsesFallbackProviderEntry,
+  isOpenAIResponsesFallbackProvider,
+} from "./fallback-openai-responses";
 import { applyParsedModelId, buildAttemptContexts, cloneParsedForAttempt, isSameTargetRetryCandidate, resolvePrimaryRoute, type AttemptContext } from "./provider-fallback";
 import { redactConfigForApi, redactProviderForApi } from "./provider-redaction";
 import { effectiveKeyCandidates } from "./provider-keys";
@@ -3218,17 +3222,22 @@ type ModelContinuityAction =
     automatic: ModelContinuityAutomatic;
     referenceId?: string;
     expectedPrimary?: string;
+    expectedPolicy?: ModelContinuityPolicy;
   }
   | {
     action: "replace";
     referenceId: string;
     expectedPrimary: string;
+    expectedOwnerRevision?: string;
+    expectedPolicy?: ModelContinuityPolicy;
     replacement: string;
   }
   | {
     action: "remove";
     referenceId: string;
     expectedPrimary: string;
+    expectedOwnerRevision?: string;
+    expectedPolicy?: ModelContinuityPolicy;
   };
 
 type ModelContinuityActionParseResult =
@@ -3243,6 +3252,19 @@ function hasOnlyKeys(body: Record<string, unknown>, allowed: readonly string[]):
   return Object.keys(body).every(key => allowed.includes(key));
 }
 
+function parsedExpectedContinuityPolicy(value: unknown): ModelContinuityPolicy | null {
+  if (!isPlainJsonObject(value)) return null;
+  if (
+    !hasOnlyKeys(value, ["fallbacks", "automatic"])
+    || !Array.isArray(value.fallbacks)
+    || !value.fallbacks.every(fallback => typeof fallback === "string")
+    || !isModelContinuityAutomatic(value.automatic)
+  ) {
+    return null;
+  }
+  return { fallbacks: [...value.fallbacks], automatic: value.automatic };
+}
+
 function parseModelContinuityAction(body: unknown): ModelContinuityActionParseResult {
   if (!isPlainJsonObject(body)) {
     return { ok: false, code: "invalid_request", error: "request body must be an object" };
@@ -3251,7 +3273,18 @@ function parseModelContinuityAction(body: unknown): ModelContinuityActionParseRe
     return { ok: false, code: "invalid_action", error: "action must be set, replace, or remove" };
   }
   if (body.action === "set") {
-    const allowed = ["action", "primary", "fallbacks", "automatic", "referenceId", "expectedPrimary"] as const;
+    const allowed = [
+      "action",
+      "primary",
+      "fallbacks",
+      "automatic",
+      "referenceId",
+      "expectedPrimary",
+      "expectedPolicy",
+    ] as const;
+    const expectedPolicy = body.expectedPolicy === undefined
+      ? undefined
+      : parsedExpectedContinuityPolicy(body.expectedPolicy);
     if (
       !hasOnlyKeys(body, allowed)
       || typeof body.primary !== "string"
@@ -3260,11 +3293,13 @@ function parseModelContinuityAction(body: unknown): ModelContinuityActionParseRe
       || !isModelContinuityAutomatic(body.automatic)
       || (body.referenceId !== undefined && typeof body.referenceId !== "string")
       || (body.expectedPrimary !== undefined && typeof body.expectedPrimary !== "string")
+      || (body.expectedPolicy !== undefined && expectedPolicy === null)
+      || (body.referenceId !== undefined && expectedPolicy === undefined)
     ) {
       return {
         ok: false,
         code: "invalid_request",
-        error: "set requires only primary, string fallbacks, automatic, optional referenceId, and optional expectedPrimary",
+        error: "set requires primary, string fallbacks, automatic, and a referenceId-bound expectedPolicy when editing a reported reference",
       };
     }
     return {
@@ -3276,21 +3311,33 @@ function parseModelContinuityAction(body: unknown): ModelContinuityActionParseRe
         automatic: body.automatic,
         ...(body.referenceId === undefined ? {} : { referenceId: body.referenceId }),
         ...(body.expectedPrimary === undefined ? {} : { expectedPrimary: body.expectedPrimary }),
+        ...(expectedPolicy == null ? {} : { expectedPolicy }),
       },
     };
   }
 
   if (body.action === "remove") {
-    const allowed = ["action", "referenceId", "expectedPrimary"] as const;
+    const allowed = [
+      "action",
+      "referenceId",
+      "expectedPrimary",
+      "expectedOwnerRevision",
+      "expectedPolicy",
+    ] as const;
+    const expectedPolicy = body.expectedPolicy === undefined
+      ? undefined
+      : parsedExpectedContinuityPolicy(body.expectedPolicy);
     if (
       !hasOnlyKeys(body, allowed)
       || typeof body.referenceId !== "string"
       || typeof body.expectedPrimary !== "string"
+      || (body.expectedOwnerRevision !== undefined && typeof body.expectedOwnerRevision !== "string")
+      || (body.expectedPolicy !== undefined && expectedPolicy === null)
     ) {
       return {
         ok: false,
         code: "invalid_request",
-        error: "remove requires only referenceId and expectedPrimary",
+        error: "remove requires referenceId, expectedPrimary, and the applicable owner revision or expected policy",
       };
     }
     return {
@@ -3299,21 +3346,37 @@ function parseModelContinuityAction(body: unknown): ModelContinuityActionParseRe
         action: "remove",
         referenceId: body.referenceId,
         expectedPrimary: body.expectedPrimary,
+        ...(body.expectedOwnerRevision === undefined
+          ? {}
+          : { expectedOwnerRevision: body.expectedOwnerRevision }),
+        ...(expectedPolicy == null ? {} : { expectedPolicy }),
       },
     };
   }
 
-  const allowed = ["action", "referenceId", "expectedPrimary", "replacement"] as const;
+  const allowed = [
+    "action",
+    "referenceId",
+    "expectedPrimary",
+    "expectedOwnerRevision",
+    "expectedPolicy",
+    "replacement",
+  ] as const;
+  const expectedPolicy = body.expectedPolicy === undefined
+    ? undefined
+    : parsedExpectedContinuityPolicy(body.expectedPolicy);
   if (
     !hasOnlyKeys(body, allowed)
     || typeof body.referenceId !== "string"
     || typeof body.expectedPrimary !== "string"
     || typeof body.replacement !== "string"
+    || (body.expectedOwnerRevision !== undefined && typeof body.expectedOwnerRevision !== "string")
+    || (body.expectedPolicy !== undefined && expectedPolicy === null)
   ) {
     return {
       ok: false,
       code: "invalid_request",
-      error: "replace requires only referenceId, expectedPrimary, and replacement",
+      error: "replace requires referenceId, expectedPrimary, replacement, and the applicable owner revision or expected policy",
     };
   }
   return {
@@ -3323,6 +3386,10 @@ function parseModelContinuityAction(body: unknown): ModelContinuityActionParseRe
       referenceId: body.referenceId,
       expectedPrimary: body.expectedPrimary,
       replacement: body.replacement,
+      ...(body.expectedOwnerRevision === undefined
+        ? {}
+        : { expectedOwnerRevision: body.expectedOwnerRevision }),
+      ...(expectedPolicy == null ? {} : { expectedPolicy }),
     },
   };
 }
@@ -3373,6 +3440,22 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     await refreshClaudeCodeCatalogBestEffort();
   }
 
+  function currentModelContinuityReferences(models: Array<{
+    namespaced: string;
+    disabled: boolean;
+    authReady?: boolean;
+    supportStatus?: "validated" | "discovered" | "unknown";
+  }>): ModelContinuityReference[] {
+    const references = collectModelContinuityReferences({
+      config,
+      retiredTargets: state.retiredTargets,
+      models,
+      aliases: listPersistedModelAliases(),
+    });
+    references.sort(compareModelContinuityReferences);
+    return references;
+  }
+
   async function modelContinuityContext(): Promise<{
     models: Array<{
       namespaced: string;
@@ -3397,13 +3480,7 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
         ...(model.supportStatus === undefined ? {} : { supportStatus: model.supportStatus }),
       };
     });
-    const references = collectModelContinuityReferences({
-      config,
-      retiredTargets: state.retiredTargets,
-      models,
-      aliases: listPersistedModelAliases(),
-    });
-    references.sort(compareModelContinuityReferences);
+    const references = currentModelContinuityReferences(models);
     return { models, references };
   }
 
@@ -4266,7 +4343,10 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       return jsonResponse({ error: parsed.error, code: parsed.code }, 400);
     }
 
-    const { models, references } = await modelContinuityContext();
+    const { models } = await modelContinuityContext();
+    // The model lookup above can yield. Re-read mutable owners now, then validate and mutate
+    // without another await so overlapping indexed/policy actions cannot share a stale snapshot.
+    const references = currentModelContinuityReferences(models);
     const ordinaryRouteConfig = { ...config };
     delete ordinaryRouteConfig.autoModeClassifier;
 
@@ -4290,6 +4370,16 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
         ) {
           return jsonResponse({
             error: "model reference changed; reload and retry",
+            code: "stale_reference",
+          }, 409);
+        }
+        const currentPolicy = normalizeContinuityPolicy(config.modelContinuity?.[policyPrimary]);
+        if (
+          action.expectedPolicy === undefined
+          || JSON.stringify(currentPolicy) !== JSON.stringify(action.expectedPolicy)
+        ) {
+          return jsonResponse({
+            error: "model continuity policy changed; reload and retry",
             code: "stale_reference",
           }, 409);
         }
@@ -4340,6 +4430,28 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
           code: "stale_reference",
         }, 409);
       }
+      if (
+        reference.ownerRevision !== undefined
+        && reference.ownerRevision !== action.expectedOwnerRevision
+      ) {
+        return jsonResponse({
+          error: "model reference collection changed; reload and retry",
+          code: "stale_reference",
+        }, 409);
+      }
+      if (
+        (reference.kind === "continuity-policy"
+          || reference.kind === "continuity-policy-candidate")
+        && (
+          action.expectedPolicy === undefined
+          || JSON.stringify(reference.policy) !== JSON.stringify(action.expectedPolicy)
+        )
+      ) {
+        return jsonResponse({
+          error: "model continuity policy changed; reload and retry",
+          code: "stale_reference",
+        }, 409);
+      }
       const snapshot = structuredClone(config);
       const removed = removeModelContinuityReference({
         config,
@@ -4367,6 +4479,27 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
         code: "stale_reference",
       }, 409);
     }
+    if (
+      reference.ownerRevision !== undefined
+      && reference.ownerRevision !== action.expectedOwnerRevision
+    ) {
+      return jsonResponse({
+        error: "model reference collection changed; reload and retry",
+        code: "stale_reference",
+      }, 409);
+    }
+    if (
+      reference.kind === "continuity-policy-candidate"
+      && (
+        action.expectedPolicy === undefined
+        || JSON.stringify(reference.policy) !== JSON.stringify(action.expectedPolicy)
+      )
+    ) {
+      return jsonResponse({
+        error: "model continuity policy changed; reload and retry",
+        code: "stale_reference",
+      }, 409);
+    }
 
     const snapshot = structuredClone(config);
     const replaced = replaceModelContinuityReference({
@@ -4375,11 +4508,20 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
       expectedPrimary: action.expectedPrimary,
       replacement: action.replacement,
       models,
-      validateTarget: target => {
+      validateTarget: (target, kind) => {
         const replacement = qualifiedModelTarget(target);
         if (!replacement) return `Invalid replacement target: ${target}`;
         if (!ordinaryRouteConfig.providers[replacement.provider]) {
           return `Unconfigured replacement provider: ${replacement.provider}`;
+        }
+        if (kind === "web-search-helper" || kind === "image-helper") {
+          const effective = findOpenAIResponsesFallbackProviderEntry(
+            ordinaryRouteConfig,
+            replacement.provider,
+          );
+          if (effective?.name !== replacement.provider) {
+            return `Ineligible helper replacement provider: ${replacement.provider}`;
+          }
         }
         if (state.retiredTargets.has(target)) return `Retired replacement target: ${target}`;
         const row = models.find(model => model.namespaced === target);
@@ -4959,23 +5101,41 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     const chosen = view.featured ?? [];
     // Native gpt/claude slugs are also valid subagent picks — they're picker-visible models in the catalog,
     // just buried by priority. List them first so the user can feature them over routed.
-    const { listCatalogNativeSlugs } = await import("./claude-catalog");
     const nativeAvailable = listCatalogNativeSlugs().filter(slug => !isNativeSlugHidden(state.effective, slug));
     const routedAvailable = view.models
       .map(m => `${m.provider}/${m.id}`)
       .filter(ns => !view.disabled.has(ns));
     const available = [...nativeAvailable, ...routedAvailable];
-    return jsonResponse({ chosen, available });
+    return jsonResponse({
+      chosen,
+      available,
+      revision: modelContinuityOwnerRevision(config.subagentModels ?? []),
+    });
   }
   if (url.pathname === "/api/subagent-models" && req.method === "PUT") {
-    let body: { models?: unknown };
+    let body: { models?: unknown; expectedRevision?: unknown };
     try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (body.expectedRevision !== undefined && typeof body.expectedRevision !== "string") {
+      return jsonResponse({ error: "expectedRevision must be a string", code: "invalid_request" }, 400);
+    }
+    const currentRevision = modelContinuityOwnerRevision(config.subagentModels ?? []);
+    if (body.expectedRevision !== undefined && body.expectedRevision !== currentRevision) {
+      return jsonResponse({
+        error: "saved subagent model order changed; reload and retry",
+        code: "stale_reference",
+        revision: currentRevision,
+      }, 409);
+    }
     const chosen = Array.isArray(body.models) ? body.models.filter((m): m is string => typeof m === "string") : [];
     config.subagentModels = chosen;
 
     state.persist();
     await refreshClaudeCodeCatalogBestEffort();
-    return jsonResponse({ ok: true, applied: chosen });
+    return jsonResponse({
+      ok: true,
+      applied: chosen,
+      revision: modelContinuityOwnerRevision(chosen),
+    });
   }
 
   // OAuth login starts a browser/device flow and returns the auth URL/code immediately.

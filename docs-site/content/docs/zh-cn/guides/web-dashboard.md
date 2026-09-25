@@ -125,7 +125,7 @@ Claude Code 也可能调用 provider-specific usage endpoint，因此 FrogProgsy
 | `POST /api/oauth/login` / `GET /api/oauth/status` | 启动并轮询 OAuth login |
 | `GET/POST/PATCH/DELETE /api/claude-profiles` | 管理 Claude Code 目录与按目录隔离的 model overlays。包含 `PATCH` 在内的 mutating methods 只允许 local origin |
 | `POST /api/claude-profiles/:id/inject|refresh|restore` | 对单个 Claude Code 目录执行 inject、refresh 或 restore。`refresh` 会返回用于 Claude Code picker recovery 的 additive `modelReload` metadata；可用时包含稳定的 `frogp claude reload-models <profile-id>` 命令 |
-| `GET /api/subagent-models` / `PUT /api/subagent-models` | 读取/设置 featured subagent models |
+| `GET /api/subagent-models` / `PUT /api/subagent-models` | 读取和设置优先显示的子任务模型。GET 会返回整个已保存列表的不透明 revision；Dashboard 将其作为 `expectedRevision` 发送。过期的条件 PUT 会返回 `409`，不会覆盖较新的顺序。为兼容现有客户端，仍支持不含 `expectedRevision` 的 PUT。 |
 | `GET /api/fallback-settings` / `PUT /api/fallback-settings` | 读取/设置 capability fallback model choice |
 | `GET /api/classifier-settings` / `PUT /api/classifier-settings` | 读取/设置 per-provider classifier models 与 cross-provider classifier fallback |
 | `PUT /api/disabled-models` | 在 Claude Code discovery 中隐藏/显示 routed model |

@@ -1704,6 +1704,7 @@ interface CliModelContinuityReference {
   label: string;
   policyPrimary?: string;
   policyFallbackIndex?: number;
+  ownerRevision?: string;
 }
 
 interface CliModelContinuityReport {
@@ -1921,6 +1922,7 @@ function modelContinuityReport(document: unknown): CliModelContinuityReport {
         reference.policyFallbackIndex !== undefined
         && (!Number.isInteger(reference.policyFallbackIndex) || reference.policyFallbackIndex < 0)
       )
+      || (reference.ownerRevision !== undefined && typeof reference.ownerRevision !== "string")
       || (
         reference.kind === "continuity-policy-candidate"
         && (typeof reference.policyPrimary !== "string" || !Number.isInteger(reference.policyFallbackIndex))
@@ -2060,6 +2062,12 @@ async function handleModelsContinuity(values: string[]): Promise<void> {
       action: "remove",
       referenceId: parsed.referenceId,
       expectedPrimary: reference.primary,
+      ...(reference.ownerRevision === undefined
+        ? {}
+        : { expectedOwnerRevision: reference.ownerRevision }),
+      ...(reference.kind === "continuity-policy" || reference.kind === "continuity-policy-candidate"
+        ? { expectedPolicy: reference.policy }
+        : {}),
     });
     console.log(`Removed ${reference.label}.`);
     return;
@@ -2068,6 +2076,12 @@ async function handleModelsContinuity(values: string[]): Promise<void> {
     action: "replace",
     referenceId: parsed.referenceId,
     expectedPrimary: reference.primary,
+    ...(reference.ownerRevision === undefined
+      ? {}
+      : { expectedOwnerRevision: reference.ownerRevision }),
+    ...(reference.kind === "continuity-policy" || reference.kind === "continuity-policy-candidate"
+      ? { expectedPolicy: reference.policy }
+      : {}),
     replacement: parsed.replacement,
   });
   console.log(`Replaced ${reference.label} with ${parsed.replacement}.`);

@@ -136,7 +136,7 @@ Claude Code가 서비스별 사용량 주소를 호출할 수도 있으므로, F
 | `POST /api/oauth/login` / `GET /api/oauth/status` | OAuth 로그인 시작/상태 확인 |
 | `GET/POST/PATCH/DELETE /api/claude-profiles` | Claude Code 홈과 홈별 모델 오버레이 관리. `PATCH`를 포함한 변경 메서드는 local origin만 허용 |
 | `POST /api/claude-profiles/:id/inject|refresh|restore` | Claude Code 홈 하나만 주입, 새로고침, 복원. `refresh`는 Claude Code 선택기 복구를 위한 additive `modelReload` metadata를 반환하며, 가능하면 안정적인 `frogp claude reload-models <profile-id>` 명령을 포함합니다 |
-| `GET /api/subagent-models` / `PUT /api/subagent-models` | 하위 작업에 먼저 보여줄 모델 읽기/설정 |
+| `GET /api/subagent-models` / `PUT /api/subagent-models` | 하위 작업에 먼저 보여줄 모델을 읽고 설정합니다. GET은 전체 저장 목록의 불투명한 revision을 반환합니다. 대시보드는 이를 `expectedRevision`으로 보내며, 오래된 조건부 PUT은 새 순서를 덮어쓰지 않고 `409`를 반환합니다. 기존 클라이언트를 위해 `expectedRevision` 없는 PUT도 계속 지원합니다. |
 | `GET /api/fallback-settings` / `PUT /api/fallback-settings` | 웹 검색/이미지 대신 처리 모델 읽기/설정 |
 | `GET /api/classifier-settings` / `PUT /api/classifier-settings` | 자동 모드 확인 모델 읽기/설정 |
 | `PUT /api/disabled-models` | Claude Code 모델 목록에서 모델 숨김/표시 |

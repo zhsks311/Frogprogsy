@@ -21,7 +21,9 @@ const {
 } = ClaudeProfiles;
 
 const {
+  assessFeaturedMutationSnapshot,
   confirmModelContinuityReplacement,
+  confirmModelContinuityRemoval,
   loadModelContinuityReport,
   postModelContinuityAction,
   saveModelContinuityPolicy,
@@ -142,7 +144,29 @@ describe("GUI interaction stability", () => {
     }).draft).toEqual(["work/c", "work/a", "work/local"]);
   });
 
-  test("Models continuity failed save sends one set action and restores the saved policy", async () => {
+  test("continuity reconciliation fails closed when the authoritative saved order diverges", () => {
+    const action: Models.ModelContinuityRemoveAction = {
+      action: "remove",
+      referenceId: "subagent:1",
+      expectedPrimary: "work/c",
+      expectedOwnerRevision: "old-owner-revision",
+    };
+    const dirtyDraft = ["work/c", "work/a", "work/b"];
+    const assessment = assessFeaturedMutationSnapshot(
+      dirtyDraft,
+      ["work/a", "work/b", "work/c"],
+      ["work/b"],
+      action,
+    );
+
+    expect(assessment).toEqual({
+      conflict: true,
+      draft: ["work/c", "work/a", "work/b"],
+      saved: ["work/b"],
+    });
+  });
+
+  test("Models continuity failed save preserves the submitted draft outcome", async () => {
     const reference = Models.parseModelContinuityReport({
       policies: {},
       references: [{
@@ -162,7 +186,7 @@ describe("GUI interaction stability", () => {
       circuits: [],
     }).references[0];
     const actions: Models.ModelContinuitySetAction[] = [];
-    const view = await saveModelContinuityPolicy(
+    const result = await saveModelContinuityPolicy(
       reference,
       { fallbacks: ["work/new", "codex/backup"], automatic: "all" },
       async action => {
@@ -177,8 +201,9 @@ describe("GUI interaction stability", () => {
       referenceId: "provider-default:work",
       fallbacks: ["work/new", "codex/backup"],
       automatic: "all",
+      expectedPolicy: { fallbacks: ["work/saved"], automatic: "off" },
     }]);
-    expect(view).toEqual({ fallbacks: ["work/saved"], automatic: "off" });
+    expect(result).toBe("failed");
   });
   test("Models superseded save leaves the local draft untouched", async () => {
     const reference = Models.parseModelContinuityReport({
@@ -203,7 +228,7 @@ describe("GUI interaction stability", () => {
       reference,
       { fallbacks: ["work/draft"], automatic: "all" },
       async () => "superseded",
-    )).toBeNull();
+    )).toBe("superseded");
   });
 
   test("Models gateway alias fallback policy remains saveable", async () => {
@@ -234,16 +259,14 @@ describe("GUI interaction stability", () => {
       },
     );
 
-    expect(saved).toEqual({
-      fallbacks: ["work/first", "codex/second"],
-      automatic: "retired",
-    });
+    expect(saved).toBe("applied");
     expect(actions).toEqual([{
       action: "set",
       primary: "work/session",
       referenceId: "gateway-alias:session",
       fallbacks: ["work/first", "codex/second"],
       automatic: "retired",
+      expectedPolicy: { fallbacks: ["work/first"], automatic: "off" },
     }]);
   });
 
@@ -287,6 +310,10 @@ describe("GUI interaction stability", () => {
       expectedPrimary: "work/old",
       fallbacks: ["work/new", "work/backup"],
       automatic: "transient",
+      expectedPolicy: {
+        fallbacks: ["work/old", "work/backup"],
+        automatic: "transient",
+      },
     }]);
   });
 
@@ -340,6 +367,70 @@ describe("GUI interaction stability", () => {
     }]);
   });
 
+  test("policy candidate replacement and removal include the complete observed policy", async () => {
+    const reference = Models.parseModelContinuityReport({
+      policies: {},
+      references: [{
+        id: "continuity-policy-candidate:work%2Fcurrent:0",
+        kind: "continuity-policy-candidate",
+        primary: "work/old",
+        status: "retired",
+        active: true,
+        actionRequired: true,
+        removable: true,
+        automaticEligible: true,
+        policy: { fallbacks: ["work/old", "work/backup"], automatic: "all" },
+        supportStatus: "validated",
+        label: "Fallback 1",
+        policyPrimary: "work/current",
+        policyFallbackIndex: 0,
+      }],
+      summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
+      circuits: [],
+    }).references[0];
+    const actions: Models.ModelContinuityAction[] = [];
+
+    await confirmModelContinuityReplacement(
+      reference,
+      "work/new",
+      () => true,
+      async action => {
+        actions.push(action);
+        return "applied";
+      },
+    );
+    await confirmModelContinuityRemoval(
+      reference,
+      () => true,
+      async action => {
+        actions.push(action);
+        return "applied";
+      },
+    );
+
+    expect(actions).toEqual([
+      {
+        action: "replace",
+        referenceId: "continuity-policy-candidate:work%2Fcurrent:0",
+        expectedPrimary: "work/old",
+        expectedPolicy: {
+          fallbacks: ["work/old", "work/backup"],
+          automatic: "all",
+        },
+        replacement: "work/new",
+      },
+      {
+        action: "remove",
+        referenceId: "continuity-policy-candidate:work%2Fcurrent:0",
+        expectedPrimary: "work/old",
+        expectedPolicy: {
+          fallbacks: ["work/old", "work/backup"],
+          automatic: "all",
+        },
+      },
+    ]);
+  });
+
 
   test("Models stale continuity action reloads the report and keeps an actionable error", async () => {
     let reloads = 0;
@@ -385,7 +476,7 @@ describe("GUI interaction stability", () => {
 
     expect(result).toEqual({
       ok: false,
-      stale: false,
+      stale: true,
       reloadFailed: true,
       superseded: false,
       message: "model reference changed; reload and retry",

@@ -125,7 +125,7 @@ Most operations should stay in the UI. Use these endpoints only for automation o
 | `POST /api/oauth/login` / `GET /api/oauth/status` | Start and poll OAuth login. |
 | `GET/POST/PATCH/DELETE /api/claude-profiles` | Manage Claude Code homes and per-home model overlays. Mutating methods, including `PATCH`, require a local origin. |
 | `POST /api/claude-profiles/:id/inject|refresh|restore` | Apply, refresh, or restore one Claude Code home. `refresh` returns additive `modelReload` metadata for Claude Code picker recovery, including the stable `frogp claude reload-models <profile-id>` command when available. |
-| `GET /api/subagent-models` / `PUT /api/subagent-models` | Read and set featured subagent models. |
+| `GET /api/subagent-models` / `PUT /api/subagent-models` | Read and set featured subagent models. GET includes an opaque whole-list revision; the dashboard sends it as `expectedRevision`, and a stale conditional PUT returns `409` without overwriting a newer order. PUT without `expectedRevision` remains supported for existing clients. |
 | `GET /api/fallback-settings` / `PUT /api/fallback-settings` | Read and set capability fallback model choices. |
 | `GET /api/classifier-settings` / `PUT /api/classifier-settings` | Read and set per-provider classifier models plus the cross-provider classifier fallback. |
 | `PUT /api/disabled-models` | Hide or show routed models in Claude Code discovery. |
