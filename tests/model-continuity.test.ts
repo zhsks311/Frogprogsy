@@ -7,7 +7,9 @@ import {
   collectModelContinuityReferences,
   normalizeContinuityPolicy,
   qualifiedModelTarget,
+  removeModelContinuityReference,
   replaceModelContinuityReference,
+  summarizeModelContinuityReferences,
   validateContinuityPolicy,
   type ModelContinuityValidationInput,
 } from "../src/model-continuity";
@@ -453,8 +455,9 @@ function inventoryInput() {
     defaultProvider: "work",
     providers: {
       work: {
-        adapter: "anthropic",
+        adapter: "openai-responses",
         baseUrl: "https://work.invalid",
+        apiKey: "test",
         defaultModel: "default",
       },
     },
@@ -521,7 +524,7 @@ function repeatedTargetInput() {
 }
 
 describe("model continuity reference inventory", () => {
-  test("enumerates active owners and excludes dormant typed fields", () => {
+  test("enumerates saved owners and marks only currently effective settings active", () => {
     const rows = collectModelContinuityReferences(inventoryInput());
 
     expect(rows.map(row => row.kind)).toEqual([
@@ -540,19 +543,31 @@ describe("model continuity reference inventory", () => {
       "image-helper",
       "gateway-alias",
     ]);
+    expect(rows.filter(row => row.active).map(row => row.id)).toEqual([
+      "provider-default:work",
+      "long-context",
+      "subagent:0",
+      "mix-coordinator",
+      "mix-agent:0",
+      "web-search-helper",
+      "image-helper",
+    ]);
     expect(rows.some(row => row.id.includes("shadowCompare"))).toBeFalse();
     expect(rows.some(row => row.id.includes("searchProviders"))).toBeFalse();
     expect(rows.find(row => row.id === "mix-agent:0")).toMatchObject({
       primary: "work/agent",
       status: "authentication_required",
       automaticEligible: false,
+      active: true,
+      actionRequired: true,
+      removable: true,
       supportStatus: "validated",
       policy: { fallbacks: [], automatic: "off" },
     });
     expect(rows.find(row => row.id === "subagent:0")?.supportStatus).toBe("discovered");
   });
 
-  test("gateway aliases include only current or retired routes from configured providers", () => {
+  test("gateway aliases retain old routes as diagnostics while removed providers stay absent", () => {
     const input = inventoryInput();
     input.retiredTargets.add("work/alias-retired");
     input.aliases = [
@@ -567,8 +582,14 @@ describe("model continuity reference inventory", () => {
     expect(aliases.map(row => row.id)).toEqual([
       "gateway-alias:claude-frogp-active",
       "gateway-alias:claude-frogp-retired",
+      "gateway-alias:claude-frogp-stale",
     ]);
-    expect(aliases[1]?.status).toBe("retired");
+    expect(aliases.map(row => row.status)).toEqual(["ready", "retired", "policy_invalid"]);
+    expect(aliases.map(row => row.actionRequired)).toEqual([false, false, false]);
+    expect(summarizeModelContinuityReferences(aliases)).toEqual({
+      actionableModelCount: 0,
+      actionableReferenceCount: 0,
+    });
   });
 
   test("same target keeps separate permanent-replacement owners", () => {
@@ -623,6 +644,315 @@ describe("model continuity reference inventory", () => {
     })).toEqual({ ok: true });
     expect(config.subagentModels).toEqual(["native", "work/qualified", "work/new"]);
   });
+
+  test("computes mode-specific model-mixing applicability without hiding saved rows", () => {
+    const input = inventoryInput();
+    const activeMixingIds = () => collectModelContinuityReferences(input)
+      .filter(row => row.kind.startsWith("mix-") && row.active)
+      .map(row => row.id);
+
+    expect(activeMixingIds()).toEqual(["mix-coordinator", "mix-agent:0"]);
+    input.config.modelMixing!.mode = "rules";
+    expect(activeMixingIds()).toEqual(["mix-agent:0", "mix-rule:0"]);
+    input.config.modelMixing!.combine = "pipeline";
+    expect(activeMixingIds()).toEqual(["mix-agent:0", "mix-pipeline:0"]);
+    input.config.modelMixing!.combine = "fusion";
+    expect(activeMixingIds()).toEqual(["mix-agent:0", "mix-panel:0", "mix-judge", "mix-synthesizer"]);
+    input.config.modelMixing!.enabled = false;
+    expect(activeMixingIds()).toEqual([]);
+  });
+
+  test("marks runtime fallbacks active when configured pipeline or fusion targets cannot resolve", () => {
+    const input = inventoryInput();
+    const activeMixingIds = () => collectModelContinuityReferences(input)
+      .filter(row => row.kind.startsWith("mix-") && row.active)
+      .map(row => row.id);
+
+    input.config.modelMixing!.combine = "pipeline";
+    input.config.modelMixing!.pipeline = [];
+    expect(activeMixingIds()).toEqual(["mix-agent:0"]);
+
+    input.config.modelMixing!.pipeline = [
+      { role: "worker", provider: "missing", model: "pipeline" },
+    ];
+    expect(activeMixingIds()).toEqual(["mix-agent:0", "mix-pipeline:0"]);
+    expect(collectModelContinuityReferences(input).find(row => row.id === "mix-pipeline:0"))
+      .toMatchObject({ status: "policy_invalid", actionRequired: true });
+
+    input.config.modelMixing!.combine = "fusion";
+    input.config.modelMixing!.fusion!.judge = { provider: "missing", model: "judge" };
+    expect(activeMixingIds()).toEqual([
+      "mix-coordinator",
+      "mix-agent:0",
+      "mix-panel:0",
+      "mix-judge",
+      "mix-synthesizer",
+    ]);
+
+    input.config.modelMixing!.coordinator = { provider: "missing", model: "coordinator" };
+    expect(collectModelContinuityReferences(input).find(row => row.id === "mix-coordinator"))
+      .toMatchObject({ active: true, status: "policy_invalid", actionRequired: true });
+  });
+
+  test("marks only model-mixing entries that runtime can still select as active", () => {
+    const input = inventoryInput();
+    input.models = [
+      ...input.models,
+      ...Array.from({ length: 9 }, (_, index) => ({
+        namespaced: `work/panel-${index + 1}`,
+        authReady: true,
+      })),
+      { namespaced: "work/backup", authReady: true },
+    ];
+
+    input.config.modelMixing!.combine = "pipeline";
+    input.config.modelMixing!.pipeline = [
+      { role: "worker", provider: "work", model: "pipeline" },
+      { role: "worker", provider: "work", model: "backup" },
+    ];
+    expect(collectModelContinuityReferences(input).find(row => row.id === "mix-pipeline:1"))
+      .toMatchObject({ active: false, actionRequired: false });
+
+    input.config.modelMixing!.combine = "fusion";
+    input.config.modelMixing!.fusion!.panel = Array.from({ length: 9 }, (_, index) => ({
+      provider: "work",
+      model: `panel-${index + 1}`,
+    }));
+    input.retiredTargets.add("work/panel-9");
+    expect(collectModelContinuityReferences(input).find(row => row.id === "mix-panel:8"))
+      .toMatchObject({ active: false, status: "retired", actionRequired: false });
+
+    input.config.modelMixing!.fusion!.multiround = { enabled: true, budgetCalls: 2 };
+    input.retiredTargets.add("work/panel-2");
+    expect(collectModelContinuityReferences(input).find(row => row.id === "mix-panel:0"))
+      .toMatchObject({ active: true });
+    expect(collectModelContinuityReferences(input).find(row => row.id === "mix-panel:1"))
+      .toMatchObject({ active: false, status: "retired", actionRequired: false });
+
+    input.config.modelMixing!.combine = "route";
+    input.config.modelMixing!.mode = "rules";
+    input.config.modelMixing!.rules = [
+      { provider: "work", model: "rule", match: {} },
+      { provider: "work", model: "backup", match: { taskKeywords: ["special"] } },
+    ];
+    input.retiredTargets.add("work/backup");
+    expect(collectModelContinuityReferences(input).find(row => row.id === "mix-rule:1"))
+      .toMatchObject({ active: false, status: "retired", actionRequired: false });
+
+    input.config.modelMixing!.agents!.push({
+      provider: "work",
+      model: "backup",
+    });
+    expect(collectModelContinuityReferences(input).find(row => row.id === "mix-agent:1"))
+      .toMatchObject({ active: false, status: "retired", actionRequired: false });
+  });
+
+  test("hidden active targets still require action while inactive saved targets remain diagnostic", () => {
+    const input = inventoryInput();
+    input.config.disabledModels = ["work/subagent", "work/classifier"];
+    const rows = collectModelContinuityReferences(input);
+
+    expect(rows.find(row => row.id === "subagent:0")).toMatchObject({
+      active: true,
+      status: "policy_invalid",
+      actionRequired: true,
+    });
+    expect(rows.find(row => row.id === "classifier")).toMatchObject({
+      active: false,
+      status: "policy_invalid",
+      actionRequired: false,
+    });
+  });
+
+  test("counts unique actionable models separately from affected locations", () => {
+    const input = repeatedTargetInput();
+    input.config.autoModeClassifierEnabled = true;
+    input.retiredTargets.add("codex/gpt-x");
+    const references = collectModelContinuityReferences(input);
+
+    expect(summarizeModelContinuityReferences(references)).toEqual({
+      actionableModelCount: 1,
+      actionableReferenceCount: 3,
+    });
+  });
+
+  test("enabled continuity policies are active candidates and disabled policies are diagnostic", () => {
+    const input = inventoryInput();
+    input.config.modelContinuity = {
+      "work/default": { fallbacks: [], automatic: "off" },
+    };
+    input.retiredTargets.add("work/default");
+    let policy = collectModelContinuityReferences(input)
+      .find(row => row.kind === "continuity-policy");
+    expect(policy).toMatchObject({
+      primary: "work/default",
+      active: false,
+      status: "retired",
+      actionRequired: false,
+    });
+
+    input.config.modelContinuity["work/default"] = {
+      fallbacks: ["work/long"],
+      automatic: "retired",
+    };
+    policy = collectModelContinuityReferences(input)
+      .find(row => row.kind === "continuity-policy");
+    expect(policy).toMatchObject({ active: true, status: "retired", actionRequired: true });
+  });
+
+  test("attributes a retired fallback candidate to its model and owning policy location", () => {
+    const config: FrogConfig = {
+      port: 3764,
+      defaultProvider: "demo",
+      providers: {
+        demo: {
+          adapter: "anthropic",
+          baseUrl: "https://demo.invalid",
+          defaultModel: "current",
+        },
+      },
+      longContext: { thresholdTokens: 100_000, provider: "demo", model: "old" },
+      modelContinuity: {
+        "demo/current": {
+          fallbacks: ["demo/old"],
+          automatic: "transient",
+        },
+      },
+    };
+    const references = collectModelContinuityReferences({
+      config,
+      models: [
+        { namespaced: "demo/current" },
+        { namespaced: "demo/old" },
+      ],
+      retiredTargets: new Set(["demo/old"]),
+      aliases: [],
+    });
+    const actionable = references.filter(reference => reference.actionRequired);
+
+    expect(actionable.map(reference => ({
+      id: reference.id,
+      primary: reference.primary,
+      policyPrimary: reference.policyPrimary,
+      policyFallbackIndex: reference.policyFallbackIndex,
+    }))).toEqual([
+      {
+        id: "long-context",
+        primary: "demo/old",
+        policyPrimary: undefined,
+        policyFallbackIndex: undefined,
+      },
+      {
+        id: "continuity-policy-candidate:demo%2Fcurrent:0",
+        primary: "demo/old",
+        policyPrimary: "demo/current",
+        policyFallbackIndex: 0,
+      },
+    ]);
+    expect(references.find(reference => reference.id === "continuity-policy:demo%2Fcurrent"))
+      .toMatchObject({ primary: "demo/current", status: "ready", actionRequired: false });
+    expect(summarizeModelContinuityReferences(references)).toEqual({
+      actionableModelCount: 1,
+      actionableReferenceCount: 2,
+    });
+  });
+
+  test("attributes malformed fallback structure to the exact candidate", () => {
+    const input = inventoryInput();
+    input.config.modelContinuity = {
+      "work/default": {
+        fallbacks: ["work/long", "work/long"],
+        automatic: "transient",
+      },
+    };
+    let references = collectModelContinuityReferences(input);
+    expect(references.find(row => row.id === "continuity-policy:work%2Fdefault"))
+      .toMatchObject({ status: "ready", actionRequired: false });
+    expect(references.find(row => row.id === "continuity-policy-candidate:work%2Fdefault:0"))
+      .toMatchObject({ status: "ready", actionRequired: false });
+    expect(references.find(row => row.id === "continuity-policy-candidate:work%2Fdefault:1"))
+      .toMatchObject({ status: "policy_invalid", actionRequired: true });
+
+    input.config.modelContinuity["work/default"] = {
+      fallbacks: ["work/default"],
+      automatic: "transient",
+    };
+    references = collectModelContinuityReferences(input);
+    expect(references.find(row => row.id === "continuity-policy-candidate:work%2Fdefault:0"))
+      .toMatchObject({ status: "policy_invalid", actionRequired: true });
+
+    input.config.modelContinuity["work/default"] = {
+      fallbacks: ["work/long", "work/subagent", "work/classifier", "work/backup"],
+      automatic: "transient",
+    };
+    input.models = [...input.models, { namespaced: "work/backup", authReady: true }];
+    references = collectModelContinuityReferences(input);
+    expect(references.find(row => row.id === "continuity-policy-candidate:work%2Fdefault:3"))
+      .toMatchObject({ status: "policy_invalid", actionRequired: true });
+  });
+
+  test("reports runtime defaults for enabled helper settings with omitted provider and model", () => {
+    const config: FrogConfig = {
+      port: 3764,
+      defaultProvider: "codex",
+      providers: {
+        codex: {
+          adapter: "openai-responses",
+          baseUrl: "https://codex.invalid",
+          authMode: "forward",
+        },
+      },
+      webSearchFallback: { enabled: true },
+      imageFallback: { enabled: true },
+    };
+    const references = collectModelContinuityReferences({
+      config,
+      models: [{ namespaced: "codex/gpt-5.4-mini" }],
+      retiredTargets: new Set(),
+      aliases: [],
+    });
+
+    expect(references
+      .filter(row => row.kind === "web-search-helper" || row.kind === "image-helper")
+      .map(row => ({ id: row.id, primary: row.primary, active: row.active }))).toEqual([
+      { id: "web-search-helper", primary: "codex/gpt-5.4-mini", active: true },
+      { id: "image-helper", primary: "codex/gpt-5.4-mini", active: true },
+    ]);
+  });
+
+  test("reports the helper provider selected by runtime instead of an ineligible preference", () => {
+    const config: FrogConfig = {
+      port: 3764,
+      defaultProvider: "bad",
+      providers: {
+        bad: {
+          adapter: "anthropic",
+          baseUrl: "https://bad.invalid",
+          apiKey: "test",
+        },
+        actual: {
+          adapter: "openai-responses",
+          baseUrl: "https://actual.invalid",
+          apiKey: "test",
+        },
+      },
+      webSearchFallback: { enabled: true, provider: "bad", model: "gpt-5.4-mini" },
+      imageFallback: { enabled: true, provider: "bad", model: "gpt-5.4-mini" },
+    };
+    const references = collectModelContinuityReferences({
+      config,
+      models: [{ namespaced: "actual/gpt-5.4-mini" }],
+      retiredTargets: new Set(),
+      aliases: [],
+    });
+
+    expect(references
+      .filter(row => row.kind === "web-search-helper" || row.kind === "image-helper")
+      .map(row => row.primary)).toEqual([
+      "actual/gpt-5.4-mini",
+      "actual/gpt-5.4-mini",
+    ]);
+  });
 });
 
 function replacementConfig(): FrogConfig {
@@ -631,8 +961,9 @@ function replacementConfig(): FrogConfig {
     defaultProvider: "work",
     providers: {
       work: {
-        adapter: "anthropic",
+        adapter: "openai-responses",
         baseUrl: "https://work.invalid",
+        apiKey: "test",
         defaultModel: "old",
         models: ["old", "new"],
       },
@@ -640,6 +971,7 @@ function replacementConfig(): FrogConfig {
         adapter: "openai-responses",
         baseUrl: "https://codex.invalid",
         models: ["old", "new"],
+        apiKey: "test",
       },
     },
     longContext: { thresholdTokens: 100_000, provider: "work", model: "old" },
@@ -850,6 +1182,27 @@ describe("model continuity permanent replacement", () => {
     });
   });
 
+  test("replaces one policy fallback without changing its mode or sibling candidates", () => {
+    const config = replacementConfig();
+    config.modelContinuity = {
+      "work/new": {
+        fallbacks: ["work/old", "codex/old"],
+        automatic: "transient",
+      },
+    };
+
+    expect(replace(
+      config,
+      "continuity-policy-candidate:work%2Fnew:0",
+      "work/old",
+      "codex/new",
+    )).toEqual({ ok: true });
+    expect(config.modelContinuity["work/new"]).toEqual({
+      fallbacks: ["codex/new", "codex/old"],
+      automatic: "transient",
+    });
+  });
+
   test("gateway aliases direct permanent changes to route policy", () => {
     const config = replacementConfig();
 
@@ -862,6 +1215,148 @@ describe("model continuity permanent replacement", () => {
       ok: false,
       status: 400,
       error: "gateway aliases are past-session identifiers; configure a route policy instead",
+    });
+  });
+});
+
+
+describe("model continuity setting removal", () => {
+  test("rejects required provider defaults and enabled classifier targets", () => {
+    const config = replacementConfig();
+    config.autoModeClassifierEnabled = true;
+
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "provider-default:work",
+      expectedPrimary: "work/old",
+    })).toMatchObject({ ok: false, status: 400 });
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "classifier",
+      expectedPrimary: "work/old",
+    })).toMatchObject({ ok: false, status: 400 });
+    expect(config.providers.work.defaultModel).toBe("old");
+    expect(config.autoModeClassifier).toEqual({ provider: "work", model: "old" });
+  });
+
+  test("removes optional singleton and indexed settings while preserving explicit empty lists", () => {
+    const config = replacementConfig();
+
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "long-context",
+      expectedPrimary: "work/old",
+    })).toEqual({ ok: true });
+    expect(config.longContext).toBeUndefined();
+
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "subagent:1",
+      expectedPrimary: "codex/old",
+    })).toEqual({ ok: true });
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "subagent:0",
+      expectedPrimary: "work/old",
+    })).toEqual({ ok: true });
+    expect(config.subagentModels).toEqual([]);
+
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "mix-agent:1",
+      expectedPrimary: "codex/old",
+    })).toEqual({ ok: true });
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "mix-agent:0",
+      expectedPrimary: "work/old",
+    })).toEqual({ ok: true });
+    expect(config.modelMixing?.agents).toEqual([]);
+  });
+  test("removes incomplete saved targets using their exact raw owner", () => {
+    const config = replacementConfig();
+    config.modelMixing!.agents![0] = { provider: "work", model: "" };
+    config.modelMixing!.fusion!.judge = { provider: "work", model: "" };
+    const references = collectModelContinuityReferences({
+      config,
+      models: REPLACEMENT_MODELS,
+      retiredTargets: new Set(),
+      aliases: [],
+    });
+
+    expect(references.find(reference => reference.id === "mix-agent:0"))
+      .toMatchObject({ primary: "work/", status: "policy_invalid", removable: true });
+    expect(references.find(reference => reference.id === "mix-judge"))
+      .toMatchObject({ primary: "work/", status: "policy_invalid", removable: true });
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "mix-judge",
+      expectedPrimary: "work/",
+    })).toEqual({ ok: true });
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "mix-agent:0",
+      expectedPrimary: "work/",
+    })).toEqual({ ok: true });
+    expect(config.modelMixing?.fusion?.judge).toBeUndefined();
+    expect(config.modelMixing?.agents).toEqual([{ provider: "codex", model: "old" }]);
+  });
+
+  test("removes one policy fallback without changing its mode or sibling candidates", () => {
+    const config = replacementConfig();
+    config.modelContinuity = {
+      "work/new": {
+        fallbacks: ["work/old", "codex/old"],
+        automatic: "transient",
+      },
+    };
+
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "continuity-policy-candidate:work%2Fnew:0",
+      expectedPrimary: "work/old",
+    })).toEqual({ ok: true });
+    expect(config.modelContinuity["work/new"]).toEqual({
+      fallbacks: ["codex/old"],
+      automatic: "transient",
+    });
+  });
+
+
+  test("removes a policy entry without changing its referenced model setting", () => {
+    const config = replacementConfig();
+    config.modelContinuity = {
+      "work/old": { fallbacks: ["work/new"], automatic: "retired" },
+    };
+
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "continuity-policy:work%2Fold",
+      expectedPrimary: "work/old",
+    })).toEqual({ ok: true });
+    expect(config.modelContinuity).toBeUndefined();
+    expect(config.providers.work.defaultModel).toBe("old");
+  });
+
+  test("disables helper routes and preserves their unrelated settings", () => {
+    const config = replacementConfig();
+    config.webSearchFallback = {
+      enabled: true,
+      provider: "work",
+      model: "old",
+      reasoning: "low",
+      maxSearchesPerTurn: 4,
+    };
+
+    expect(removeModelContinuityReference({
+      config,
+      referenceId: "web-search-helper",
+      expectedPrimary: "work/old",
+    })).toEqual({ ok: true });
+    expect(config.webSearchFallback).toEqual({
+      enabled: false,
+      reasoning: "low",
+      maxSearchesPerTurn: 4,
     });
   });
 });

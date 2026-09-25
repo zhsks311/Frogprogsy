@@ -1695,15 +1695,22 @@ interface CliModelContinuityReference {
   kind: string;
   primary: string;
   status: "ready" | "retired" | "authentication_required" | "policy_invalid";
+  active: boolean;
+  actionRequired: boolean;
+  removable: boolean;
   automaticEligible: boolean;
   policy: CliModelContinuityPolicy;
   supportStatus: "validated" | "discovered" | "unknown";
   label: string;
+  policyPrimary?: string;
+  policyFallbackIndex?: number;
+  ownerRevision?: string;
 }
 
 interface CliModelContinuityReport {
   policies: Record<string, CliModelContinuityPolicy>;
   references: CliModelContinuityReference[];
+  summary: { actionableModelCount: number; actionableReferenceCount: number };
   circuits: Array<{ primary: string; reason: string; retryAt: number }>;
 }
 
@@ -1715,12 +1722,14 @@ type ParsedModelsContinuityCommand =
     fallbacks: string[];
     automatic: CliModelContinuityAutomatic;
   }
-  | { command: "replace"; referenceId: string; replacement: string };
+  | { command: "replace"; referenceId: string; replacement: string }
+  | { command: "remove"; referenceId: string };
 
 const MODELS_CONTINUITY_USAGE = `Usage:
   frogp models continuity [--json]
   frogp models continuity set <provider/model> --fallback <provider/model>... --auto off|retired|transient|all
-  frogp models continuity replace <reference-id> <provider/model>`;
+  frogp models continuity replace <reference-id> <provider/model>
+  frogp models continuity remove <reference-id>`;
 
 function failModelsContinuity(message: string): never {
   console.error(`${message}\n${MODELS_CONTINUITY_USAGE}`);
@@ -1793,6 +1802,15 @@ function parseModelsContinuityCommand(values: string[]): ParsedModelsContinuityC
     }
     return { command: "replace", referenceId: operands[0], replacement: operands[1] };
   }
+  if (subcommand === "remove") {
+    const operands = values.slice(1);
+    const unknownOption = operands.find(value => value.startsWith("-"));
+    if (unknownOption) failModelsContinuity(`Unknown continuity remove option: ${unknownOption}`);
+    if (operands.length !== 1) {
+      failModelsContinuity("Continuity remove requires exactly one reference id.");
+    }
+    return { command: "remove", referenceId: operands[0] };
+  }
   failModelsContinuity(`Unknown continuity command: ${subcommand}`);
 }
 
@@ -1860,11 +1878,17 @@ function modelContinuityReport(document: unknown): CliModelContinuityReport {
     failModelsContinuity("Model continuity API returned an invalid report.");
   }
   const candidate = document as Record<string, unknown>;
+  const summary = candidate.summary as Record<string, unknown> | undefined;
   if (
     !candidate.policies
     || typeof candidate.policies !== "object"
     || Array.isArray(candidate.policies)
     || !Array.isArray(candidate.references)
+    || !summary
+    || !Number.isInteger(summary.actionableModelCount)
+    || !Number.isInteger(summary.actionableReferenceCount)
+    || (summary.actionableModelCount as number) < 0
+    || (summary.actionableReferenceCount as number) < 0
     || !Array.isArray(candidate.circuits)
   ) {
     failModelsContinuity("Model continuity API returned an invalid report.");
@@ -1881,6 +1905,9 @@ function modelContinuityReport(document: unknown): CliModelContinuityReport {
         && reference.status !== "retired"
         && reference.status !== "authentication_required"
         && reference.status !== "policy_invalid")
+      || typeof reference.active !== "boolean"
+      || typeof reference.actionRequired !== "boolean"
+      || typeof reference.removable !== "boolean"
       || typeof reference.automaticEligible !== "boolean"
       || !reference.policy
       || typeof reference.policy !== "object"
@@ -1890,6 +1917,16 @@ function modelContinuityReport(document: unknown): CliModelContinuityReport {
         && reference.policy.automatic !== "retired"
         && reference.policy.automatic !== "transient"
         && reference.policy.automatic !== "all")
+      || (reference.policyPrimary !== undefined && typeof reference.policyPrimary !== "string")
+      || (
+        reference.policyFallbackIndex !== undefined
+        && (!Number.isInteger(reference.policyFallbackIndex) || reference.policyFallbackIndex < 0)
+      )
+      || (reference.ownerRevision !== undefined && typeof reference.ownerRevision !== "string")
+      || (
+        reference.kind === "continuity-policy-candidate"
+        && (typeof reference.policyPrimary !== "string" || !Number.isInteger(reference.policyFallbackIndex))
+      )
     ) {
       failModelsContinuity("Model continuity API returned an invalid report.");
     }
@@ -1912,42 +1949,75 @@ function renderHumanModelContinuity(report: CliModelContinuityReport, paint: boo
   if (report.references.length === 0) {
     console.log("No configured model references were reported.");
   }
-  for (const reference of report.references) {
-    const header = `[${reference.status}] ${reference.label} · ${reference.primary}`;
-    if (reference.status === "ready") console.log(success(header, paint));
-    else if (reference.status === "policy_invalid") console.log(errorText(header, paint));
-    else console.log(warn(header, paint));
-    console.log(`  Automatic: ${reference.policy.automatic}`);
-    console.log(`  Fallbacks: ${reference.policy.fallbacks.length > 0 ? reference.policy.fallbacks.join(", ") : "none"}`);
-    if (reference.status === "retired") {
-      console.log(`  Impact: ${reference.label} points to a retired model.`);
-    } else if (reference.status === "authentication_required") {
-      console.log(`  Impact: ${reference.label} cannot authenticate this model.`);
-    } else if (reference.status === "policy_invalid") {
-      console.log(`  Impact: ${reference.label} has an invalid continuity policy.`);
-    }
-    const replacement = reference.policy.fallbacks[0];
-    if (reference.status === "retired") {
-      if (reference.kind === "gateway-alias") {
-        if (replacement) {
-          const fallbackArgs = reference.policy.fallbacks
-            .map(fallback => `--fallback ${fallback}`)
-            .join(" ");
-          console.log(`  Policy: frogp models continuity set ${reference.primary} ${fallbackArgs} --auto retired`);
-        } else {
-          console.log("  Next: frogp models");
-        }
-      } else if (replacement) {
-        console.log(`  Replace: frogp models continuity replace ${reference.id} ${replacement}`);
-      } else {
-        console.log("  Next: frogp models");
+
+  const actionable = report.references.filter(reference => reference.actionRequired);
+  console.log(
+    actionable.length > 0
+      ? warn(
+        `Action required for ${report.summary.actionableModelCount} model(s) in ${report.summary.actionableReferenceCount} location(s).`,
+        paint,
+      )
+      : success("No active model setting requires attention.", paint),
+  );
+
+  const actionableByModel = new Map<string, CliModelContinuityReference[]>();
+  for (const reference of actionable) {
+    const group = actionableByModel.get(reference.primary) ?? [];
+    group.push(reference);
+    actionableByModel.set(reference.primary, group);
+  }
+  for (const [primary, references] of actionableByModel) {
+    console.log(warn(`${primary} · ${references.length} location(s)`, paint));
+    for (const reference of references) {
+      const replacement = reference.policy.fallbacks.find(fallback => fallback !== reference.primary);
+      const header = `  [${reference.status}] ${reference.label}`;
+      if (reference.status === "policy_invalid") console.log(errorText(header, paint));
+      else console.log(warn(header, paint));
+      console.log(`    Automatic: ${reference.policy.automatic}`);
+      console.log(`    Fallbacks: ${reference.policy.fallbacks.length > 0 ? reference.policy.fallbacks.join(", ") : "none"}`);
+      if (reference.status === "retired") {
+        console.log(`    Impact: This active setting points to a retired model.`);
+      } else if (reference.status === "authentication_required") {
+        console.log(`    Impact: This active setting cannot authenticate the model.`);
+      } else if (reference.status === "policy_invalid") {
+        console.log(`    Impact: This active setting is incomplete or invalid.`);
       }
-    } else if (reference.status === "authentication_required") {
-      console.log(`  Sign in: frogp login ${reference.primary.split("/", 1)[0]}`);
-    } else if (reference.status === "policy_invalid") {
-      console.log(`  Inspect: frogp models continuity --json`);
+      if (reference.kind === "continuity-policy" || reference.kind === "continuity-policy-candidate") {
+        const policyPrimary = reference.policyPrimary ?? reference.primary;
+        const fallbackArgs = reference.policy.fallbacks.length > 0
+          ? reference.policy.fallbacks.map((fallback, index) =>
+            reference.kind === "continuity-policy-candidate" && index === reference.policyFallbackIndex
+              ? "<provider/model>"
+              : fallback)
+          : ["<provider/model>"];
+        console.log(`    Policy: frogp models continuity set ${policyPrimary} ${fallbackArgs.map(fallback => `--fallback ${fallback}`).join(" ")} --auto ${reference.policy.automatic}`);
+      }
+      if (reference.kind !== "continuity-policy" && reference.kind !== "continuity-policy-candidate" && replacement) {
+        console.log(`    Replace: frogp models continuity replace ${reference.id} ${replacement}`);
+      } else if (reference.kind !== "continuity-policy" && reference.kind !== "continuity-policy-candidate" && !reference.removable) {
+        console.log("    Change: frogp models");
+      }
+      if (reference.removable) {
+        console.log(`    Remove: frogp models continuity remove ${reference.id}`);
+      }
+      if (reference.status === "authentication_required") {
+        console.log(`    Sign in: frogp login ${reference.primary.split("/", 1)[0]}`);
+      } else if (reference.status === "policy_invalid") {
+        console.log("    Inspect: frogp models continuity --json");
+      }
     }
   }
+
+  const diagnostics = report.references.filter(
+    reference => !reference.actionRequired && reference.status !== "ready",
+  );
+  if (diagnostics.length > 0) {
+    console.log("Diagnostics (no active setting requires a change)");
+    for (const reference of diagnostics) {
+      console.log(`  [${reference.status}] ${reference.label} · ${reference.primary}`);
+    }
+  }
+
   if (report.circuits.length > 0) {
     console.log(warn("Open continuity circuits", paint));
     for (const circuit of report.circuits) {
@@ -1987,10 +2057,31 @@ async function handleModelsContinuity(values: string[]): Promise<void> {
     console.error(`❌ Unknown model reference. Refresh the report with: frogp models continuity`);
     process.exit(1);
   }
+  if (parsed.command === "remove") {
+    await requestModelContinuity(apiBase, {
+      action: "remove",
+      referenceId: parsed.referenceId,
+      expectedPrimary: reference.primary,
+      ...(reference.ownerRevision === undefined
+        ? {}
+        : { expectedOwnerRevision: reference.ownerRevision }),
+      ...(reference.kind === "continuity-policy" || reference.kind === "continuity-policy-candidate"
+        ? { expectedPolicy: reference.policy }
+        : {}),
+    });
+    console.log(`Removed ${reference.label}.`);
+    return;
+  }
   await requestModelContinuity(apiBase, {
     action: "replace",
     referenceId: parsed.referenceId,
     expectedPrimary: reference.primary,
+    ...(reference.ownerRevision === undefined
+      ? {}
+      : { expectedOwnerRevision: reference.ownerRevision }),
+    ...(reference.kind === "continuity-policy" || reference.kind === "continuity-policy-candidate"
+      ? { expectedPolicy: reference.policy }
+      : {}),
     replacement: parsed.replacement,
   });
   console.log(`Replaced ${reference.label} with ${parsed.replacement}.`);

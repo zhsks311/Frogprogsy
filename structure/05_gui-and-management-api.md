@@ -202,24 +202,42 @@ under the unchanged Branch-B custody contract.
 
 The running proxy is the shared source of truth for the GUI and CLI:
 
-- `GET /api/model-continuity` returns `{policies,references,circuits}`. `policies` contains only
-  normalized `{fallbacks,automatic}` values. Reference fields are limited to `id`, `kind`, `primary`,
-  `status`, `automaticEligible`, `policy`, `supportStatus`, and `label`. References sort by problem
-  severity (`retired`, then `policy_invalid`/`authentication_required`, then `ready`), label, and id.
-  `circuits` contains only unexpired `{primary,reason,retryAt}` rows, sorted by `primary`; `retryAt` is
-  epoch milliseconds. The response never includes prompts, request or upstream bodies, credentials,
-  provider URLs, or local paths.
-- `POST /api/model-continuity` accepts exactly one discriminated action. `set` is
-  `{action:"set",primary,fallbacks,automatic,referenceId?}`; `replace` is
-  `{action:"replace",referenceId,expectedPrimary,replacement}`. Unknown fields, malformed values, and
-  unknown actions return a stable `{error,code}` without persisting. A stale permanent-replacement
-  owner returns `409`. Each successful action persists exactly once; successful replacement then uses
-  the existing best-effort Claude catalog refresh path.
+- `GET /api/model-continuity` returns `{policies,references,summary,circuits}`. `policies` contains only
+  normalized `{fallbacks,automatic}` values. `summary` contains separate unique actionable-model and
+  actionable-reference counts. Reference fields are limited to `id`, `kind`, `primary`, `status`,
+  `active`, `actionRequired`, `removable`, `automaticEligible`, `policy`, `supportStatus`, and `label`;
+  `continuity-policy-candidate` rows additionally expose `policyPrimary` and zero-based
+  `policyFallbackIndex` so clients can update or remove the exact candidate without blaming or replacing
+  a healthy policy primary. Indexed subagent and model-mixing rows additionally expose an opaque
+  `ownerRevision` for their complete raw owning list.
+  References with `actionRequired:true` sort before diagnostics; status severity, label, and id provide
+  stable ordering within each group. `circuits` contains only unexpired `{primary,reason,retryAt}` rows,
+  sorted by `primary`; `retryAt` is epoch milliseconds. The response never includes prompts, request or
+  upstream bodies, credentials, provider URLs, or local paths.
+- `POST /api/model-continuity` accepts exactly one discriminated action. A reference-bound `set` is
+  `{action:"set",primary,fallbacks,automatic,referenceId,expectedPrimary?,expectedPolicy}` and compares
+  the complete normalized policy before replacing it; an intentional whole-policy CLI `set` omits
+  `referenceId`, `expectedPrimary`, and `expectedPolicy`. `replace` is
+  `{action:"replace",referenceId,expectedPrimary,expectedOwnerRevision?,expectedPolicy?,replacement}`;
+  `remove` is
+  `{action:"remove",referenceId,expectedPrimary,expectedOwnerRevision?,expectedPolicy?}`. Policy-owned
+  replacement and removal require the complete normalized policy returned by the report. Indexed
+  references require the owner revision returned by the report. Immediately before mutation, the server
+  re-reads the current policy and raw owner list without yielding; a concurrent sibling reorder,
+  insertion, removal, alias spelling change, metadata change, or policy edit therefore returns `409`
+  instead of mutating a shifted owner or overwriting a newer policy. Unknown fields, malformed values,
+  and unknown actions return a stable `{error,code}` without persisting. Each successful action persists
+  exactly once; successful replacement or removal then uses the existing best-effort Claude catalog
+  refresh path.
+- `GET /api/subagent-models` returns the chosen/available lists plus an opaque revision of the complete
+  saved chosen list. `PUT /api/subagent-models` keeps `{models}` compatible for existing clients and
+  optionally accepts `expectedRevision`; the Models dashboard always sends its observed revision. A
+  mismatch returns `409 stale_reference` without persisting or refreshing the catalog.
 - Automatic continuity is an ordinary routed-request policy, not an owner-wide behavior. A
   `referenceId` for the classifier, subagent, model-mixing internals, or helper models cannot enable
   automatic fallback. The same exact provider/model may still have an ordinary route policy when
-  `set` omits `referenceId`. Ineligible references remain available for explicit permanent
-  replacement.
+  `set` omits `referenceId`. Ineligible references remain available for an explicit replacement or,
+  where `removable:true`, removal.
 
 ### Model Mixing endpoints
 

@@ -73,9 +73,10 @@ frogp claude reload-models <profile-id>
 frogp models continuity
 frogp models continuity set <provider/model> --fallback <provider/model> --auto retired
 frogp models continuity replace <reference-id> <provider/model>
+frogp models continuity remove <reference-id>
 ```
 
-请从报告中原样复制 `<reference-id>`；它能防止旧报告改错设置。`set` 保留已配置的主模型，只保存请求时使用的精确替代目标。`replace` 验证后修改已保存的 owner。Dashboard **Models** 页面提供相同的 problem-first 操作流程。
+请从报告中原样复制 `<reference-id>`；它能防止旧报告改错设置。`set` 保留已配置的主模型，并保存准确的请求时替代顺序。`replace` 验证后修改已保存的设置。`remove` 可删除可选设置、一个准确的替代模型，或整条模型连续性规则；只删除一个替代模型时会保留自动模式和其他候选。Provider 默认模型不能删除。旧会话 alias 和未启用设置只作为诊断信息显示，无需修改。Dashboard **Models** 页面提供相同操作。
 
 
 ## 3. 检查 Auth/OAuth

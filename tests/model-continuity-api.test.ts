@@ -12,6 +12,7 @@ import type { FrogConfig, ModelContinuityPolicy } from "../src/types";
 interface ContinuityReport {
   policies: Record<string, ModelContinuityPolicy>;
   references: ModelContinuityReference[];
+  summary: { actionableModelCount: number; actionableReferenceCount: number };
   circuits: Array<{ primary: string; reason: ContinuityReason; retryAt: number }>;
 }
 
@@ -148,29 +149,41 @@ describe("model continuity management report", () => {
 
     expect(response?.status).toBe(200);
     const report = await response!.json() as ContinuityReport;
-    expect(Object.keys(report).sort()).toEqual(["circuits", "policies", "references"]);
+    expect(Object.keys(report).sort()).toEqual(["circuits", "policies", "references", "summary"]);
     expect(report.policies).toEqual({
       "work/new": { fallbacks: [], automatic: "off" },
       "work/old": { fallbacks: ["work/new"], automatic: "retired" },
     });
+    const actionable = report.references.filter(reference => reference.actionRequired);
+    expect(report.summary).toEqual({
+      actionableModelCount: new Set(actionable.map(reference => reference.primary)).size,
+      actionableReferenceCount: actionable.length,
+    });
+    expect(actionable.filter(reference => reference.primary === "work/old")).toHaveLength(2);
     expect(report.circuits).toEqual([
       { primary: "work/a", reason: "http_429", retryAt: 32_000 },
       { primary: "work/z", reason: "http_5xx", retryAt: 31_000 },
     ]);
 
-    expect(report.references[0]).toMatchObject({
+    expect(report.references.find(reference => reference.id === "provider-default:work")).toMatchObject({
       kind: "provider-default",
       status: "retired",
       primary: "work/old",
+      active: true,
+      actionRequired: true,
+      removable: false,
       automaticEligible: true,
     });
     const expectedReferenceFields = [
+      "actionRequired",
+      "active",
       "automaticEligible",
       "id",
       "kind",
       "label",
       "policy",
       "primary",
+      "removable",
       "status",
       "supportStatus",
     ];
@@ -189,9 +202,17 @@ describe("model continuity management report", () => {
       "web-search-helper",
       "image-helper",
       "gateway-alias",
+      "continuity-policy",
+      "continuity-policy-candidate",
     ];
     for (const reference of report.references) {
-      expect(Object.keys(reference).sort()).toEqual(expectedReferenceFields);
+      expect(Object.keys(reference).sort()).toEqual([
+        ...expectedReferenceFields,
+        ...(reference.kind === "continuity-policy-candidate"
+          ? ["policyFallbackIndex", "policyPrimary"]
+          : []),
+        ...(reference.ownerRevision === undefined ? [] : ["ownerRevision"]),
+      ].sort());
       expect(referenceKinds).toContain(reference.kind);
       expect(["ready", "retired", "authentication_required", "policy_invalid"]).toContain(reference.status);
       expect(["validated", "discovered", "unknown"]).toContain(reference.supportStatus);
@@ -200,8 +221,8 @@ describe("model continuity management report", () => {
     for (let index = 1; index < report.references.length; index += 1) {
       const previous = report.references[index - 1]!;
       const current = report.references[index]!;
-      const previousKey = [severity(previous.status), previous.label, previous.id];
-      const currentKey = [severity(current.status), current.label, current.id];
+      const previousKey = [previous.actionRequired ? 0 : 1, severity(previous.status), previous.label, previous.id];
+      const currentKey = [current.actionRequired ? 0 : 1, severity(current.status), current.label, current.id];
       expect(previousKey.join("\u0000") <= currentKey.join("\u0000")).toBeTrue();
     }
 
@@ -239,6 +260,30 @@ describe("model continuity management actions", () => {
     expect(refreshes).toBe(0);
   });
 
+  test("candidate policy edit rejects a stale fallback target before persistence", async () => {
+    const configValue = config();
+    let saves = 0;
+    const response = await request("POST", {
+      action: "set",
+      referenceId: "continuity-policy-candidate:work%2Fold:0",
+      primary: "work/old",
+      expectedPrimary: "work/moved",
+      fallbacks: ["noauth/login"],
+      automatic: "retired",
+      expectedPolicy: { fallbacks: ["work/new"], automatic: "retired" },
+    }, configValue, {
+      saveConfig: () => { saves += 1; },
+    });
+
+    expect(response?.status).toBe(409);
+    expect(await response!.json()).toMatchObject({ code: "stale_reference" });
+    expect(configValue.modelContinuity?.["work/old"]).toEqual({
+      fallbacks: ["work/new"],
+      automatic: "retired",
+    });
+    expect(saves).toBe(0);
+  });
+
   test("set deletes the off-and-empty entry and persists exactly once", async () => {
     const configValue = config();
     let saves = 0;
@@ -271,6 +316,7 @@ describe("model continuity management actions", () => {
       primary: "work/new",
       fallbacks: ["noauth/login"],
       automatic: "all",
+      expectedPolicy: { fallbacks: [], automatic: "off" },
     }, classifierConfig, deps);
     expect(rejected?.status).toBe(400);
     expect(await rejected!.json()).toMatchObject({ code: "automatic_ineligible" });
@@ -341,6 +387,251 @@ describe("model continuity management actions", () => {
     expect(refreshes).toBe(1);
   });
 
+  test("remove guards against stale rows and persists then refreshes the report source", async () => {
+    const configValue = config();
+    let saves = 0;
+    let refreshes = 0;
+    const deps = {
+      saveConfig: () => { saves += 1; },
+      refreshClaudeCodeCatalog: async () => { refreshes += 1; },
+    };
+
+    const reportBeforeRemoval = await request("GET", undefined, configValue);
+    const removalReport = await reportBeforeRemoval!.json() as ContinuityReport;
+    const subagentRevision = removalReport.references
+      .find(reference => reference.id === "subagent:0")!.ownerRevision!;
+
+    const stale = await request("POST", {
+      action: "remove",
+      referenceId: "subagent:0",
+      expectedPrimary: "work/old",
+    }, configValue, deps);
+    expect(stale?.status).toBe(409);
+    expect(await stale!.json()).toMatchObject({ code: "stale_reference" });
+    expect(saves).toBe(0);
+    expect(refreshes).toBe(0);
+
+    const removed = await request("POST", {
+      action: "remove",
+      referenceId: "subagent:0",
+      expectedPrimary: "work/new",
+      expectedOwnerRevision: subagentRevision,
+    }, configValue, deps);
+    expect(removed?.status).toBe(200);
+    expect(configValue.subagentModels).toEqual([]);
+    expect(saves).toBe(1);
+    expect(refreshes).toBe(1);
+
+    const reportResponse = await request("GET", undefined, configValue);
+    const report = await reportResponse!.json() as ContinuityReport;
+    expect(report.references.some(reference => reference.kind === "subagent")).toBeFalse();
+  });
+
+  test("reference-bound policy set rejects a concurrent sibling or mode change", async () => {
+    const configValue = config();
+    configValue.modelContinuity!["work/old"] = {
+      fallbacks: ["work/new", "noauth/login"],
+      automatic: "all",
+    };
+    let saves = 0;
+
+    const response = await request("POST", {
+      action: "set",
+      referenceId: "continuity-policy-candidate:work%2Fold:0",
+      primary: "work/old",
+      expectedPrimary: "work/new",
+      expectedPolicy: {
+        fallbacks: ["work/new"],
+        automatic: "retired",
+      },
+      fallbacks: ["work/disabled", "noauth/login"],
+      automatic: "retired",
+    }, configValue, {
+      saveConfig: () => { saves += 1; },
+    });
+
+    expect(response?.status).toBe(409);
+    expect(await response!.json()).toMatchObject({ code: "stale_reference" });
+    expect(configValue.modelContinuity["work/old"]).toEqual({
+      fallbacks: ["work/new", "noauth/login"],
+      automatic: "all",
+    });
+    expect(saves).toBe(0);
+  });
+
+  test("policy candidate replace and remove succeed only with the complete current policy", async () => {
+    const configValue = config();
+    configValue.providers.work!.models!.push("other");
+    configValue.modelContinuity!["work/old"] = {
+      fallbacks: ["work/new", "noauth/login"],
+      automatic: "all",
+    };
+    let saves = 0;
+
+    const replaced = await request("POST", {
+      action: "replace",
+      referenceId: "continuity-policy-candidate:work%2Fold:0",
+      expectedPrimary: "work/new",
+      expectedPolicy: {
+        fallbacks: ["work/new", "noauth/login"],
+        automatic: "all",
+      },
+      replacement: "work/other",
+    }, configValue, {
+      saveConfig: () => { saves += 1; },
+    });
+    expect(replaced?.status).toBe(200);
+    expect(configValue.modelContinuity["work/old"]).toEqual({
+      fallbacks: ["work/other", "noauth/login"],
+      automatic: "all",
+    });
+
+    const removed = await request("POST", {
+      action: "remove",
+      referenceId: "continuity-policy-candidate:work%2Fold:1",
+      expectedPrimary: "noauth/login",
+      expectedPolicy: {
+        fallbacks: ["work/other", "noauth/login"],
+        automatic: "all",
+      },
+    }, configValue, {
+      saveConfig: () => { saves += 1; },
+    });
+    expect(removed?.status).toBe(200);
+    expect(configValue.modelContinuity["work/old"]).toEqual({
+      fallbacks: ["work/other"],
+      automatic: "all",
+    });
+    expect(saves).toBe(2);
+  });
+
+  test("indexed actions reject a shifted same-target owner instead of mutating its sibling", async () => {
+    for (const action of ["remove", "replace"] as const) {
+      const configValue = config();
+      const alias = materializeModelAliases([{ provider: "work", model: "new" }])[0]!;
+      configValue.subagentModels = [alias.alias, "work/new"];
+      const reportResponse = await request("GET", undefined, configValue);
+      const report = await reportResponse!.json() as ContinuityReport;
+      const reference = report.references.find(candidate => candidate.id === "subagent:0")!;
+      expect(reference.primary).toBe("work/new");
+      expect(reference.ownerRevision).toBeString();
+
+      configValue.subagentModels.splice(0, 1);
+      let saves = 0;
+      const response = await request("POST", {
+        action,
+        referenceId: "subagent:0",
+        expectedPrimary: "work/new",
+        expectedOwnerRevision: reference.ownerRevision,
+        ...(action === "replace" ? { replacement: "noauth/login" } : {}),
+      }, configValue, {
+        saveConfig: () => { saves += 1; },
+      });
+
+      expect(response?.status).toBe(409);
+      expect(await response!.json()).toMatchObject({ code: "stale_reference" });
+      expect(configValue.subagentModels).toEqual(["work/new"]);
+      expect(saves).toBe(0);
+    }
+  });
+
+  test("concurrent duplicate-index removals allow one mutation and reject the stale sibling", async () => {
+    const configValue = config();
+    configValue.subagentModels = ["work/new", "work/new"];
+    const reportResponse = await request("GET", undefined, configValue);
+    const report = await reportResponse!.json() as ContinuityReport;
+    const reference = report.references.find(candidate => candidate.id === "subagent:0")!;
+    let saves = 0;
+    const action = {
+      action: "remove",
+      referenceId: "subagent:0",
+      expectedPrimary: "work/new",
+      expectedOwnerRevision: reference.ownerRevision,
+    };
+
+    const responses = await Promise.all([
+      request("POST", action, configValue, { saveConfig: () => { saves += 1; } }),
+      request("POST", action, configValue, { saveConfig: () => { saves += 1; } }),
+    ]);
+
+    expect(responses.map(response => response?.status).sort()).toEqual([200, 409]);
+    expect(configValue.subagentModels).toEqual(["work/new"]);
+    expect(saves).toBe(1);
+  });
+
+  test("indexed revision protects same-target mixing objects with different metadata", async () => {
+    const configValue = config();
+    configValue.modelMixing = {
+      enabled: true,
+      agents: [
+        { provider: "work", model: "new", role: "thinker", notes: "first" },
+        { provider: "work", model: "new", role: "worker", notes: "second" },
+      ],
+    };
+    const reportResponse = await request("GET", undefined, configValue);
+    const report = await reportResponse!.json() as ContinuityReport;
+    const reference = report.references.find(candidate => candidate.id === "mix-agent:0")!;
+    configValue.modelMixing.agents!.splice(0, 1);
+
+    const response = await request("POST", {
+      action: "remove",
+      referenceId: "mix-agent:0",
+      expectedPrimary: "work/new",
+      expectedOwnerRevision: reference.ownerRevision,
+    }, configValue);
+
+    expect(response?.status).toBe(409);
+    expect(configValue.modelMixing.agents).toEqual([
+      { provider: "work", model: "new", role: "worker", notes: "second" },
+    ]);
+  });
+
+  test("helper report and replacement validation use the runtime-selected provider", async () => {
+    const configValue = config();
+    configValue.providers.bad = {
+      adapter: "anthropic",
+      baseUrl: "https://bad.invalid",
+      apiKey: "test",
+      models: ["gpt-5.4-mini"],
+      liveModels: false,
+    };
+    configValue.providers.actual = {
+      adapter: "openai-responses",
+      baseUrl: "https://actual.invalid",
+      apiKey: "test",
+      models: ["gpt-5.4-mini"],
+      liveModels: false,
+    };
+    configValue.webSearchFallback = {
+      enabled: true,
+      provider: "bad",
+      model: "gpt-5.4-mini",
+    };
+    const reportResponse = await request("GET", undefined, configValue);
+    const report = await reportResponse!.json() as ContinuityReport;
+    expect(report.references.find(reference => reference.id === "web-search-helper"))
+      .toMatchObject({ primary: "actual/gpt-5.4-mini", status: "ready" });
+    let saves = 0;
+
+    const response = await request("POST", {
+      action: "replace",
+      referenceId: "web-search-helper",
+      expectedPrimary: "actual/gpt-5.4-mini",
+      replacement: "bad/gpt-5.4-mini",
+    }, configValue, {
+      saveConfig: () => { saves += 1; },
+    });
+
+    expect(response?.status).toBe(400);
+    expect(await response!.json()).toMatchObject({ code: "invalid_replacement" });
+    expect(configValue.webSearchFallback).toEqual({
+      enabled: true,
+      provider: "bad",
+      model: "gpt-5.4-mini",
+    });
+    expect(saves).toBe(0);
+  });
+
   test("replace repairs an active reference after its provider was removed", async () => {
     const configValue = config();
     configValue.longContext = {
@@ -371,14 +662,23 @@ describe("model continuity management actions", () => {
     expect(refreshes).toBe(1);
   });
 
-  test("replace rejects dormant owners that are absent from the current reference inventory", async () => {
-    const cases: Array<{ referenceId: string; configure(configValue: FrogConfig): void }> = [
-      {
-        referenceId: "long-context",
-        configure(configValue) {
-          configValue.longContext = { provider: "work", model: "disabled" };
-        },
-      },
+  test("inactive saved owners remain editable while malformed structures stay absent", async () => {
+    const malformed = config();
+    malformed.longContext = { provider: "work", model: "disabled" };
+    const absent = await request("POST", {
+      action: "replace",
+      referenceId: "long-context",
+      expectedPrimary: "work/disabled",
+      replacement: "work/new",
+    }, malformed);
+    expect(absent?.status).toBe(400);
+    expect(await absent!.json()).toMatchObject({ code: "invalid_reference" });
+
+    const cases: Array<{
+      referenceId: string;
+      configure(configValue: FrogConfig): void;
+      primary(configValue: FrogConfig): string | undefined;
+    }> = [
       {
         referenceId: "mix-coordinator",
         configure(configValue) {
@@ -387,25 +687,39 @@ describe("model continuity management actions", () => {
             coordinator: { provider: "work", model: "disabled" },
           };
         },
+        primary(configValue) {
+          const target = configValue.modelMixing?.coordinator;
+          return target && `${target.provider}/${target.model}`;
+        },
       },
       {
         referenceId: "web-search-helper",
         configure(configValue) {
+          configValue.providers.work!.adapter = "openai-responses";
           configValue.webSearchFallback = {
             enabled: false,
             provider: "work",
             model: "disabled",
           };
         },
+        primary(configValue) {
+          const target = configValue.webSearchFallback;
+          return target?.provider && target.model ? `${target.provider}/${target.model}` : undefined;
+        },
       },
       {
         referenceId: "image-helper",
         configure(configValue) {
+          configValue.providers.work!.adapter = "openai-responses";
           configValue.imageFallback = {
             enabled: false,
             provider: "work",
             model: "disabled",
           };
+        },
+        primary(configValue) {
+          const target = configValue.imageFallback;
+          return target?.provider && target.model ? `${target.provider}/${target.model}` : undefined;
         },
       },
     ];
@@ -413,7 +727,6 @@ describe("model continuity management actions", () => {
     for (const item of cases) {
       const configValue = config();
       item.configure(configValue);
-      const before = structuredClone(configValue);
       let saves = 0;
       let refreshes = 0;
       const response = await request("POST", {
@@ -426,15 +739,14 @@ describe("model continuity management actions", () => {
         refreshClaudeCodeCatalog: async () => { refreshes += 1; },
       });
 
-      expect(response?.status).toBe(400);
-      expect(await response!.json()).toMatchObject({ code: "invalid_reference" });
-      expect(configValue).toEqual(before);
-      expect(saves).toBe(0);
-      expect(refreshes).toBe(0);
+      expect(response?.status).toBe(200);
+      expect(item.primary(configValue)).toBe("work/new");
+      expect(saves).toBe(1);
+      expect(refreshes).toBe(1);
     }
   });
 
-  test("replace keeps the active gateway-alias rejection owned by the replacement helper", async () => {
+  test("replace keeps the listed gateway-alias rejection owned by the replacement helper", async () => {
     const configValue = config();
     const alias = materializeModelAliases([{ provider: "work", model: "new" }])[0]!;
     let saves = 0;
@@ -465,12 +777,13 @@ describe("model continuity management actions", () => {
     };
     const cases: Array<{ body: unknown; code: string }> = [
       { body: null, code: "invalid_request" },
-      { body: { action: "remove" }, code: "invalid_action" },
+      { body: { action: "remove" }, code: "invalid_request" },
       { body: { action: "set", primary: "work/new", fallbacks: [], automatic: "off", extra: true }, code: "invalid_request" },
       { body: { action: "set", primary: "work/new", fallbacks: [7], automatic: "off" }, code: "invalid_request" },
       { body: { action: "set", primary: "work/new", fallbacks: [], automatic: "sometimes" }, code: "invalid_request" },
       { body: { action: "replace", referenceId: "long-context", expectedPrimary: "work/disabled", replacement: "work/new", path: home }, code: "invalid_request" },
       { body: { action: "replace", referenceId: "long-context", expectedPrimary: "work/disabled" }, code: "invalid_request" },
+      { body: { action: "remove", referenceId: "subagent:0", expectedPrimary: "work/new", extra: true }, code: "invalid_request" },
     ];
 
     for (const item of cases) {

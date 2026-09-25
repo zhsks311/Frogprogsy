@@ -73,9 +73,10 @@ Read the live report first, save an exact ordinary-route fallback only when you 
 frogp models continuity
 frogp models continuity set <provider/model> --fallback <provider/model> --auto retired
 frogp models continuity replace <reference-id> <provider/model>
+frogp models continuity remove <reference-id>
 ```
 
-Copy `<reference-id>` from the report; it prevents a stale report from changing the wrong setting. `set` preserves the configured owner and only saves the exact request-time alternative. `replace` changes the stored owner after validation. The dashboard **Models** page offers the same problem-first actions.
+Copy `<reference-id>` from the report; it prevents a stale report from changing the wrong setting. `set` preserves the configured owner and saves the exact request-time alternatives. `replace` changes the stored owner after validation. `remove` deletes an optional setting, one exact fallback candidate, or a policy; removing one candidate preserves the policy mode and its other candidates. Provider defaults cannot be removed. Past-session aliases and inactive settings appear as diagnostics and do not require a change. The dashboard **Models** page offers the same actions.
 
 
 ## 3. Check Auth/OAuth

@@ -88,11 +88,12 @@ Claude Code 持有 Claude 订阅登录。FrogProgsy 不保存、导入、刷新�
 | Command | Mutates | Effect |
 | --- | --- | --- |
 | `frogp models [--json]` | 无 | 在线查看正在运行的 proxy 模型列表。文本输出按 provider 分组：有经过验证的兼容资料时标记为**已验证**，仅由 AI 服务响应或用户手动添加发现时标记为**仅发现**；同时显示当前模型资料来自远程、保存的副本，还是安装版本自带资料。`--json` 原样输出 `GET /api/models` 数组，包括稳定的 `supportStatus` 与 `catalogSource` 值。relay 停止时提示 `frogp start`；有运行记录但无响应时提示 `frogp status`/`frogp refresh`。不会离线合成模型列表。 |
-| `frogp models continuity [--json]` | 无 | 从正在运行的 proxy 读取已排序的模型连续性报告。文本输出先列出受影响的 reference，并给出可直接执行的下一步命令。`--json` 原样输出 `GET /api/model-continuity` 文档。 |
+| `frogp models continuity [--json]` | 无 | 从正在运行的 proxy 读取模型连续性报告。文本输出按模型分组真正需要修改的项目，分别显示模型数和设置位置数，并把未启用或旧会话 reference 放在诊断区域。`--json` 原样输出 `GET /api/model-continuity` 文档。 |
 | `frogp models continuity set <provider/model> --fallback <provider/model>... --auto off\|retired\|transient\|all` | config | 通过正在运行的 proxy 保存 fallback 顺序与自动模式。重复 `--fallback` 的顺序就是实际尝试顺序。 |
 | `frogp models continuity replace <reference-id> <provider/model>` | config 与受影响的 Claude Code 模型缓存 | 永久替换当前报告中一个 reference 持有的模型。Reference id 可防止报告读取后目标发生变化时误改其他位置。 |
+| `frogp models continuity remove <reference-id>` | config 与受影响的 Claude Code 模型缓存 | 删除可选设置、一个准确的已保存替代模型，或整条模型连续性规则。只删除一个替代模型时会保留自动模式与其他候选。必需的 provider 默认模型与旧会话 alias 不能删除；实时报告中的当前目标用于保护写入。 |
 
-自动连续性**默认关闭**。`retired` 只切换主模型已退役的 reference，`transient` 处理符合条件的临时失败，`all` 同时启用两者。自动连续性只适用于普通模型路由请求。Classifier reference 仅支持手动替换：可以使用准确的 `replace` 命令修改，但 classifier 请求永远不会使用自动连续性。
+自动连续性**默认关闭**。`retired` 只切换主模型已停止提供的普通路由请求，`transient` 处理符合条件的临时失败，`all` 同时启用两者。Classifier、Model Mixing、helper 与子任务模型永远不会使用自动连续性；请直接替换或删除对应设置。
 
 ## Catalog and Claude Code cache
 
