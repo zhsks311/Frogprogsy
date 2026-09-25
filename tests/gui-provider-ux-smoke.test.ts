@@ -527,6 +527,17 @@ describe("model continuity UX", () => {
         supportStatus: "validated",
         policyPrimary: "work/current",
         policyFallbackIndex: 0,
+      }, {
+        id: "gateway-alias:retired-other",
+        kind: "gateway-alias",
+        primary: "work/retired-other",
+        status: "retired",
+        active: false,
+        actionRequired: false,
+        removable: false,
+        automaticEligible: true,
+        policy: { fallbacks: [], automatic: "off" },
+        supportStatus: "validated",
       }],
       summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
       circuits: [],
@@ -534,7 +545,7 @@ describe("model continuity UX", () => {
     const markup = renderToStaticMarkup(
       React.createElement(ModelContinuityPanel, {
         report,
-        selectableModels: ["work/current", "work/backup", "work/new"],
+        selectableModels: ["work/current", "work/backup", "work/new", "work/retired-other"],
         t: tKo,
         onSet: async () => "applied",
         onReplace: async () => "applied",
@@ -545,6 +556,7 @@ describe("model continuity UX", () => {
     expect(markup).toContain("work/current 자동 대응 규칙의 1번째 대체 모델");
     expect(markup).toContain("work/old");
     expect(markup).toContain('aria-label="이 설정 삭제"');
+    expect(markup).not.toContain('<option value="work/retired-other">');
   });
   test("retired actions precede active fallback status and collapsed normal rows", () => {
     const markup = renderToStaticMarkup(

@@ -1220,6 +1220,87 @@ describe("Claude Code home management API", () => {
     expect(refreshes).toBe(2);
   });
 
+  test("subagent GET keeps chosen and revision coherent across a concurrent empty-list PUT", async () => {
+    const cfg = config();
+    cfg.defaultProvider = "priority-race";
+    cfg.providers = {
+      "priority-race": {
+        adapter: "openai-chat",
+        baseUrl: "https://priority-race.test/v1",
+        apiKey: "fixture-key",
+        defaultModel: "alpha",
+        models: ["alpha", "beta"],
+        liveModels: true,
+      },
+    };
+    cfg.disabledModels = [];
+    cfg.subagentModels = ["priority-race/alpha"];
+
+    let signalModelsStarted!: () => void;
+    let releaseModels!: () => void;
+    const modelsStarted = new Promise<void>(resolve => { signalModelsStarted = resolve; });
+    const modelsGate = new Promise<void>(resolve => { releaseModels = resolve; });
+    globalThis.fetch = (async () => {
+      signalModelsStarted();
+      await modelsGate;
+      return Response.json({ data: [{ id: "alpha" }, { id: "beta" }] });
+    }) as typeof fetch;
+
+    const endpoint = new URL("http://localhost/api/subagent-models");
+    const pendingGet = __requestLogTest.handleManagementAPI(
+      new Request(endpoint),
+      endpoint,
+      cfg,
+      { saveConfig: () => {} },
+    );
+    await modelsStarted;
+
+    let concurrentPut: Response | null | undefined;
+    try {
+      concurrentPut = await __requestLogTest.handleManagementAPI(
+        new Request(endpoint, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ models: [] }),
+        }),
+        endpoint,
+        cfg,
+        {
+          saveConfig: () => {},
+          refreshClaudeCodeCatalog: async () => {},
+        },
+      );
+    } finally {
+      releaseModels();
+    }
+
+    const getResponse = await pendingGet;
+    expect(concurrentPut?.status).toBe(200);
+    expect(getResponse?.status).toBe(200);
+    const snapshot = await json(getResponse!);
+    expect(snapshot.chosen).toEqual([]);
+    expect(snapshot.revision).toBeString();
+
+    const conditionalReplay = await __requestLogTest.handleManagementAPI(
+      new Request(endpoint, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          models: snapshot.chosen,
+          expectedRevision: snapshot.revision,
+        }),
+      }),
+      endpoint,
+      cfg,
+      {
+        saveConfig: () => {},
+        refreshClaudeCodeCatalog: async () => {},
+      },
+    );
+    expect(conditionalReplay?.status).toBe(200);
+    expect(cfg.subagentModels).toEqual([]);
+  });
+
   test("renamed Anthropic forward models retain per-model context metadata", async () => {
     const cfg = config();
     delete cfg.providers.anthropic;

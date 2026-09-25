@@ -5098,7 +5098,11 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
   if (url.pathname === "/api/subagent-models" && req.method === "GET") {
     const profileId = url.searchParams.get("profileId") ?? undefined;
     const view = await effectiveModelView(state.effective, { profileId, includeConfiguredForwardModels: true });
-    const chosen = view.featured ?? [];
+    // Snapshot the persisted order only after model discovery finishes. A concurrent PUT may replace
+    // state.effective while the await above is pending; pairing that old view's featured list with a
+    // current revision would let a later conditional save restore an order that was already deleted.
+    const chosen = [...(config.subagentModels ?? [])];
+    const revision = modelContinuityOwnerRevision(chosen);
     // Native gpt/claude slugs are also valid subagent picks — they're picker-visible models in the catalog,
     // just buried by priority. List them first so the user can feature them over routed.
     const nativeAvailable = listCatalogNativeSlugs().filter(slug => !isNativeSlugHidden(state.effective, slug));
@@ -5109,7 +5113,7 @@ async function handleManagementAPI(req: Request, url: URL, state: RuntimeConfigS
     return jsonResponse({
       chosen,
       available,
-      revision: modelContinuityOwnerRevision(config.subagentModels ?? []),
+      revision,
     });
   }
   if (url.pathname === "/api/subagent-models" && req.method === "PUT") {

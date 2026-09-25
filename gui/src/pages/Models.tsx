@@ -1060,6 +1060,10 @@ export function ModelContinuityPanel({
   onRemove: (action: ModelContinuityRemoveAction) => Promise<ModelContinuityActionResult>;
   onUseLatestPolicy: (referenceId: string) => Promise<ModelContinuityPolicy | null>;
 }) {
+  const retiredTargets = new Set(report.references
+    .filter(reference => reference.status === "retired")
+    .map(reference => reference.primary));
+  const eligibleSelectableModels = selectableModels.filter(model => !retiredTargets.has(model));
   const attention = report.references.filter(reference => reference.actionRequired);
   const brokenPolicyPrimaries = new Set(attention
     .filter(reference => reference.kind === "continuity-policy-candidate")
@@ -1113,7 +1117,7 @@ export function ModelContinuityPanel({
                 <ContinuityReferenceCard
                   key={reference.id}
                   reference={reference}
-                  selectableModels={selectableModels}
+                  selectableModels={eligibleSelectableModels}
                   t={t}
                   onSet={onSet}
                   onReplace={onReplace}
@@ -1147,7 +1151,7 @@ export function ModelContinuityPanel({
             <ContinuityReferenceCard
               key={reference.id}
               reference={reference}
-              selectableModels={selectableModels}
+              selectableModels={eligibleSelectableModels}
               t={t}
               onSet={onSet}
               onReplace={onReplace}
@@ -1166,7 +1170,7 @@ export function ModelContinuityPanel({
               <ContinuityReferenceCard
                 key={reference.id}
                 reference={reference}
-                selectableModels={selectableModels}
+                selectableModels={eligibleSelectableModels}
                 t={t}
                 onSet={onSet}
                 onReplace={onReplace}
