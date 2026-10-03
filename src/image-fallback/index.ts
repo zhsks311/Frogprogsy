@@ -5,7 +5,7 @@ import { describeImage, type VisionSettings } from "./describe";
 
 export { describeImage } from "./describe";
 
-const DEFAULT_VISION_MODEL = "gpt-5.4-mini";
+export const DEFAULT_IMAGE_FALLBACK_MODEL = "gpt-5.4-mini";
 const DEFAULT_TIMEOUT_MS = 45_000;
 /** Max images described in parallel — keeps first-token latency bounded without flooding the backend. */
 const VISION_CONCURRENCY = 3;
@@ -98,7 +98,7 @@ export function decideImageFallback(
     action: "describe",
     forwardProvider: forwardProviderEntry.provider,
     forwardProviderName: forwardProviderEntry.name,
-    settings: { model: cfg.model ?? DEFAULT_VISION_MODEL, timeoutMs: cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS },
+    settings: { model: cfg.model ?? DEFAULT_IMAGE_FALLBACK_MODEL, timeoutMs: cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS },
   };
 }
 

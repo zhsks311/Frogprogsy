@@ -44,11 +44,11 @@ Claude Code의 `/model` 선택기가 오래된 목록을 보여줄 때는 **Clau
 
 ## 종료된 모델 교체하기
 
-Models 화면은 페이지 요약 바로 아래, 모델 표시와 우선순위 조정 영역 위에서 교체 상태를 확인합니다. 종료됐거나 로그인이 필요하거나 대체 설정에 문제가 있는 항목은 처음부터 열립니다. 정상 항목은 하나의 접힌 영역에 모여 있어 먼저 할 일을 바로 볼 수 있습니다.
+Models 화면은 페이지 요약 바로 아래, 모델 표시와 우선순위 조정 영역 위에서 모델 설정을 확인합니다. 실제로 바꿔야 하는 사용 중인 설정은 모델별로 묶고, 문제가 있는 모델 수와 정확한 사용 위치 수를 따로 보여 줍니다. 저장한 대체 모델에 문제가 있으면 정상인 규칙의 기준 모델이 아니라, 문제가 있는 모델과 그 규칙 안의 정확한 순서를 표시합니다. 현재 쓰지 않는 저장 설정과 이전 세션의 모델 이름은 접힌 참고 영역에서 볼 수 있지만 해결할 문제로 표시하지 않습니다.
 
 일반 모델 요청에는 정확한 대체 모델을 최대 3개까지 순서대로 저장할 수 있습니다. 자동 대응은 끄거나, 모델이 종료됐을 때만, 일시적인 실패가 생겼을 때만, 또는 두 경우 모두에 적용할 수 있습니다. 이 동작은 요청을 처리할 때만 잠시 다른 모델을 시도하며, 저장된 기본 모델 자체는 바꾸지 않습니다.
 
-auto mode, Model Mixing, 웹 검색·이미지 처리, 하위 작업 모델은 맡은 역할이 정해져 있어 성격이 다른 모델로 조용히 바뀌면 안 됩니다. 그래서 자동 대응 대신 **영구 교체**만 제공합니다. 영구 교체는 확인을 받은 뒤 이후 요청이 사용할 저장 모델을 바꾸며, 일시적으로 대체 모델을 시도하는 자동 대응과 다릅니다.
+auto mode, Model Mixing, 웹 검색·이미지 처리, 하위 작업 모델은 맡은 역할이 정해져 있어 성격이 다른 모델로 조용히 바뀌면 안 됩니다. 각 카드에는 정확한 역할이나 목록 순번이 표시됩니다. 따라서 **영구 교체**를 사용하거나, 선택 항목이면 **이 설정 삭제**를 사용할 수 있습니다. provider 기본 모델은 삭제할 수 없고 교체해야 합니다. helper 설정을 삭제하면 다른 옵션은 유지한 채 helper를 끄며, 목록의 마지막 모델을 삭제해도 명시적인 빈 목록을 유지합니다. 모델 표시 여부와 하위 작업 모델 우선순위는 서로 독립적입니다. 모델 문제를 고쳐도 사용자가 아직 저장하지 않은 다른 순서 변경은 유지됩니다. 저장된 먼저 보일 모델이 현재 목록에 없으면 저장한 이름은 남기되 선택 가능한 후보로 다시 넣지는 않습니다. 목록에 없다는 사실만으로 Claude Code에서 사용할 수 없다고 단정하지 않으며, 별도의 모델 진단에서 상태를 확인할 수 있습니다.
 
 ## Model Mixing 페이지
 
@@ -136,7 +136,7 @@ Claude Code가 서비스별 사용량 주소를 호출할 수도 있으므로, F
 | `POST /api/oauth/login` / `GET /api/oauth/status` | OAuth 로그인 시작/상태 확인 |
 | `GET/POST/PATCH/DELETE /api/claude-profiles` | Claude Code 홈과 홈별 모델 오버레이 관리. `PATCH`를 포함한 변경 메서드는 local origin만 허용 |
 | `POST /api/claude-profiles/:id/inject|refresh|restore` | Claude Code 홈 하나만 주입, 새로고침, 복원. `refresh`는 Claude Code 선택기 복구를 위한 additive `modelReload` metadata를 반환하며, 가능하면 안정적인 `frogp claude reload-models <profile-id>` 명령을 포함합니다 |
-| `GET /api/subagent-models` / `PUT /api/subagent-models` | 하위 작업에 먼저 보여줄 모델 읽기/설정 |
+| `GET /api/subagent-models` / `PUT /api/subagent-models` | 하위 작업에 먼저 보여줄 모델을 읽고 설정합니다. GET은 전체 저장 목록의 불투명한 revision을 반환합니다. 대시보드는 이를 `expectedRevision`으로 보내며, 오래된 조건부 PUT은 새 순서를 덮어쓰지 않고 `409`를 반환합니다. 기존 클라이언트를 위해 `expectedRevision` 없는 PUT도 계속 지원합니다. |
 | `GET /api/fallback-settings` / `PUT /api/fallback-settings` | 웹 검색/이미지 대신 처리 모델 읽기/설정 |
 | `GET /api/classifier-settings` / `PUT /api/classifier-settings` | 자동 모드 확인 모델 읽기/설정 |
 | `PUT /api/disabled-models` | Claude Code 모델 목록에서 모델 숨김/표시 |

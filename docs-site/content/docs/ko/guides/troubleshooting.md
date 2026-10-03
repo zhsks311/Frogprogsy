@@ -76,9 +76,10 @@ frogp claude reload-models <profile-id>
 frogp models continuity
 frogp models continuity set <provider/model> --fallback <provider/model> --auto retired
 frogp models continuity replace <reference-id> <provider/model>
+frogp models continuity remove <reference-id>
 ```
 
-`<reference-id>`는 보고서에 나온 값을 그대로 복사하세요. 오래된 보고서로 엉뚱한 설정을 바꾸지 않도록 확인하는 값입니다. `set`은 저장된 주 모델을 유지하고 요청 때 쓸 정확한 대체 모델만 저장합니다. `replace`는 검증을 거쳐 저장된 주인을 바꿉니다. Dashboard **Models**에서도 같은 문제 우선 흐름을 사용할 수 있습니다.
+`<reference-id>`는 보고서에 나온 값을 그대로 복사하세요. 오래된 보고서로 엉뚱한 설정을 바꾸지 않도록 확인하는 값입니다. `set`은 저장된 주 모델을 유지하고 요청 때 쓸 정확한 대체 순서를 저장합니다. `replace`는 검증을 거쳐 저장된 설정을 바꿉니다. `remove`는 선택 설정, 정확한 대체 모델 한 곳, 또는 자동 대응 규칙을 삭제합니다. 대체 모델 한 곳만 삭제하면 자동 대응 모드와 나머지 대체 모델은 유지됩니다. Provider 기본 모델은 삭제할 수 없습니다. 이전 세션 이름과 현재 쓰지 않는 설정은 참고 정보일 뿐 바꿀 필요가 없습니다. Dashboard **Models**에서도 같은 작업을 할 수 있습니다.
 
 
 ## 3. 인증/OAuth 확인

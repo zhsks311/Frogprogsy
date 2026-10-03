@@ -31,6 +31,9 @@ const STUB_CONTINUITY_REPORT = {
       kind: "provider-default",
       primary: "work/old",
       status: "retired",
+      active: true,
+      actionRequired: true,
+      removable: false,
       automaticEligible: true,
       policy: { fallbacks: ["work/new"], automatic: "off" },
       supportStatus: "validated",
@@ -41,12 +44,17 @@ const STUB_CONTINUITY_REPORT = {
       kind: "subagent",
       primary: "codex/gpt-x",
       status: "ready",
+      active: true,
+      actionRequired: false,
+      removable: true,
       automaticEligible: false,
       policy: { fallbacks: [], automatic: "off" },
       supportStatus: "validated",
       label: "Subagent 1",
+      ownerRevision: "subagent-owner-revision",
     },
   ],
+  summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
   circuits: [
     { primary: "work/old", reason: "http_5xx", retryAt: STUB_CIRCUIT_RETRY_AT },
   ],
@@ -60,12 +68,16 @@ const STUB_RETIRED_WITHOUT_FALLBACK_REPORT = {
       kind: "provider-default",
       primary: "work/old",
       status: "retired",
+      active: true,
+      actionRequired: true,
+      removable: false,
       automaticEligible: true,
       policy: { fallbacks: [], automatic: "off" },
       supportStatus: "validated",
       label: "Provider default",
     },
   ],
+  summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
   circuits: [],
 };
 const STUB_GATEWAY_ALIAS_REPORT = {
@@ -80,6 +92,9 @@ const STUB_GATEWAY_ALIAS_REPORT = {
     kind: "gateway-alias",
     primary: "work/session",
     status: "retired",
+    active: false,
+    actionRequired: false,
+    removable: false,
     automaticEligible: true,
     policy: {
       fallbacks: ["work/first", "codex/second"],
@@ -88,6 +103,7 @@ const STUB_GATEWAY_ALIAS_REPORT = {
     supportStatus: "validated",
     label: "Saved session model",
   }],
+  summary: { actionableModelCount: 0, actionableReferenceCount: 0 },
   circuits: [],
 };
 
@@ -98,11 +114,15 @@ const STUB_GATEWAY_ALIAS_WITHOUT_FALLBACK_REPORT = {
     kind: "gateway-alias",
     primary: "work/session",
     status: "retired",
+    active: false,
+    actionRequired: false,
+    removable: false,
     automaticEligible: true,
     policy: { fallbacks: [], automatic: "off" },
     supportStatus: "validated",
     label: "Saved session model",
   }],
+  summary: { actionableModelCount: 0, actionableReferenceCount: 0 },
   circuits: [],
 };
 
@@ -296,12 +316,11 @@ describe("frogp models", () => {
       const result = await runCliAsync(["models", "continuity"], home);
       expect(result.status).toBe(0);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toContain("[retired] Provider default · work/old");
+      expect(result.stdout).toContain("[retired] Provider default");
       expect(result.stdout).toContain("Automatic: off");
       expect(result.stdout).toContain("Fallbacks: work/new");
-      expect(result.stdout).toContain("Impact: Provider default points to a retired model.");
       expect(result.stdout).toContain("frogp models continuity replace provider-default:work work/new");
-      expect(result.stdout.indexOf("[retired]")).toBeLessThan(result.stdout.indexOf("[ready]"));
+      expect(result.stdout).toContain("Action required for 1 model(s) in 1 location(s).");
       expect(result.stdout).not.toContain("subagent:0");
       expect(result.stdout).toContain("[http_5xx] work/old");
       expect(result.stdout).toContain(new Date(STUB_CIRCUIT_RETRY_AT).toISOString());
@@ -321,17 +340,61 @@ describe("frogp models", () => {
       const result = await runCliAsync(["models", "continuity"], home);
       expect(result.status).toBe(0);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toContain("[retired] Provider default · work/old");
+      expect(result.stdout).toContain("work/old · 1 location(s)");
       expect(result.stdout).toContain("Fallbacks: none");
-      expect(result.stdout).toContain("Next: frogp models");
+      expect(result.stdout).toContain("Change: frogp models");
       expect(result.stdout).not.toContain("<provider/model>");
-      expect(result.stdout).not.toContain("provider-default:work");
     } finally {
       server.stop(true);
       rmSync(home, { recursive: true, force: true });
     }
   });
-  test("retired gateway alias prints an executable route policy command instead of replace", async () => {
+  test("policy candidate guidance preserves its saved automatic mode and sibling fallback", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const continuityReport = {
+      policies: {
+        "work/current": {
+          fallbacks: ["work/old", "work/backup"],
+          automatic: "transient",
+        },
+      },
+      references: [{
+        id: "continuity-policy-candidate:work%2Fcurrent:0",
+        kind: "continuity-policy-candidate",
+        primary: "work/old",
+        status: "retired",
+        active: true,
+        actionRequired: true,
+        removable: true,
+        automaticEligible: true,
+        policy: {
+          fallbacks: ["work/old", "work/backup"],
+          automatic: "transient",
+        },
+        supportStatus: "validated",
+        label: "Fallback 1 for work/current",
+        policyPrimary: "work/current",
+        policyFallbackIndex: 0,
+      }],
+      summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
+      circuits: [],
+    };
+    const { server, port } = startStubProxy({ continuityReport });
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync(["models", "continuity"], home);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        "frogp models continuity set work/current --fallback <provider/model> --fallback work/backup --auto transient",
+      );
+      expect(result.stdout).not.toContain("--auto retired");
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("retired gateway aliases remain diagnostic and never demand replacement", async () => {
     const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
     const { server, port } = startStubProxy({ continuityReport: STUB_GATEWAY_ALIAS_REPORT });
     try {
@@ -339,18 +402,17 @@ describe("frogp models", () => {
       const result = await runCliAsync(["models", "continuity"], home);
       expect(result.status).toBe(0);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toContain(
-        "frogp models continuity set work/session --fallback work/first --fallback codex/second --auto retired",
-      );
+      expect(result.stdout).toContain("Diagnostics (no active setting requires a change)");
+      expect(result.stdout).toContain("[retired] Saved session model · work/session");
       expect(result.stdout).not.toContain("frogp models continuity replace");
-      expect(result.stdout).not.toContain("gateway-alias:session");
+      expect(result.stdout).not.toContain("frogp models continuity set");
     } finally {
       server.stop(true);
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("retired gateway alias without fallback prints executable candidate discovery", async () => {
+  test("retired gateway alias without fallback remains diagnostic", async () => {
     const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
     const { server, port } = startStubProxy({
       continuityReport: STUB_GATEWAY_ALIAS_WITHOUT_FALLBACK_REPORT,
@@ -360,7 +422,7 @@ describe("frogp models", () => {
       const result = await runCliAsync(["models", "continuity"], home);
       expect(result.status).toBe(0);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toContain("Next: frogp models");
+      expect(result.stdout).toContain("[retired] Saved session model · work/session");
       expect(result.stdout).not.toContain("frogp models continuity replace");
       expect(result.stdout).not.toContain("<provider/model>");
     } finally {
@@ -410,6 +472,8 @@ describe("frogp models", () => {
     ["duplicate auto option", ["models", "continuity", "set", "work/old", "--fallback", "work/new", "--auto", "all", "--auto", "off"], "exactly one --auto"],
     ["missing replace argument", ["models", "continuity", "replace", "provider-default:work"], "exactly a reference id and replacement"],
     ["extra replace argument", ["models", "continuity", "replace", "provider-default:work", "work/new", "extra"], "exactly a reference id and replacement"],
+    ["missing remove argument", ["models", "continuity", "remove"], "exactly one reference id"],
+    ["extra remove argument", ["models", "continuity", "remove", "subagent:0", "extra"], "exactly one reference id"],
   ])("rejects %s before contacting the proxy", (_name, argv, message) => {
     const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
     try {
@@ -468,6 +532,86 @@ describe("frogp models", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  test("remove forwards the indexed owner revision from the fresh report", async () => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const { server, port, actions } = startStubProxy();
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync([
+        "models", "continuity", "remove", "subagent:0",
+      ], home);
+      expect(result.status).toBe(0);
+      expect(actions.at(-1)).toEqual({
+        action: "remove",
+        referenceId: "subagent:0",
+        expectedPrimary: "codex/gpt-x",
+        expectedOwnerRevision: "subagent-owner-revision",
+      });
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    {
+      name: "replace",
+      args: ["models", "continuity", "replace", "continuity-policy-candidate:work%2Fcurrent:0", "work/new"],
+      expected: {
+        action: "replace",
+        referenceId: "continuity-policy-candidate:work%2Fcurrent:0",
+        expectedPrimary: "work/old",
+        expectedPolicy: { fallbacks: ["work/old", "work/backup"], automatic: "all" },
+        replacement: "work/new",
+      },
+    },
+    {
+      name: "remove",
+      args: ["models", "continuity", "remove", "continuity-policy-candidate:work%2Fcurrent:0"],
+      expected: {
+        action: "remove",
+        referenceId: "continuity-policy-candidate:work%2Fcurrent:0",
+        expectedPrimary: "work/old",
+        expectedPolicy: { fallbacks: ["work/old", "work/backup"], automatic: "all" },
+      },
+    },
+  ])("$name sends the complete observed policy for a candidate mutation", async ({ args, expected }) => {
+    const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));
+    const continuityReport = {
+      policies: {
+        "work/current": { fallbacks: ["work/old", "work/backup"], automatic: "all" },
+      },
+      references: [{
+        id: "continuity-policy-candidate:work%2Fcurrent:0",
+        kind: "continuity-policy-candidate",
+        primary: "work/old",
+        status: "retired",
+        active: true,
+        actionRequired: true,
+        removable: true,
+        automaticEligible: true,
+        policy: { fallbacks: ["work/old", "work/backup"], automatic: "all" },
+        supportStatus: "validated",
+        label: "Fallback 1 for work/current",
+        policyPrimary: "work/current",
+        policyFallbackIndex: 0,
+      }],
+      summary: { actionableModelCount: 1, actionableReferenceCount: 1 },
+      circuits: [],
+    };
+    const { server, port, actions } = startStubProxy({ continuityReport });
+    try {
+      writeRunningState(home, port);
+      const result = await runCliAsync(args, home);
+      expect(result.status).toBe(0);
+      expect(actions.at(-1)).toEqual(expected);
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
 
   test("prints the API safe code and message on a rejected action", async () => {
     const home = mkdtempSync(join(tmpdir(), "frogp-models-continuity-"));

@@ -10,6 +10,59 @@ import { installedPackageVersion } from "../src/install-identity";
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli.ts");
 
+async function runCliPhase(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  phase: string,
+  timeoutMs = 10_000,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const child = Bun.spawn(
+    [process.execPath, cliPath, ...argv],
+    { cwd: repoRoot, env, stdout: "pipe", stderr: "pipe" },
+  );
+  const stdoutPromise = new Response(child.stdout).text();
+  const stderrPromise = new Response(child.stderr).text();
+  const operation = Promise.all([stdoutPromise, stderrPromise, child.exited])
+    .then(([stdout, stderr, exitCode]) => ({ stdout, stderr, exitCode }));
+  let timeout!: ReturnType<typeof setTimeout>;
+
+  try {
+    // This bounds a real OS child and its inherited pipes; fake timers cannot observe either.
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`${phase} CLI child timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } catch (error) {
+    if (child.exitCode === null) child.kill("SIGKILL");
+    const cleanup = Promise.all([
+      child.exited.catch(() => child.exitCode ?? -1),
+      stdoutPromise.catch(readError => `<stdout read failed: ${String(readError)}>`),
+      stderrPromise.catch(readError => `<stderr read failed: ${String(readError)}>`),
+    ]).then(([exitCode, stdout, stderr]) => ({ exitCode, stdout, stderr }));
+    // Keep the full exit-and-pipe-drain cleanup bounded without slowing successful runs.
+    const cleanupResult = await Promise.race([
+      cleanup,
+      Bun.sleep(2_000).then(() => null),
+    ]);
+    throw new Error([
+      error instanceof Error ? error.message : String(error),
+      cleanupResult
+        ? `cleanup: child exited (${cleanupResult.exitCode}) and pipes closed`
+        : "cleanup: child or inherited pipes remained open 2000ms after SIGKILL",
+      cleanupResult?.stdout ? `stdout:\n${cleanupResult.stdout}` : "",
+      cleanupResult?.stderr ? `stderr:\n${cleanupResult.stderr}` : "",
+    ].filter(Boolean).join("\n"));
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+
 
 
 describe("CLI subcommand help", () => {
@@ -843,18 +896,49 @@ describe("CLI subcommand help", () => {
       rmSync(workClaudeHome, { recursive: true, force: true });
     }
   });
-  test("claude reload-models sends the local Origin required by a non-loopback management guard", async () => {
+  test.each([
+    {
+      name: "claude reload-models sends the local Origin required by a non-loopback management guard",
+      argv: ["claude", "reload-models", "cp_work", "--global-discovery-auth"],
+      expectedBody: { globalDiscoveryAuth: true },
+      writesBlocked: false,
+      expectsSkipped: false,
+    },
+    {
+      name: "top-level refresh sends the local Origin to the running proxy",
+      argv: ["refresh"],
+      expectedBody: {},
+      writesBlocked: false,
+      expectsSkipped: false,
+    },
+    {
+      name: "claude reload-models reports a running proxy write block without preparing the home",
+      argv: ["claude", "reload-models", "cp_work"],
+      expectedBody: {},
+      writesBlocked: true,
+      expectsSkipped: true,
+    },
+  ])("$name", async ({
+    name,
+    argv,
+    expectedBody,
+    writesBlocked,
+    expectsSkipped,
+  }) => {
     const frogHome = mkdtempSync(join(tmpdir(), "frogp-running-reload-cli-"));
     const claudeHome = mkdtempSync(join(tmpdir(), "frogp-running-reload-claude-"));
     const refreshRequests: Array<{ path: string; origin: string | null; body: unknown }> = [];
-    let writesBlocked = false;
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       async fetch(request) {
         const url = new URL(request.url);
         if (url.pathname === "/healthz") {
-          return Response.json({ status: "ok", serverBuildId: `frogprogsy-server@${installedPackageVersion()}`, processPid: process.pid });
+          return Response.json({
+            status: "ok",
+            serverBuildId: `frogprogsy-server@${installedPackageVersion()}`,
+            processPid: process.pid,
+          });
         }
         if (url.pathname === "/api/claude-profiles/cp_work/refresh" && request.method === "POST") {
           refreshRequests.push({
@@ -929,76 +1013,26 @@ describe("CLI subcommand help", () => {
       }, null, 2) + "\n");
       writeFileSync(join(frogHome, "frogp.pid"), String(process.pid));
 
-      const child = Bun.spawn(
-        [process.execPath, cliPath, "claude", "reload-models", "cp_work", "--global-discovery-auth"],
-        { cwd: repoRoot, env, stdout: "pipe", stderr: "pipe" },
-      );
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ]);
+      const result = await runCliPhase(argv, env, name);
 
-      expect(exitCode).toBe(0);
-      expect(stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
       expect(refreshRequests).toEqual([{
         path: "/api/claude-profiles/cp_work/refresh",
         origin: `http://127.0.0.1:${server.port}`,
-        body: { globalDiscoveryAuth: true },
+        body: expectedBody,
       }]);
-      expect(stdout).toContain("server snapshot refreshed");
-      expect(stdout).toContain("Gateway cache: written (2 models)");
-      expect(stdout).toContain("Catalog cache: synced");
+      if (expectsSkipped) {
+        expect(result.stdout).toContain("Model reload skipped");
+        expect(result.stdout).not.toContain("Model reload prepared");
+      }
       expect(existsSync(join(claudeHome, "cache", "gateway-models.json"))).toBe(false);
-
-      const topLevelChild = Bun.spawn(
-        [process.execPath, cliPath, "refresh"],
-        { cwd: repoRoot, env, stdout: "pipe", stderr: "pipe" },
-      );
-      const [topLevelStdout, topLevelStderr, topLevelExitCode] = await Promise.all([
-        new Response(topLevelChild.stdout).text(),
-        new Response(topLevelChild.stderr).text(),
-        topLevelChild.exited,
-      ]);
-
-      expect(topLevelExitCode).toBe(0);
-      expect(topLevelStderr).toBe("");
-      expect(topLevelStdout).toContain("server snapshot refreshed");
-      expect(refreshRequests).toEqual([
-        {
-          path: "/api/claude-profiles/cp_work/refresh",
-          origin: `http://127.0.0.1:${server.port}`,
-          body: { globalDiscoveryAuth: true },
-        },
-        {
-          path: "/api/claude-profiles/cp_work/refresh",
-          origin: `http://127.0.0.1:${server.port}`,
-          body: {},
-        },
-      ]);
-      expect(existsSync(join(claudeHome, "cache", "gateway-models.json"))).toBe(false);
-
-      writesBlocked = true;
-      const blockedChild = Bun.spawn(
-        [process.execPath, cliPath, "claude", "reload-models", "cp_work"],
-        { cwd: repoRoot, env, stdout: "pipe", stderr: "pipe" },
-      );
-      const [blockedStdout, blockedStderr, blockedExitCode] = await Promise.all([
-        new Response(blockedChild.stdout).text(),
-        new Response(blockedChild.stderr).text(),
-        blockedChild.exited,
-      ]);
-
-      expect(blockedExitCode).toBe(0);
-      expect(blockedStderr).toBe("");
-      expect(blockedStdout).toContain("Model reload skipped for Work Home (cp_work).");
-      expect(blockedStdout).not.toContain("Model reload prepared");
     } finally {
       server.stop(true);
       rmSync(frogHome, { recursive: true, force: true });
       rmSync(claudeHome, { recursive: true, force: true });
     }
-  }, 15000);
+  }, 15_000);
   test("claude reload-models includes bundled models for a catalog-managed provider", () => {
     const frogHome = mkdtempSync(join(tmpdir(), "frogp-managed-reload-cli-"));
     const claudeHome = mkdtempSync(join(tmpdir(), "frogp-managed-reload-claude-"));

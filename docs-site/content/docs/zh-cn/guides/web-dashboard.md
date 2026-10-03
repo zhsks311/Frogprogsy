@@ -42,11 +42,11 @@ Claude Code 的 `/model` picker 显示旧列表时，使用 **Claude Code 目录
 
 ## 替换已停止提供的模型
 
-Models 页面会在页面摘要下方、模型显示与优先顺序控件上方检查替换状态。已停止提供、需要登录或替代设置无效的项目会默认展开；正常项目集中在一个折叠区域中，方便先处理需要操作的问题。
+Models 页面会在页面摘要下方、模型显示与优先顺序控件上方检查模型设置。真正需要修改的启用中设置会按模型分组，并分别显示受影响的模型数和准确的使用位置数。已保存的替代模型有问题时，卡片会显示该替代模型及其在所属规则中的准确顺序，而不会把正常的规则主模型标记为故障。未启用的已保存设置与旧会话模型名称仍可在折叠的诊断区域查看，但不会被列为必须处理的问题。
 
 普通模型请求最多可以按顺序保存三个准确的替代模型。自动保护可以关闭，也可以仅在模型停止提供时、仅在临时故障时，或在这两种情况下启用。它只会在处理请求时临时尝试替代模型，不会更改已保存的默认模型。
 
-自动模式判断、Model Mixing、网页搜索与图像处理模型、子任务模型都有固定职责，不能静默切换到行为不同的模型，因此只提供**永久替换**。永久替换会在确认后更改未来请求使用的已保存模型，这与临时尝试替代模型的自动保护不同。
+自动模式判断、Model Mixing、网页搜索与图像处理模型、子任务模型都有固定职责，不能静默切换到行为不同的模型。每张卡片会显示准确的角色或列表序号，因此请使用**永久替换**；位置可选时也可使用**删除此设置**。Provider 默认模型不能删除，只能替换。删除 helper 会保留其他选项并关闭该 helper；删除列表中的最后一个模型仍会保留明确的空列表。模型显示状态与子任务模型优先顺序彼此独立；处理模型问题不会清除其他尚未保存的顺序编辑。当前列表中没有的已保存优先名称仍会保留，但不会重新加入可选模型列表。仅凭名称缺失不能断定它无法在 Claude Code 中运行，请另行查看模型诊断。
 
 ## Model Mixing 页面
 
@@ -125,7 +125,7 @@ Claude Code 也可能调用 provider-specific usage endpoint，因此 FrogProgsy
 | `POST /api/oauth/login` / `GET /api/oauth/status` | 启动并轮询 OAuth login |
 | `GET/POST/PATCH/DELETE /api/claude-profiles` | 管理 Claude Code 目录与按目录隔离的 model overlays。包含 `PATCH` 在内的 mutating methods 只允许 local origin |
 | `POST /api/claude-profiles/:id/inject|refresh|restore` | 对单个 Claude Code 目录执行 inject、refresh 或 restore。`refresh` 会返回用于 Claude Code picker recovery 的 additive `modelReload` metadata；可用时包含稳定的 `frogp claude reload-models <profile-id>` 命令 |
-| `GET /api/subagent-models` / `PUT /api/subagent-models` | 读取/设置 featured subagent models |
+| `GET /api/subagent-models` / `PUT /api/subagent-models` | 读取和设置优先显示的子任务模型。GET 会返回整个已保存列表的不透明 revision；Dashboard 将其作为 `expectedRevision` 发送。过期的条件 PUT 会返回 `409`，不会覆盖较新的顺序。为兼容现有客户端，仍支持不含 `expectedRevision` 的 PUT。 |
 | `GET /api/fallback-settings` / `PUT /api/fallback-settings` | 读取/设置 capability fallback model choice |
 | `GET /api/classifier-settings` / `PUT /api/classifier-settings` | 读取/设置 per-provider classifier models 与 cross-provider classifier fallback |
 | `PUT /api/disabled-models` | 在 Claude Code discovery 中隐藏/显示 routed model |

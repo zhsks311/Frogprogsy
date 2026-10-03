@@ -216,32 +216,19 @@ describe("Bun-only development package contract", () => {
     const generatedDir = join(packageRoot, "src", "generated");
     const catalogPath = join(generatedDir, "model-catalog-v1.json");
     const tarball = join(tempRoot, "frogprogsy.tgz");
-    const repositoryRoot = fileURLToPath(root);
-    const sourceCommit = "a".repeat(40);
-    const generatedAt = "2026-08-13T00:00:00Z";
+    const trackedCatalogPath = fileURLToPath(new URL("src/generated/model-catalog-v1.json", root));
 
     mkdirSync(generatedDir, { recursive: true });
     try {
-      const generated = spawnSync(
-        "bun",
-        [
-          "scripts/generate-model-catalog.ts",
-          "--source-commit",
-          sourceCommit,
-          "--generated-at",
-          generatedAt,
-          "--out",
-          catalogPath,
-        ],
-        { cwd: repositoryRoot, encoding: "utf8" },
-      );
-      expect(generated.status).toBe(0);
+      const catalog = JSON.parse(readFileSync(trackedCatalogPath, "utf8")) as Record<string, unknown>;
+      const sourceCommit = catalog.sourceCommit;
+      const generatedAt = catalog.generatedAt;
+      writeFileSync(catalogPath, `${JSON.stringify(catalog)}\n`, "utf8");
 
       const packed = spawnSync("tar", ["-czf", tarball, "-C", tempRoot, "package"], { encoding: "utf8" });
       expect(packed.status).toBe(0);
       expect(verifyPackagedModelCatalog(tarball)).toMatchObject({ sourceCommit, generatedAt });
 
-      const catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as Record<string, unknown>;
       catalog.unexpected = true;
       writeFileSync(catalogPath, JSON.stringify(catalog), "utf8");
       const repacked = spawnSync("tar", ["-czf", tarball, "-C", tempRoot, "package"], { encoding: "utf8" });

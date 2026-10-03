@@ -89,11 +89,12 @@ Claude Code가 Claude 구독 로그인을 소유합니다. FrogProgsy는 Claude 
 | Command | Mutates | Effect |
 | --- | --- | --- |
 | `frogp models [--json]` | 없음 | 실행 중인 proxy의 모델 목록을 보여주는 온라인 전용 명령입니다. 텍스트 출력은 provider별로 모델을 묶고, 검증된 호환 정보가 있는 모델은 **검증됨**, AI 서비스 응답이나 사용자의 직접 추가로만 찾은 모델은 **발견됨**으로 표시합니다. 현재 모델 자료가 원격, 저장된 사본, 설치 버전 기본 제공 중 어디에서 왔는지도 보여줍니다. `--json`은 안정된 `supportStatus`와 `catalogSource` 값을 포함한 `GET /api/models` 배열을 변형 없이 출력합니다. relay가 꺼져 있으면 `frogp start`, 기록은 있는데 응답이 없으면 `frogp status`/`frogp refresh`를 안내합니다. 오프라인 모델 목록은 만들지 않습니다. |
-| `frogp models continuity [--json]` | 없음 | 실행 중인 proxy에서 정렬된 모델 연속성 보고서를 읽습니다. 텍스트 출력은 영향을 받은 reference를 먼저 보여주고 바로 실행할 다음 명령을 안내합니다. `--json`은 `GET /api/model-continuity` 문서를 변형 없이 출력합니다. |
+| `frogp models continuity [--json]` | 없음 | 실행 중인 proxy의 모델 연속성 보고서를 읽습니다. 텍스트 출력은 실제로 바꿔야 하는 항목을 모델별로 묶고, 모델 수와 설정 위치 수를 따로 보여 줍니다. 현재 쓰지 않는 설정과 이전 세션 이름은 참고 영역에만 표시합니다. `--json`은 `GET /api/model-continuity` 문서를 변형 없이 출력합니다. |
 | `frogp models continuity set <provider/model> --fallback <provider/model>... --auto off\|retired\|transient\|all` | config | 실행 중인 proxy를 통해 fallback 순서와 자동 모드를 저장합니다. `--fallback`을 반복한 순서가 실제 시도 순서입니다. |
 | `frogp models continuity replace <reference-id> <provider/model>` | config와 해당 Claude Code 모델 캐시 | 현재 보고서의 reference 한 곳이 가리키는 모델을 영구 교체합니다. Reference id는 보고서를 읽은 뒤 대상이 바뀐 경우 잘못된 곳을 수정하지 않도록 막습니다. |
+| `frogp models continuity remove <reference-id>` | config와 해당 Claude Code 모델 캐시 | 선택 설정, 저장한 대체 모델 한 곳, 또는 저장된 자동 대응 규칙을 삭제합니다. 대체 모델 한 곳만 삭제하면 자동 대응 모드와 나머지 대체 모델은 그대로 유지됩니다. 필수 provider 기본 모델과 이전 세션 이름은 삭제할 수 없습니다. 실행 중인 보고서의 현재 대상이 잘못된 위치 변경을 막습니다. |
 
-자동 연속성은 **기본적으로 꺼져 있습니다**. `retired`는 기본 모델이 사용 종료된 reference만 전환하고, `transient`는 대상이 되는 일시적 실패를 처리하며, `all`은 둘 다 켭니다. 자동 연속성은 일반 모델 요청 경로에만 적용됩니다. Classifier reference는 수동 교체만 지원합니다. 정확한 `replace` 명령으로 바꿀 수 있지만 classifier 요청에는 자동 연속성이 적용되지 않습니다.
+자동 연속성은 **기본적으로 꺼져 있습니다**. `retired`는 주 모델이 종료된 일반 모델 요청만 전환하고, `transient`는 대상이 되는 일시적 실패를 처리하며, `all`은 둘 다 켭니다. Classifier, Model Mixing, helper, 하위 작업 모델에는 자동 연속성을 적용하지 않으며 해당 설정을 직접 교체하거나 삭제해야 합니다.
 
 ## Catalog and Claude Code cache
 

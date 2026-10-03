@@ -1,10 +1,14 @@
+import { createHash } from "node:crypto";
 import {
   resolveAutoModeClassifierTarget,
   validateClassifierModel,
 } from "./classifier-settings";
+import { findOpenAIResponsesFallbackProviderEntry } from "./fallback-openai-responses";
+import { DEFAULT_IMAGE_FALLBACK_MODEL } from "./image-fallback";
 import type { ModelAliasEntry } from "./model-aliases";
 import type { SelectedModelCatalog } from "./model-catalog-runtime";
 import { routeModel } from "./router";
+import { DEFAULT_WEB_SEARCH_FALLBACK_MODEL } from "./web-search-fallback";
 import type {
   FrogConfig,
   ModelContinuityAutomatic,
@@ -131,6 +135,8 @@ export type ModelContinuityReferenceKind =
   | "mix-rule"
   | "web-search-helper"
   | "image-helper"
+  | "continuity-policy"
+  | "continuity-policy-candidate"
   | "gateway-alias";
 
 export interface ModelContinuityReference {
@@ -138,10 +144,21 @@ export interface ModelContinuityReference {
   kind: ModelContinuityReferenceKind;
   primary: string;
   status: "ready" | "retired" | "authentication_required" | "policy_invalid";
+  active: boolean;
+  actionRequired: boolean;
+  removable: boolean;
   automaticEligible: boolean;
   policy: ModelContinuityPolicy;
   supportStatus: "validated" | "discovered" | "unknown";
   label: string;
+  policyPrimary?: string;
+  policyFallbackIndex?: number;
+  ownerRevision?: string;
+}
+
+export interface ModelContinuitySummary {
+  actionableModelCount: number;
+  actionableReferenceCount: number;
 }
 
 export interface CollectModelContinuityReferencesInput {
@@ -157,10 +174,20 @@ export interface ReplaceModelContinuityReferenceInput {
   expectedPrimary: string;
   replacement: string;
   models?: readonly ModelContinuityModelRow[];
-  validateTarget: (target: string) => string | null;
+  validateTarget: (target: string, kind: MutableReferenceOwner["kind"]) => string | null;
 }
 
 export type ReplaceModelContinuityReferenceResult =
+  | { ok: true }
+  | { ok: false; status: 400 | 409; error: string };
+
+export interface RemoveModelContinuityReferenceInput {
+  config: FrogConfig;
+  referenceId: string;
+  expectedPrimary: string;
+}
+
+export type RemoveModelContinuityReferenceResult =
   | { ok: true }
   | { ok: false; status: 400 | 409; error: string };
 
@@ -169,10 +196,14 @@ interface ReferenceOwner {
   kind: ModelContinuityReferenceKind;
   primary: string;
   label: string;
+  active: boolean;
+  policyPrimary?: string;
+  policyFallbackIndex?: number;
+  ownerRevision?: string;
 }
 
 interface MutableReferenceOwner {
-  kind: Exclude<ModelContinuityReferenceKind, "gateway-alias">;
+  kind: Exclude<ModelContinuityReferenceKind, "gateway-alias" | "continuity-policy">;
   primary: string;
   replace(target: { provider: string; model: string }): void;
 }
@@ -196,34 +227,77 @@ export function collectModelContinuityReferences(
 ): ModelContinuityReference[] {
   const owners = collectReferenceOwners(input.config);
   const rows = new Map(input.models.map(model => [model.namespaced, model]));
-  const disabledTargets = new Set(input.config.disabledModels ?? []);
-  const activeOrRetiredAliases = input.aliases.filter(alias => {
-    if (!input.config.providers[alias.provider]) return false;
-    if (input.retiredTargets.has(alias.routeKey)) return true;
-    const row = rows.get(alias.routeKey);
-    return row !== undefined && row.disabled !== true && !disabledTargets.has(alias.routeKey);
-  });
-  for (const alias of activeOrRetiredAliases) {
+  for (const alias of input.aliases.filter(alias => input.config.providers[alias.provider] !== undefined)) {
     owners.push({
       id: `gateway-alias:${alias.alias}`,
       kind: "gateway-alias",
       primary: alias.routeKey,
       label: alias.displayName,
+      active: false,
+    });
+  }
+  for (const [primary, configuredPolicy] of Object.entries(input.config.modelContinuity ?? {})) {
+    const policy = normalizeContinuityPolicy(configuredPolicy);
+    owners.push({
+      id: `continuity-policy:${encodeURIComponent(primary)}`,
+      kind: "continuity-policy",
+      primary,
+      label: `Continuity policy for ${primary}`,
+      active: policy.automatic !== "off",
+    });
+    policy.fallbacks.forEach((fallback, index) => {
+      owners.push({
+        id: `continuity-policy-candidate:${encodeURIComponent(primary)}:${index}`,
+        kind: "continuity-policy-candidate",
+        primary: fallback,
+        label: `Fallback ${index + 1} for ${primary}`,
+        active: policy.automatic !== "off",
+        policyPrimary: primary,
+        policyFallbackIndex: index,
+      });
     });
   }
 
   return owners.map(owner => {
     const row = rows.get(owner.primary);
-    const policy = normalizeContinuityPolicy(input.config.modelContinuity?.[owner.primary]);
+    const policyPrimary = owner.policyPrimary ?? owner.primary;
+    const policy = normalizeContinuityPolicy(input.config.modelContinuity?.[policyPrimary]);
     const automaticEligible = NON_AUTOMATIC_KINDS[owner.kind] !== true;
+    const structureValid = owner.kind === "continuity-policy"
+      ? isContinuityAutomatic(policy.automatic)
+      : owner.kind === "continuity-policy-candidate"
+        ? continuityPolicyCandidateStructureValid(
+          owner.policyPrimary!,
+          owner.policyFallbackIndex!,
+          policy,
+        )
+        : true;
+    const status = referenceStatus(
+      owner.primary,
+      structureValid,
+      input,
+      row,
+    );
     return {
       ...owner,
-      status: referenceStatus(owner.primary, automaticEligible, input, row, policy),
+      status,
+      actionRequired: owner.active && status !== "ready",
       automaticEligible,
+      removable: referenceRemovable(input.config, owner),
       policy,
       supportStatus: row?.supportStatus ?? "unknown",
     };
   });
+}
+
+export function summarizeModelContinuityReferences(
+  references: readonly ModelContinuityReference[],
+): ModelContinuitySummary {
+  const actionable = references.filter(reference => reference.actionRequired);
+  return {
+    actionableModelCount: new Set(actionable.map(reference => reference.primary)).size,
+    actionableReferenceCount: actionable.length,
+  };
 }
 
 export function replaceModelContinuityReference(
@@ -247,6 +321,17 @@ export function replaceModelContinuityReference(
       error: "model reference changed; reload and retry",
     };
   }
+  const policyCandidate = findPolicyCandidateReference(input.config, input.referenceId);
+  if (policyCandidate) {
+    if (input.replacement === policyCandidate.policyPrimary) {
+      return { ok: false, status: 400, error: "fallback target cannot match its policy primary" };
+    }
+    if (policyCandidate.policy.fallbacks.some(
+      (fallback, index) => index !== policyCandidate.index && fallback === input.replacement,
+    )) {
+      return { ok: false, status: 400, error: "duplicate fallback target" };
+    }
+  }
 
   const replacement = qualifiedModelTarget(input.replacement);
   if (!replacement) {
@@ -263,7 +348,7 @@ export function replaceModelContinuityReference(
     };
   }
 
-  const targetError = input.validateTarget(input.replacement);
+  const targetError = input.validateTarget(input.replacement, owner.kind);
   if (targetError) return { ok: false, status: 400, error: targetError };
   if (owner.kind === "classifier") {
     const candidateConfig: FrogConfig = {
@@ -295,6 +380,117 @@ export function replaceModelContinuityReference(
   return { ok: true };
 }
 
+export function removeModelContinuityReference(
+  input: RemoveModelContinuityReferenceInput,
+): RemoveModelContinuityReferenceResult {
+  const policyCandidate = findPolicyCandidateReference(input.config, input.referenceId);
+  if (input.referenceId.startsWith("continuity-policy-candidate:")) {
+    if (!policyCandidate || policyCandidate.primary !== input.expectedPrimary) {
+      return { ok: false, status: 409, error: "model reference changed; reload and retry" };
+    }
+    policyCandidate.policy.fallbacks.splice(policyCandidate.index, 1);
+    if (policyCandidate.policy.automatic === "off" && policyCandidate.policy.fallbacks.length === 0) {
+      delete input.config.modelContinuity![policyCandidate.policyPrimary];
+      if (Object.keys(input.config.modelContinuity!).length === 0) delete input.config.modelContinuity;
+    }
+    return { ok: true };
+  }
+  if (input.referenceId.startsWith("provider-default:")) {
+    return {
+      ok: false,
+      status: 400,
+      error: "provider defaults are required; replace this model instead",
+    };
+  }
+  if (input.referenceId.startsWith("gateway-alias:")) {
+    return {
+      ok: false,
+      status: 400,
+      error: "gateway aliases are retained past-session identifiers",
+    };
+  }
+  if (input.referenceId.startsWith("continuity-policy:")) {
+    const policyEntry = Object.entries(input.config.modelContinuity ?? {})
+      .find(([primary]) => `continuity-policy:${encodeURIComponent(primary)}` === input.referenceId);
+    if (!policyEntry) {
+      return { ok: false, status: 400, error: `unknown model reference: ${input.referenceId}` };
+    }
+    if (policyEntry[0] !== input.expectedPrimary) {
+      return { ok: false, status: 409, error: "model reference changed; reload and retry" };
+    }
+    delete input.config.modelContinuity![policyEntry[0]];
+    if (Object.keys(input.config.modelContinuity!).length === 0) delete input.config.modelContinuity;
+    return { ok: true };
+  }
+
+  const ownerPrimary = findRemovalReferencePrimary(input.config, input.referenceId);
+  if (ownerPrimary === null && !isModelContinuityReferenceId(input.referenceId)) {
+    return { ok: false, status: 400, error: `unknown model reference: ${input.referenceId}` };
+  }
+  if (ownerPrimary === null || ownerPrimary !== input.expectedPrimary) {
+    return { ok: false, status: 409, error: "model reference changed; reload and retry" };
+  }
+  if (input.referenceId === "classifier" && input.config.autoModeClassifierEnabled === true) {
+    return {
+      ok: false,
+      status: 400,
+      error: "disable auto-mode classifier routing before removing its saved target",
+    };
+  }
+
+  if (input.referenceId === "long-context") {
+    delete input.config.longContext;
+    return { ok: true };
+  }
+  if (input.referenceId === "classifier") {
+    delete input.config.autoModeClassifier;
+    return { ok: true };
+  }
+  if (input.referenceId === "mix-coordinator") {
+    delete input.config.modelMixing?.coordinator;
+    return { ok: true };
+  }
+  if (input.referenceId === "mix-judge") {
+    delete input.config.modelMixing?.fusion?.judge;
+    return { ok: true };
+  }
+  if (input.referenceId === "mix-synthesizer") {
+    delete input.config.modelMixing?.fusion?.synthesizer;
+    return { ok: true };
+  }
+  if (input.referenceId === "web-search-helper") {
+    if (input.config.webSearchFallback) {
+      input.config.webSearchFallback.enabled = false;
+      delete input.config.webSearchFallback.provider;
+      delete input.config.webSearchFallback.model;
+    }
+    return { ok: true };
+  }
+  if (input.referenceId === "image-helper") {
+    if (input.config.imageFallback) {
+      input.config.imageFallback.enabled = false;
+      delete input.config.imageFallback.provider;
+      delete input.config.imageFallback.model;
+    }
+    return { ok: true };
+  }
+
+  const indexed = parseIndexedReferenceId(input.referenceId);
+  if (!indexed) {
+    return { ok: false, status: 400, error: `model reference cannot be removed: ${input.referenceId}` };
+  }
+  if (indexed.kind === "subagent") {
+    input.config.subagentModels!.splice(indexed.index, 1);
+    return { ok: true };
+  }
+  const targets = indexedTargets(input.config, indexed.kind);
+  if (!targets?.[indexed.index]) {
+    return { ok: false, status: 409, error: "model reference changed; reload and retry" };
+  }
+  targets.splice(indexed.index, 1);
+  return { ok: true };
+}
+
 function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
   const owners: ReferenceOwner[] = [];
   for (const [provider, providerConfig] of Object.entries(config.providers)) {
@@ -304,6 +500,7 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
       kind: "provider-default",
       primary: `${provider}/${providerConfig.defaultModel}`,
       label: `${provider} default model`,
+      active: true,
     });
   }
 
@@ -321,8 +518,10 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
       longContext.provider,
       longContext.model,
       "Long-context route",
+      true,
     ));
   }
+  const subagentRevision = modelContinuityOwnerRevision(config.subagentModels ?? []);
   for (const [index, configuredModel] of (config.subagentModels ?? []).entries()) {
     if (typeof configuredModel !== "string") continue;
     owners.push({
@@ -330,55 +529,148 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
       kind: "subagent",
       primary: resolvedSubagentPrimary(config, configuredModel),
       label: `Subagent model ${index + 1}`,
+      active: true,
+      ownerRevision: subagentRevision,
     });
   }
-  if (config.autoModeClassifier?.provider && config.autoModeClassifier.model) {
+  if (config.autoModeClassifier) {
     owners.push(targetOwner(
       "classifier",
       "classifier",
       config.autoModeClassifier.provider,
       config.autoModeClassifier.model,
       "Auto-mode classifier",
+      config.autoModeClassifierEnabled === true,
     ));
   }
 
   const mixing = config.modelMixing;
-  if (mixing?.enabled === true) {
-    if (mixing.coordinator?.provider && mixing.coordinator.model) {
+  if (mixing) {
+    const enabled = mixing.enabled === true;
+    const combine = mixing.combine ?? "route";
+    const mode = mixing.mode ?? "coordinator";
+    const routeMode = enabled && combine === "route";
+    const pipelineMode = enabled && combine === "pipeline";
+    const fusionMode = enabled && combine === "fusion";
+    const explicitPipeline = (mixing.pipeline?.length ?? 0) > 0;
+    const explicitPanel = (mixing.fusion?.panel?.length ?? 0) > 0;
+    const pipelineHasResolvedStage = explicitPipeline
+      ? mixing.pipeline!.some(target => isConfiguredTarget(config, target))
+      : (mixing.agents ?? []).some(target =>
+        isPipelineRole(target.role) && isConfiguredTarget(config, target)
+      );
+    const firstConfiguredAgentIndex = enabled
+      ? (mixing.agents ?? []).findIndex(target => isConfiguredTarget(config, target))
+      : -1;
+    const pipelineFallbackAgentIndex = pipelineMode && !pipelineHasResolvedStage
+      ? firstConfiguredAgentIndex
+      : -1;
+    const selectedPipelineIndexes = new Set<number>();
+    const seenPipelineRoles = new Set<string>();
+    for (const [index, target] of (mixing.pipeline ?? []).entries()) {
+      if (!isConfiguredTarget(config, target) || seenPipelineRoles.has(target.role)) continue;
+      seenPipelineRoles.add(target.role);
+      selectedPipelineIndexes.add(index);
+    }
+    const selectedAgentRoleIndexes = new Set<number>();
+    for (const role of ["thinker", "worker", "verifier"] as const) {
+      const index = (mixing.agents ?? []).findIndex(
+        target => target.role === role && isConfiguredTarget(config, target),
+      );
+      if (index >= 0) selectedAgentRoleIndexes.add(index);
+    }
+    const configuredBudgetCalls = Math.max(1, mixing.fusion?.multiround?.budgetCalls ?? 12);
+    const fusionPanelLimit = mixing.fusion?.multiround?.enabled === true
+      ? Math.min(8, Math.max(0, Math.trunc(configuredBudgetCalls - 1)))
+      : 8;
+    const selectedFusionAgentIndexes = firstConfiguredIndexes(
+      config,
+      mixing.agents ?? [],
+      fusionPanelLimit,
+    );
+    const selectedFusionPanelIndexes = firstConfiguredIndexes(
+      config,
+      mixing.fusion?.panel ?? [],
+      fusionPanelLimit,
+    );
+    const firstConfiguredCatchAllRule = (mixing.rules ?? []).findIndex(
+      target => isConfiguredTarget(config, target) && isCatchAllMixRule(target),
+    );
+    const agentRevision = modelContinuityOwnerRevision(mixing.agents ?? []);
+    const pipelineRevision = modelContinuityOwnerRevision(mixing.pipeline ?? []);
+    const panelRevision = modelContinuityOwnerRevision(mixing.fusion?.panel ?? []);
+    const ruleRevision = modelContinuityOwnerRevision(mixing.rules ?? []);
+    const coordinatorActive = (routeMode && mode === "coordinator")
+      || (fusionMode
+        && (
+          !isConfiguredTarget(config, mixing.fusion?.judge)
+          || !isConfiguredTarget(config, mixing.fusion?.synthesizer)
+        ));
+
+    if (mixing.coordinator) {
       owners.push(targetOwner(
         "mix-coordinator",
         "mix-coordinator",
         mixing.coordinator.provider,
         mixing.coordinator.model,
         "Mixing coordinator",
+        coordinatorActive,
       ));
     }
     for (const [index, target] of (mixing.agents ?? []).entries()) {
-      owners.push(targetOwner(
-        `mix-agent:${index}`,
-        "mix-agent",
-        target.provider,
-        target.model,
-        `Mixing agent ${index + 1}`,
-      ));
+      const pipelineRole = isPipelineRole(target.role);
+      const configured = isConfiguredTarget(config, target);
+      const active = (routeMode && mode !== "rules")
+        || (enabled && index === firstConfiguredAgentIndex)
+        || (pipelineMode
+          && !explicitPipeline
+          && pipelineRole
+          && (!configured || selectedAgentRoleIndexes.has(index)))
+        || (pipelineMode && index === pipelineFallbackAgentIndex)
+        || (fusionMode
+          && !explicitPanel
+          && (!configured || selectedFusionAgentIndexes.has(index)));
+      owners.push({
+        ...targetOwner(
+          `mix-agent:${index}`,
+          "mix-agent",
+          target.provider,
+          target.model,
+          `Mixing agent ${index + 1}`,
+          active,
+        ),
+        ownerRevision: agentRevision,
+      });
     }
     for (const [index, target] of (mixing.pipeline ?? []).entries()) {
-      owners.push(targetOwner(
-        `mix-pipeline:${index}`,
-        "mix-pipeline",
-        target.provider,
-        target.model,
-        `Mixing pipeline stage ${index + 1}`,
-      ));
+      owners.push({
+        ...targetOwner(
+          `mix-pipeline:${index}`,
+          "mix-pipeline",
+          target.provider,
+          target.model,
+          `Mixing pipeline stage ${index + 1}`,
+          pipelineMode
+            && explicitPipeline
+            && (!isConfiguredTarget(config, target) || selectedPipelineIndexes.has(index)),
+        ),
+        ownerRevision: pipelineRevision,
+      });
     }
     for (const [index, target] of (mixing.fusion?.panel ?? []).entries()) {
-      owners.push(targetOwner(
-        `mix-panel:${index}`,
-        "mix-panel",
-        target.provider,
-        target.model,
-        `Mixing panel member ${index + 1}`,
-      ));
+      owners.push({
+        ...targetOwner(
+          `mix-panel:${index}`,
+          "mix-panel",
+          target.provider,
+          target.model,
+          `Mixing panel member ${index + 1}`,
+          fusionMode
+            && explicitPanel
+            && (!isConfiguredTarget(config, target) || selectedFusionPanelIndexes.has(index)),
+        ),
+        ownerRevision: panelRevision,
+      });
     }
     if (mixing.fusion?.judge) {
       owners.push(targetOwner(
@@ -387,6 +679,7 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
         mixing.fusion.judge.provider,
         mixing.fusion.judge.model,
         "Mixing judge",
+        fusionMode,
       ));
     }
     if (mixing.fusion?.synthesizer) {
@@ -396,58 +689,147 @@ function collectReferenceOwners(config: FrogConfig): ReferenceOwner[] {
         mixing.fusion.synthesizer.provider,
         mixing.fusion.synthesizer.model,
         "Mixing synthesizer",
+        fusionMode,
       ));
     }
     for (const [index, target] of (mixing.rules ?? []).entries()) {
-      owners.push(targetOwner(
-        `mix-rule:${index}`,
-        "mix-rule",
-        target.provider,
-        target.model,
-        `Mixing rule ${index + 1}`,
-      ));
+      owners.push({
+        ...targetOwner(
+          `mix-rule:${index}`,
+          "mix-rule",
+          target.provider,
+          target.model,
+          `Mixing rule ${index + 1}`,
+          routeMode
+            && mode === "rules"
+            && (firstConfiguredCatchAllRule < 0 || index <= firstConfiguredCatchAllRule),
+        ),
+        ownerRevision: ruleRevision,
+      });
     }
   }
 
-  const webSearch = config.webSearchFallback;
-  if (webSearch?.enabled === true && webSearch.provider && webSearch.model) {
+  const webSearch = helperTarget(
+    config,
+    config.webSearchFallback,
+    DEFAULT_WEB_SEARCH_FALLBACK_MODEL,
+  );
+  if (webSearch) {
     owners.push(targetOwner(
       "web-search-helper",
       "web-search-helper",
       webSearch.provider,
       webSearch.model,
       "Web-search helper",
+      config.webSearchFallback?.enabled === true,
     ));
   }
-  const image = config.imageFallback;
-  if (image?.enabled === true && image.provider && image.model) {
+  const image = helperTarget(
+    config,
+    config.imageFallback,
+    DEFAULT_IMAGE_FALLBACK_MODEL,
+  );
+  if (image) {
     owners.push(targetOwner(
       "image-helper",
       "image-helper",
       image.provider,
       image.model,
       "Image helper",
+      config.imageFallback?.enabled === true,
     ));
   }
   return owners;
 }
 
+function helperTarget(
+  config: FrogConfig,
+  settings: { enabled?: boolean; provider?: string; model?: string } | undefined,
+  defaultModel: string,
+): { provider: string; model: string } | null {
+  if (!settings) return null;
+  const provider = findOpenAIResponsesFallbackProviderEntry(config, settings.provider)?.name ?? "";
+  return { provider, model: settings.model ?? defaultModel };
+}
+
 function targetOwner(
   id: string,
   kind: ModelContinuityReferenceKind,
-  provider: string,
-  model: string,
+  provider: string | undefined,
+  model: string | undefined,
   label: string,
+  active: boolean,
 ): ReferenceOwner {
-  return { id, kind, primary: `${provider}/${model}`, label };
+  return { id, kind, primary: targetPrimary(provider, model), label, active };
+}
+
+function targetPrimary(provider: string | undefined, model: string | undefined): string {
+  return `${provider ?? ""}/${model ?? ""}`;
+}
+
+function isConfiguredTarget(
+  config: FrogConfig,
+  target: { provider?: string; model?: string } | undefined,
+): boolean {
+  return Boolean(
+    target
+    && typeof target.provider === "string"
+    && target.provider.length > 0
+    && typeof target.model === "string"
+    && target.model.length > 0
+    && config.providers[target.provider],
+  );
+}
+
+function isPipelineRole(role: string | undefined): boolean {
+  return role === "thinker" || role === "worker" || role === "verifier";
+}
+
+function firstConfiguredIndexes(
+  config: FrogConfig,
+  targets: readonly { provider?: string; model?: string }[],
+  limit: number,
+): ReadonlySet<number> {
+  const selected = new Set<number>();
+  for (const [index, target] of targets.entries()) {
+    if (!isConfiguredTarget(config, target)) continue;
+    if (selected.size >= limit) break;
+    selected.add(index);
+  }
+  return selected;
+}
+
+function isCatchAllMixRule(target: {
+  match?: {
+    taskKeywords?: string[];
+    difficulty?: string;
+    hint?: string;
+  };
+}): boolean {
+  const match = target.match;
+  return !match
+    || (
+      (match.taskKeywords === undefined || match.taskKeywords.length === 0)
+      && match.difficulty === undefined
+      && match.hint === undefined
+    );
+}
+
+export function modelContinuityOwnerRevision(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function referenceRemovable(config: FrogConfig, owner: ReferenceOwner): boolean {
+  if (owner.kind === "provider-default" || owner.kind === "gateway-alias") return false;
+  if (owner.kind === "classifier") return config.autoModeClassifierEnabled !== true;
+  return true;
 }
 
 function referenceStatus(
   primary: string,
-  automaticEligible: boolean,
+  structureValid: boolean,
   input: CollectModelContinuityReferencesInput,
   row: ModelContinuityModelRow | undefined,
-  policy: ModelContinuityPolicy,
 ): ModelContinuityReference["status"] {
   if (input.retiredTargets.has(primary)) return "retired";
   const primaryTarget = qualifiedModelTarget(primary);
@@ -457,31 +839,81 @@ function referenceStatus(
     || !row
     || row.disabled === true
     || (input.config.disabledModels ?? []).includes(primary)
+    || !structureValid
   ) {
     return "policy_invalid";
   }
-  const classifier = input.config.autoModeClassifier;
-  const classifierTarget = classifier ? `${classifier.provider}/${classifier.model}` : null;
-  const validationConfig = automaticEligible && classifierTarget === primary
-    ? { ...input.config, autoModeClassifier: undefined }
-    : input.config;
-  const policyResult = validateContinuityPolicy({
-    primaryTarget: primary,
-    config: validationConfig,
-    retiredTargets: input.retiredTargets,
-    models: input.models,
-    automatic: automaticEligible ? policy.automatic : "off",
-    fallbacks: policy.fallbacks,
-  });
-  if (!policyResult.ok) return "policy_invalid";
   if (row.authReady === false) return "authentication_required";
   return "ready";
+}
+
+function continuityPolicyCandidateStructureValid(
+  policyPrimary: string,
+  index: number,
+  policy: ModelContinuityPolicy,
+): boolean {
+  if (index >= MAX_CONTINUITY_FALLBACKS) return false;
+  const candidate = policy.fallbacks[index];
+  if (candidate === policyPrimary) return false;
+  return !policy.fallbacks.slice(0, index).includes(candidate);
+}
+
+function findRemovalReferencePrimary(config: FrogConfig, referenceId: string): string | null {
+  if (referenceId === "long-context") {
+    const target = config.longContext;
+    return target ? targetPrimary(target.provider, target.model) : null;
+  }
+  if (referenceId === "classifier") {
+    const target = config.autoModeClassifier;
+    return target ? targetPrimary(target.provider, target.model) : null;
+  }
+  if (referenceId === "mix-coordinator") {
+    const target = config.modelMixing?.coordinator;
+    return target ? targetPrimary(target.provider, target.model) : null;
+  }
+  if (referenceId === "mix-judge") {
+    const target = config.modelMixing?.fusion?.judge;
+    return target ? targetPrimary(target.provider, target.model) : null;
+  }
+  if (referenceId === "mix-synthesizer") {
+    const target = config.modelMixing?.fusion?.synthesizer;
+    return target ? targetPrimary(target.provider, target.model) : null;
+  }
+  if (referenceId === "web-search-helper") {
+    const target = helperTarget(config, config.webSearchFallback, DEFAULT_WEB_SEARCH_FALLBACK_MODEL);
+    return target ? targetPrimary(target.provider, target.model) : null;
+  }
+  if (referenceId === "image-helper") {
+    const target = helperTarget(config, config.imageFallback, DEFAULT_IMAGE_FALLBACK_MODEL);
+    return target ? targetPrimary(target.provider, target.model) : null;
+  }
+
+  const indexed = parseIndexedReferenceId(referenceId);
+  if (!indexed) return null;
+  if (indexed.kind === "subagent") {
+    const configuredModel = config.subagentModels?.[indexed.index];
+    return typeof configuredModel === "string"
+      ? resolvedSubagentPrimary(config, configuredModel)
+      : null;
+  }
+  const target = indexedTargets(config, indexed.kind)?.[indexed.index];
+  return target ? targetPrimary(target.provider, target.model) : null;
 }
 
 function findMutableReferenceOwner(
   config: FrogConfig,
   referenceId: string,
 ): MutableReferenceOwner | null {
+  const policyCandidate = findPolicyCandidateReference(config, referenceId);
+  if (policyCandidate) {
+    return {
+      kind: "continuity-policy-candidate",
+      primary: policyCandidate.primary,
+      replace: target => {
+        policyCandidate.policy.fallbacks[policyCandidate.index] = `${target.provider}/${target.model}`;
+      },
+    };
+  }
   if (referenceId.startsWith("provider-default:")) {
     const provider = referenceId.slice("provider-default:".length);
     const providerConfig = config.providers[provider];
@@ -496,18 +928,15 @@ function findMutableReferenceOwner(
   }
   if (referenceId === "long-context") {
     const target = config.longContext;
-    if (!target?.provider || !target.model) return null;
-    return objectReferenceOwner("long-context", target);
+    return target ? objectReferenceOwner("long-context", target) : null;
   }
   if (referenceId === "classifier") {
     const target = config.autoModeClassifier;
-    if (!target?.provider || !target.model) return null;
-    return objectReferenceOwner("classifier", target);
+    return target ? objectReferenceOwner("classifier", target) : null;
   }
   if (referenceId === "mix-coordinator") {
     const target = config.modelMixing?.coordinator;
-    if (!target?.provider || !target.model) return null;
-    return objectReferenceOwner("mix-coordinator", target);
+    return target ? objectReferenceOwner("mix-coordinator", target) : null;
   }
   if (referenceId === "mix-judge") {
     const target = config.modelMixing?.fusion?.judge;
@@ -518,14 +947,30 @@ function findMutableReferenceOwner(
     return target ? objectReferenceOwner("mix-synthesizer", target) : null;
   }
   if (referenceId === "web-search-helper") {
-    const target = config.webSearchFallback;
-    if (!target?.provider || !target.model) return null;
-    return objectReferenceOwner("web-search-helper", target);
+    const settings = config.webSearchFallback;
+    const target = helperTarget(config, settings, DEFAULT_WEB_SEARCH_FALLBACK_MODEL);
+    if (!settings || !target) return null;
+    return {
+      kind: "web-search-helper",
+      primary: `${target.provider}/${target.model}`,
+      replace: replacement => {
+        settings.provider = replacement.provider;
+        settings.model = replacement.model;
+      },
+    };
   }
   if (referenceId === "image-helper") {
-    const target = config.imageFallback;
-    if (!target?.provider || !target.model) return null;
-    return objectReferenceOwner("image-helper", target);
+    const settings = config.imageFallback;
+    const target = helperTarget(config, settings, DEFAULT_IMAGE_FALLBACK_MODEL);
+    if (!settings || !target) return null;
+    return {
+      kind: "image-helper",
+      primary: `${target.provider}/${target.model}`,
+      replace: replacement => {
+        settings.provider = replacement.provider;
+        settings.model = replacement.model;
+      },
+    };
   }
 
   const indexed = parseIndexedReferenceId(referenceId);
@@ -549,11 +994,10 @@ function findMutableReferenceOwner(
 function objectReferenceOwner(
   kind: MutableReferenceOwner["kind"],
   target: { provider?: string; model?: string },
-): MutableReferenceOwner | null {
-  if (!target.provider || !target.model) return null;
+): MutableReferenceOwner {
   return {
     kind,
-    primary: `${target.provider}/${target.model}`,
+    primary: targetPrimary(target.provider, target.model),
     replace: replacement => {
       target.provider = replacement.provider;
       target.model = replacement.model;
@@ -567,6 +1011,37 @@ function resolvedSubagentPrimary(config: FrogConfig, configuredModel: string): s
     return `${route.providerName}/${route.modelId}`;
   } catch {
     return configuredModel;
+  }
+}
+
+function findPolicyCandidateReference(
+  config: FrogConfig,
+  referenceId: string,
+): {
+  policyPrimary: string;
+  index: number;
+  primary: string;
+  policy: ModelContinuityPolicy;
+} | null {
+  const parsed = parsePolicyCandidateReferenceId(referenceId);
+  if (!parsed) return null;
+  const policy = config.modelContinuity?.[parsed.policyPrimary];
+  const primary = policy?.fallbacks[parsed.index];
+  if (!policy || typeof primary !== "string") return null;
+  return { ...parsed, primary, policy };
+}
+
+function parsePolicyCandidateReferenceId(
+  referenceId: string,
+): { policyPrimary: string; index: number } | null {
+  const match = /^continuity-policy-candidate:(.+):(0|[1-9]\d*)$/.exec(referenceId);
+  if (!match) return null;
+  try {
+    const policyPrimary = decodeURIComponent(match[1]);
+    if (!policyPrimary) return null;
+    return { policyPrimary, index: Number(match[2]) };
+  } catch {
+    return null;
   }
 }
 
@@ -597,7 +1072,8 @@ function isModelContinuityReferenceId(referenceId: string): boolean {
   ) {
     return true;
   }
-  return parseIndexedReferenceId(referenceId) !== null;
+  return parsePolicyCandidateReferenceId(referenceId) !== null
+    || parseIndexedReferenceId(referenceId) !== null;
 }
 
 function indexedTargets(
