@@ -1,7 +1,7 @@
 import { baseProviderLabel } from "./provider-label";
 import type { CacheUsageSemantics } from "./types";
 import type { PersistedUsageEntry, UsageStatus } from "./usage-log";
-import { buildUsagePricing, type UsagePricingConfig, type UsagePricingSummary } from "./usage-pricing";
+import { buildUsagePricing, isShadowUsageEntry, type UsagePricingConfig, type UsagePricingSummary } from "./usage-pricing";
 
 export type UsageRange = "7d" | "30d" | "all";
 
@@ -20,21 +20,54 @@ export interface UsageSummaryTotals {
 }
 export type CacheHitRateStatus = "available" | "no_data" | "unsupported" | "unavailable" | "error";
 
-export interface UsageCacheHitRate {
+export interface UsageCacheMetrics {
   status: CacheHitRateStatus;
   formula: "cache_read_input_tokens / total_input_tokens";
+  requests: number;
+  /** Requests whose final lifecycle explicitly records successful completion. */
+  successfulRequests: number;
+  /** Successfully completed requests included in the token-weighted rate. */
+  measuredRequests: number;
+  /** Pre-lifecycle rows are excluded from the headline and retained as a separate historical rate. */
+  legacyRequests: number;
+  legacyMeasuredRequests: number;
+  historicalCacheReadInputTokens: number;
+  historicalTotalInputTokens: number;
+  historicalHitRate: number | null;
   cacheReadInputTokens: number;
-  /** Cache creation is an Anthropic-only separate bucket; native OpenAI never contributes here. */
+  /** Exact writes from requests that reported them; unavailable counters prevent unknown from becoming zero. */
   cacheCreationInputTokens: number;
-  /** Raw provider input counters: Anthropic plain input plus OpenAI's inclusive input total. */
-  inputTokens: number;
-  /** Provenance-aware denominator used by `formula`; never reconstruct it from the other aggregate fields. */
+  cacheCreationMeasuredRequests: number;
+  cacheCreationUnavailableRequests: number;
+  /** Exact uncached input only when read and write buckets are both known. */
+  uncachedInputTokens: number;
+  uncachedMeasuredRequests: number;
+  uncachedUnavailableRequests: number;
+  /** Inclusive input not read from cache; may include provider cache writes when their write bucket is absent. */
+  nonCacheReadInputTokens: number;
   totalInputTokens: number;
   hitRate: number | null;
-  reportedRequests: number;
+  coverageRatio: number | null;
   unsupportedRequests: number;
   unavailableRequests: number;
   failedRequests: number;
+  abortedRequests: number;
+  incompleteRequests: number;
+  /** Incomplete streamed responses with provider usage observed before termination. */
+  partialRequests: number;
+}
+
+export interface UsageCacheDay extends UsageCacheMetrics {
+  date: string;
+}
+
+export interface UsageCacheProvider extends UsageCacheMetrics {
+  provider: string;
+}
+
+export interface UsageCacheModel extends UsageCacheMetrics {
+  provider: string;
+  model: string;
 }
 
 
@@ -98,7 +131,10 @@ export interface UsageSummary {
   models: UsageModel[];
   providers: UsageProvider[];
   sourceState: UsageSourceState;
-  cacheHitRate: UsageCacheHitRate;
+  cacheHitRate: UsageCacheMetrics;
+  cacheDays: UsageCacheDay[];
+  cacheModels: UsageCacheModel[];
+  cacheProviders: UsageCacheProvider[];
   pricing: UsagePricingSummary;
 }
 
@@ -176,6 +212,9 @@ function cacheUsageSemantics(entry: PersistedUsageEntry): CacheUsageSemantics | 
   if (
     entry.cacheUsageSemantics === "anthropic_separate_input_buckets"
     || entry.cacheUsageSemantics === "openai_input_total_includes_cached"
+    || entry.cacheUsageSemantics === "google_input_total_includes_cached"
+    || entry.cacheUsageSemantics === "openrouter_input_total_includes_cached"
+    || entry.cacheUsageSemantics === "deepseek_hit_plus_miss"
   ) return entry.cacheUsageSemantics;
   // Rows written by the first cache-metric implementation predate the semantics field, but its
   // `reported` status required all three Anthropic buckets. Preserve that exact, non-guessed contract.
@@ -188,77 +227,288 @@ function cacheUsageSemantics(entry: PersistedUsageEntry): CacheUsageSemantics | 
   return undefined;
 }
 
-function summarizeCacheHitRate(entries: PersistedUsageEntry[]): UsageCacheHitRate {
-  let cacheReadInputTokens = 0;
-  let cacheCreationInputTokens = 0;
-  let inputTokens = 0;
-  let totalInputTokens = 0;
-  let reportedRequests = 0;
-  let unsupportedRequests = 0;
-  let unavailableRequests = 0;
-  let failedRequests = 0;
+interface CacheAccumulator {
+  requests: number;
+  successfulRequests: number;
+  measuredRequests: number;
+  legacyRequests: number;
+  legacyMeasuredRequests: number;
+  historicalCacheReadInputTokens: number;
+  historicalTotalInputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheCreationMeasuredRequests: number;
+  cacheCreationUnavailableRequests: number;
+  uncachedInputTokens: number;
+  uncachedMeasuredRequests: number;
+  uncachedUnavailableRequests: number;
+  nonCacheReadInputTokens: number;
+  totalInputTokens: number;
+  unsupportedRequests: number;
+  unavailableRequests: number;
+  failedRequests: number;
+  abortedRequests: number;
+  incompleteRequests: number;
+  partialRequests: number;
+}
 
-  for (const entry of entries) {
-    if (entry.status < 200 || entry.status >= 300) {
-      failedRequests += 1;
-      continue;
-    }
-    const usage = entry.usage;
-    const cacheRead = usage?.cacheReadInputTokens;
-    const cacheCreation = usage?.cacheCreationInputTokens;
-    const providerInput = usage?.inputTokens;
-    const semantics = cacheUsageSemantics(entry);
+function blankCacheAccumulator(): CacheAccumulator {
+  return {
+    requests: 0,
+    successfulRequests: 0,
+    measuredRequests: 0,
+    legacyRequests: 0,
+    legacyMeasuredRequests: 0,
+    historicalCacheReadInputTokens: 0,
+    historicalTotalInputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheCreationMeasuredRequests: 0,
+    cacheCreationUnavailableRequests: 0,
+    uncachedInputTokens: 0,
+    uncachedMeasuredRequests: 0,
+    uncachedUnavailableRequests: 0,
+    nonCacheReadInputTokens: 0,
+    totalInputTokens: 0,
+    unsupportedRequests: 0,
+    unavailableRequests: 0,
+    failedRequests: 0,
+    abortedRequests: 0,
+    incompleteRequests: 0,
+    partialRequests: 0,
+  };
+}
+
+type CacheRequestOutcome = "successful" | "legacy" | "failed" | "aborted" | "incomplete";
+
+function cacheRequestOutcome(entry: PersistedUsageEntry): CacheRequestOutcome {
+  switch (entry.outcome) {
+    case "completed":
+      return "successful";
+    case "client_cancel":
+    case "upstream_abort":
+      return "aborted";
+    case "timeout":
+    case "provider_non_2xx":
+    case "bridge_error":
+    case "internal_error":
+      return "failed";
+    case undefined:
+      if (entry.status === 499) return "aborted";
+      if (Number.isInteger(entry.status) && (entry.status < 200 || entry.status >= 300)) return "failed";
+      // A bare historical 2xx does not prove that a streaming response reached its terminal event.
+      return Number.isInteger(entry.status) && entry.status >= 200 && entry.status < 300 ? "legacy" : "incomplete";
+    default:
+      return "incomplete";
+  }
+}
+
+function addComparableCacheUsage(
+  totals: CacheAccumulator,
+  entry: PersistedUsageEntry,
+  legacy: boolean,
+): boolean {
+  if (entry.cacheUsageStatus !== "reported") return false;
+  const usage = entry.usage;
+  const cacheRead = usage?.cacheReadInputTokens;
+  const providerInput = usage?.inputTokens;
+  const semantics = cacheUsageSemantics(entry);
+  let totalInput: number | undefined;
+  let nonCacheRead: number | undefined;
+  let cacheWrite: number | undefined;
+  let uncachedInput: number | undefined;
+
+  if (
+    semantics === "anthropic_separate_input_buckets"
+    && isNonNegativeFinite(cacheRead)
+    && isNonNegativeFinite(usage?.cacheCreationInputTokens)
+    && isNonNegativeFinite(providerInput)
+  ) {
+    totalInput = cacheRead + usage.cacheCreationInputTokens + providerInput;
+    nonCacheRead = usage.cacheCreationInputTokens + providerInput;
+    cacheWrite = usage.cacheCreationInputTokens;
+    uncachedInput = providerInput;
+  } else if (
+    (
+      semantics === "openai_input_total_includes_cached"
+      || semantics === "google_input_total_includes_cached"
+      || semantics === "openrouter_input_total_includes_cached"
+    )
+    && isNonNegativeFinite(cacheRead)
+    && isNonNegativeFinite(providerInput)
+    && cacheRead <= providerInput
+  ) {
+    totalInput = providerInput;
+    nonCacheRead = providerInput - cacheRead;
+    const observedWrite = usage?.observedCacheWriteInputTokens;
     if (
-      entry.cacheUsageStatus === "reported"
-      && semantics === "anthropic_separate_input_buckets"
-      && isNonNegativeFinite(cacheRead)
-      && isNonNegativeFinite(cacheCreation)
-      && isNonNegativeFinite(providerInput)
+      isNonNegativeFinite(observedWrite)
+      && cacheRead + observedWrite <= providerInput
     ) {
-      cacheReadInputTokens += cacheRead;
-      cacheCreationInputTokens += cacheCreation;
-      inputTokens += providerInput;
-      totalInputTokens += cacheRead + cacheCreation + providerInput;
-      reportedRequests += 1;
-    } else if (
-      entry.cacheUsageStatus === "reported"
-      && semantics === "openai_input_total_includes_cached"
-      && isNonNegativeFinite(cacheRead)
-      && isNonNegativeFinite(providerInput)
-      && cacheRead <= providerInput
-    ) {
-      cacheReadInputTokens += cacheRead;
-      inputTokens += providerInput;
-      totalInputTokens += providerInput;
-      reportedRequests += 1;
-    } else if (entry.cacheUsageStatus === "unsupported" && semantics === undefined) {
-      unsupportedRequests += 1;
-    } else {
-      unavailableRequests += 1;
+      cacheWrite = observedWrite;
+      uncachedInput = providerInput - cacheRead - observedWrite;
     }
+  } else if (
+    semantics === "deepseek_hit_plus_miss"
+    && isNonNegativeFinite(cacheRead)
+    && isNonNegativeFinite(usage?.cacheMissInputTokens)
+  ) {
+    totalInput = cacheRead + usage.cacheMissInputTokens;
+    nonCacheRead = usage.cacheMissInputTokens;
   }
 
-  const status: CacheHitRateStatus = entries.length === 0
+  if (
+    !isNonNegativeFinite(cacheRead)
+    || !isNonNegativeFinite(totalInput)
+    || !isNonNegativeFinite(nonCacheRead)
+    || totalInput === 0
+  ) return false;
+
+  if (legacy) {
+    totals.legacyMeasuredRequests += 1;
+    totals.historicalCacheReadInputTokens += cacheRead;
+    totals.historicalTotalInputTokens += totalInput;
+    return true;
+  }
+
+  totals.measuredRequests += 1;
+  totals.cacheReadInputTokens += cacheRead;
+  totals.nonCacheReadInputTokens += nonCacheRead;
+  totals.totalInputTokens += totalInput;
+  if (cacheWrite !== undefined && uncachedInput !== undefined) {
+    totals.cacheCreationInputTokens += cacheWrite;
+    totals.cacheCreationMeasuredRequests += 1;
+    totals.uncachedInputTokens += uncachedInput;
+    totals.uncachedMeasuredRequests += 1;
+  } else {
+    totals.cacheCreationUnavailableRequests += 1;
+    totals.uncachedUnavailableRequests += 1;
+  }
+  return true;
+}
+
+function addCacheEntry(totals: CacheAccumulator, entry: PersistedUsageEntry): void {
+  totals.requests += 1;
+  const outcome = cacheRequestOutcome(entry);
+  if (outcome === "aborted") {
+    if (entry.usage && (
+      entry.outcome === "client_cancel"
+      || entry.outcome === "upstream_abort"
+    )) totals.partialRequests += 1;
+    else totals.abortedRequests += 1;
+    return;
+  }
+  if (outcome === "failed") {
+    if (entry.usage && entry.outcome === "bridge_error") totals.partialRequests += 1;
+    else totals.failedRequests += 1;
+    return;
+  }
+  if (outcome === "incomplete") {
+    totals.incompleteRequests += 1;
+    return;
+  }
+  if (outcome === "legacy") {
+    totals.legacyRequests += 1;
+    addComparableCacheUsage(totals, entry, true);
+    return;
+  }
+
+  totals.successfulRequests += 1;
+  if (addComparableCacheUsage(totals, entry, false)) return;
+  const semantics = cacheUsageSemantics(entry);
+  if (entry.cacheUsageStatus === "unsupported" && semantics === undefined) {
+    totals.unsupportedRequests += 1;
+  } else {
+    totals.unavailableRequests += 1;
+  }
+}
+
+function finalizeCacheMetrics(totals: CacheAccumulator): UsageCacheMetrics {
+  const status: CacheHitRateStatus = totals.requests === 0
     ? "no_data"
-    : reportedRequests > 0
+    : totals.measuredRequests > 0
       ? "available"
-      : failedRequests > 0
+      : totals.failedRequests > 0 || totals.abortedRequests > 0 || totals.incompleteRequests > 0 || totals.partialRequests > 0
         ? "error"
-        : unavailableRequests > 0
+        : totals.unavailableRequests > 0 || totals.legacyRequests > 0
           ? "unavailable"
           : "unsupported";
   return {
     status,
     formula: "cache_read_input_tokens / total_input_tokens",
-    cacheReadInputTokens,
-    cacheCreationInputTokens,
-    inputTokens,
-    totalInputTokens,
-    hitRate: reportedRequests > 0 && totalInputTokens > 0 ? cacheReadInputTokens / totalInputTokens : null,
-    reportedRequests,
-    unsupportedRequests,
-    unavailableRequests,
-    failedRequests,
+    ...totals,
+    historicalHitRate: totals.legacyMeasuredRequests > 0 && totals.historicalTotalInputTokens > 0
+      ? totals.historicalCacheReadInputTokens / totals.historicalTotalInputTokens
+      : null,
+    hitRate: totals.measuredRequests > 0 && totals.totalInputTokens > 0
+      ? totals.cacheReadInputTokens / totals.totalInputTokens
+      : null,
+    coverageRatio: totals.successfulRequests > 0
+      ? totals.measuredRequests / totals.successfulRequests
+      : null,
+  };
+}
+
+interface UsageCacheAnalytics {
+  summary: UsageCacheMetrics;
+  days: UsageCacheDay[];
+  models: UsageCacheModel[];
+  providers: UsageCacheProvider[];
+}
+
+function buildCacheAnalytics(
+  entries: PersistedUsageEntry[],
+  range: UsageRange,
+  now: number,
+): UsageCacheAnalytics {
+  const summary = blankCacheAccumulator();
+  const dayAccumulators = new Map<string, CacheAccumulator>();
+  const dayCount = range === "all" ? dayCountForAllRange(entries, now) : rangeWindow(range, now).days;
+  for (let i = dayCount - 1; i >= 0; i--) {
+    dayAccumulators.set(localDateKey(now - i * DAY_MS), blankCacheAccumulator());
+  }
+  const modelAccumulators = new Map<string, { provider: string; model: string; totals: CacheAccumulator }>();
+  const providerAccumulators = new Map<string, CacheAccumulator>();
+
+  for (const entry of entries) {
+    addCacheEntry(summary, entry);
+    const dayKey = localDateKey(entry.timestamp);
+    let day = dayAccumulators.get(dayKey);
+    if (!day) {
+      day = blankCacheAccumulator();
+      dayAccumulators.set(dayKey, day);
+    }
+    addCacheEntry(day, entry);
+
+    const provider = baseProviderLabel(entry.provider);
+    let providerTotals = providerAccumulators.get(provider);
+    if (!providerTotals) {
+      providerTotals = blankCacheAccumulator();
+      providerAccumulators.set(provider, providerTotals);
+    }
+    addCacheEntry(providerTotals, entry);
+
+    const model = entry.resolvedModel ?? entry.model;
+    const modelKey = JSON.stringify([provider, model]);
+    let modelGroup = modelAccumulators.get(modelKey);
+    if (!modelGroup) {
+      modelGroup = { provider, model, totals: blankCacheAccumulator() };
+      modelAccumulators.set(modelKey, modelGroup);
+    }
+    addCacheEntry(modelGroup.totals, entry);
+  }
+
+  return {
+    summary: finalizeCacheMetrics(summary),
+    days: [...dayAccumulators.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, totals]) => ({ date, ...finalizeCacheMetrics(totals) })),
+    models: [...modelAccumulators.values()]
+      .map(({ provider, model, totals }) => ({ provider, model, ...finalizeCacheMetrics(totals) }))
+      .sort((a, b) => b.requests - a.requests || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model)),
+    providers: [...providerAccumulators.entries()]
+      .map(([provider, totals]) => ({ provider, ...finalizeCacheMetrics(totals) }))
+      .sort((a, b) => b.requests - a.requests || a.provider.localeCompare(b.provider)),
   };
 }
 
@@ -383,6 +633,7 @@ export function summarizeUsage(entries: PersistedUsageEntry[], range: UsageRange
   }
   finalizeCoverage(totals);
   const pricing = buildUsagePricing(inRange, pricingConfig);
+  const cache = buildCacheAnalytics(inRange.filter(entry => !isShadowUsageEntry(entry)), range, now);
   return {
     range,
     since,
@@ -392,7 +643,10 @@ export function summarizeUsage(entries: PersistedUsageEntry[], range: UsageRange
     models: buildModels(inRange, totals.requests),
     providers: buildProviders(inRange, totals.requests),
     sourceState: usageSourceState(pricing),
-    cacheHitRate: summarizeCacheHitRate(inRange),
+    cacheHitRate: cache.summary,
+    cacheDays: cache.days,
+    cacheModels: cache.models,
+    cacheProviders: cache.providers,
     pricing,
   };
 }

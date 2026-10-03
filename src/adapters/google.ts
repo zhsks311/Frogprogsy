@@ -10,7 +10,7 @@ import type {
   FrogToolCall,
   FrogUsage,
 } from "../types";
-import { namespacedToolName } from "../types";
+import { cacheUsageSemanticsForProvider, namespacedToolName } from "../types";
 import { contentPartsToText, parseDataUrl } from "./image";
 
 function messagesToGeminiFormat(parsed: FrogParsedRequest): { systemInstruction?: unknown; contents: unknown[] } {
@@ -77,17 +77,28 @@ function toolsToGeminiFormat(parsed: FrogParsedRequest): unknown[] | undefined {
   }];
 }
 
-function usageFromGemini(usage: Record<string, number> | undefined): FrogUsage | undefined {
+function usageFromGemini(
+  usage: Record<string, number> | undefined,
+  preserveComparableCacheRead: boolean,
+): FrogUsage | undefined {
   if (!usage) return undefined;
+  const inputTokens = typeof usage.promptTokenCount === "number" ? usage.promptTokenCount : undefined;
+  const cacheReadInputTokens = typeof usage.cachedContentTokenCount === "number"
+    ? usage.cachedContentTokenCount
+    : undefined;
   return {
-    inputTokens: usage.promptTokenCount ?? 0,
+    inputTokens: inputTokens ?? 0,
     outputTokens: usage.candidatesTokenCount ?? 0,
-    ...(usage.cachedContentTokenCount !== undefined ? { cachedInputTokens: usage.cachedContentTokenCount } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cachedInputTokens: cacheReadInputTokens } : {}),
+    ...(preserveComparableCacheRead && inputTokens !== undefined && cacheReadInputTokens !== undefined
+      ? { cacheReadInputTokens }
+      : {}),
     ...(usage.thoughtsTokenCount !== undefined ? { reasoningOutputTokens: usage.thoughtsTokenCount } : {}),
   };
 }
 
 export function createGoogleAdapter(provider: FrogProviderConfig): ProviderAdapter {
+  const preserveComparableCacheRead = cacheUsageSemanticsForProvider(provider) === "google_input_total_includes_cached";
   return {
     name: "google",
 
@@ -174,7 +185,7 @@ export function createGoogleAdapter(provider: FrogProviderConfig): ProviderAdapt
             if (usageMeta) {
               // Accumulate usage; emit a single terminal `done` post-loop so usage is never
               // dropped on EOF and the stream never yields two `done` events.
-              pendingUsage = usageFromGemini(usageMeta);
+              pendingUsage = usageFromGemini(usageMeta, preserveComparableCacheRead);
             }
           }
         }
@@ -204,7 +215,7 @@ export function createGoogleAdapter(provider: FrogProviderConfig): ProviderAdapt
       const usage = json.usageMetadata as Record<string, number> | undefined;
       events.push({
         type: "done",
-        usage: usageFromGemini(usage),
+        usage: usageFromGemini(usage, preserveComparableCacheRead),
       });
       return events;
     },

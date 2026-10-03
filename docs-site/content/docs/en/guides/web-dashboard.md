@@ -89,16 +89,25 @@ shortcut. A reviewer 404/429 can make Claude Code fall back to the current main 
 
 ## Usage accounting
 
-The Activity usage section is local accounting, not a provider invoice view. FrogProgsy records every finalized `/v1/messages` request in `~/.frogprogsy/usage.jsonl`, including provider-reported usage when present and a failure status when the request did not complete successfully. Requests without provider-reported usage are counted as `unreported` instead of being displayed as zero tokens.
-Prompt cache effectiveness uses only requests with a wire-proven comparable denominator. Anthropic uses
-`cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)`.
-Native OpenAI Chat Completions uses `prompt_tokens_details.cached_tokens / prompt_tokens`; native OpenAI
-Responses uses `input_tokens_details.cached_tokens / input_tokens`. OpenAI's input total already includes
-cached tokens, so it is not added again. The mixed-provider panel aggregates cache reads over each
-comparable request's correctly normalized input basis. Cache creation remains an Anthropic-only value.
-Generic OpenAI-compatible and Google cache counters stay excluded unless their provenance and denominator
-are proven; missing breakdowns and failed requests are counted separately. A reported zero is shown as
-`0%`; no data, unsupported data, unavailable breakdowns, and failed requests remain distinct states.
+The Activity usage section is local accounting, not a provider invoice view. FrogProgsy records finalized
+primary `/v1/messages` requests in `~/.frogprogsy/usage.jsonl`; hidden helper/panel calls and shadow
+comparisons do not enter the prompt-cache metric. The headline includes only requests whose lifecycle
+confirms successful completion. Requests without provider-reported usage are `unreported`, not zero.
+
+Prompt-cache effectiveness is a token-weighted rate: total cache reads divided by the comparable input
+total for the selected period. Anthropic uses separate read, creation, and plain-input buckets. Native
+OpenAI Chat/Responses, managed OpenRouter, and managed Google use an inclusive input total, so cached reads
+are not added again. Managed DeepSeek uses its cache-hit plus cache-miss counters. Azure Responses and
+generic compatible routes remain “semantics not verified”; this does not mean they never cache.
+
+The cards show measured-success coverage and numeric read, known write, known exact-uncached,
+not-read-from-cache, and comparable-input totals. When a provider omits cache-write detail,
+not-read-from-cache can include writes; the page does not turn that unknown split into zero. Daily,
+final-provider, and final-routed-model views use the same selected period. A genuine reported zero is
+`0%`; missing, unsupported, failed, aborted, partial, and incomplete requests remain separate. Older 2xx
+rows without a final lifecycle stay outside the headline and appear only as a separate historical value
+when their denominator was already exact. This measures prompt-input reuse, not response caching, request
+hit percentage, invoice cost, or speculative savings.
 
 Use it to answer “which route/model consumed tokens through this proxy?” For account invoices, subscription quota, or organization spend, use the provider's own metering endpoints. Those endpoints are not standardized across providers and often require separate owner credentials.
 

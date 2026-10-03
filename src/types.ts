@@ -239,7 +239,10 @@ export type AdapterEvent =
 
 export type CacheUsageSemantics =
   | "anthropic_separate_input_buckets"
-  | "openai_input_total_includes_cached";
+  | "openai_input_total_includes_cached"
+  | "google_input_total_includes_cached"
+  | "openrouter_input_total_includes_cached"
+  | "deepseek_hit_plus_miss";
 
 export interface FrogUsage {
   /** Exact provider-reported input count; absent when the upstream omitted or invalidated it. */
@@ -251,6 +254,12 @@ export interface FrogUsage {
   cacheReadInputTokens?: number;
   /** Exact provider-reported prompt-cache writes; denominator completeness is evaluated separately. */
   cacheCreationInputTokens?: number;
+  /** Provider-observed cache reads kept out of the Claude Messages usage bridge. */
+  observedCacheReadInputTokens?: number;
+  /** Provider-observed cache writes kept out of the Claude Messages usage bridge. */
+  observedCacheWriteInputTokens?: number;
+  /** Provider-observed prompt cache misses used only by an explicitly proven provider contract. */
+  cacheMissInputTokens?: number;
   reasoningOutputTokens?: number;
 }
 
@@ -675,5 +684,20 @@ export function cacheUsageSemanticsForProvider(provider: FrogProviderConfig): Ca
   ) {
     return "openai_input_total_includes_cached";
   }
+  if (
+    provider.adapter === "google"
+    && provider.catalogProviderId === "google"
+    && baseUrl === "https://generativelanguage.googleapis.com"
+  ) return "google_input_total_includes_cached";
+  if (
+    provider.adapter === "openai-chat"
+    && provider.catalogProviderId === "openrouter"
+    && baseUrl === "https://openrouter.ai/api/v1"
+  ) return "openrouter_input_total_includes_cached";
+  if (
+    provider.adapter === "openai-chat"
+    && provider.catalogProviderId === "deepseek"
+    && baseUrl === "https://api.deepseek.com"
+  ) return "deepseek_hit_plus_miss";
   return undefined;
 }

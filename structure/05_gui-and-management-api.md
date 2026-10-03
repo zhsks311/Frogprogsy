@@ -29,42 +29,59 @@ Management endpoints live in `src/server.ts` under `/api/*`:
 
 ### Usage and prompt-cache effectiveness
 
-`GET /api/usage` derives its cache hit rate only from persisted usage with an explicit, wire-proven
-denominator contract. Anthropic-compatible usage is comparable when it preserves
-`cache_read_input_tokens`, `cache_creation_input_tokens`, and `input_tokens`; its input basis is the sum
-of those three separate buckets. Native OpenAI Chat Completions maps
-`prompt_tokens_details.cached_tokens` against `prompt_tokens`, and native OpenAI Responses maps
-`input_tokens_details.cached_tokens` against `input_tokens`. Both OpenAI totals already include cached
-tokens, so FrogProgsy never adds the cached count a second time. The normalized aggregate formula is:
+`GET /api/usage` derives prompt-cache metrics only from persisted primary `/v1/messages` usage with an
+explicit, wire-proven denominator contract. It returns the selected-period aggregate in `cacheHitRate`,
+daily rows in `cacheDays`, and final routed provider/model rows in `cacheProviders` and `cacheModels`.
+All rates are token weighted:
 
 ```text
-cache_read_input_tokens / total_input_tokens
+sum(cache_read_input_tokens) / sum(comparable_total_input_tokens)
 ```
 
-`total_input_tokens` is the sum of each comparable request's provider-specific basis: read + creation +
-plain input for Anthropic, or the reported inclusive input total for native OpenAI. Streaming Anthropic
-adapters merge the input/cache buckets from `message_start` with output usage from `message_delta`;
-OpenAI Chat consumes its requested final usage chunk and OpenAI Responses consumes terminal response
-usage. A provider/model wire-protocol override supplies the effective adapter provenance. For fusion and
-pipeline mixing, only the final user-facing target owns the outer request's usage and provenance. Buffered
-panel, judge, and pre-final stages remain excluded unless a pre-final pipeline stage emits a real tool call
-and intentionally becomes the user-facing terminal response; that stage then owns the outer usage and provenance.
+The provider-specific comparable basis is:
 
-OpenAI comparability requires the stable managed catalog provenance (`openai-apikey` or `codex`), the
-matching native adapter, and its canonical OpenAI or ChatGPT/Codex endpoint. Provider map keys and display
-labels are never evidence. Generic OpenAI-compatible and Google cached-token counters remain `unsupported`
-until their exact wire semantics and provenance establish an equivalent denominator.
+- Anthropic-compatible Messages: read + creation + plain input, because those are separate buckets.
+- Native OpenAI Chat/Responses and managed OpenRouter: the reported inclusive prompt/input total; cached
+  reads are a subset and are never added again.
+- Managed Google Gemini: `promptTokenCount`, with `cachedContentTokenCount` as its read subset.
+- Managed DeepSeek: `prompt_cache_hit_tokens + prompt_cache_miss_tokens`.
 
-This is the token share served from cache, not a request-hit percentage or provider invoice. The response
-separately counts requests with a comparable breakdown, failed requests, non-equivalent or unproven
-provider semantics, and absent breakdowns. No requests means `no_data`; only unsupported rows means
-`unsupported`; a successful request with missing breakdown means `unavailable`; and when no comparable
-rows exist, any failed request makes the primary status `error`. An exact reported breakdown with zero
-cache reads remains `available` with a real zero rate. Mixed data calculates only over comparable requests
-and displays every excluded count. Historical rows remain readable: rows without proven semantics are
-unavailable rather than guessed, while cache-metric rows already marked `reported` with the exact Anthropic
-triple retain that established interpretation. The Usage page polls the local summary sequentially with
-one request in flight, then waits five seconds after it settles before starting the next. Effect cleanup
+OpenAI and OpenRouter may also report an optional cache-write bucket. FrogProgsy preserves that bucket as
+local observational usage but does not add it to the inclusive input total or expose it as an Anthropic
+Messages cache-creation field. DeepSeek hit/miss counters are likewise normalized only in the persisted
+local usage record; the Messages response keeps its prior input/output usage shape. Exact uncached input
+is available only when both read and write buckets are known. `nonCacheReadInputTokens` remains separately
+available for inclusive contracts and may contain cache writes when the provider omits its write bucket.
+
+Streaming Anthropic adapters merge the input/cache buckets from `message_start` with output usage from
+`message_delta`; OpenAI Chat consumes its requested final usage chunk and OpenAI Responses consumes
+terminal response usage. A provider/model wire-protocol override supplies the effective adapter provenance.
+For fusion and pipeline mixing, only the final user-facing target owns the outer request's usage and
+provenance. Buffered panel, judge, and pre-final stages remain excluded unless a pre-final pipeline stage
+emits a real tool call and intentionally becomes the user-facing terminal response; that stage then owns
+the outer usage and provenance.
+
+Comparability requires the managed catalog id, matching adapter, and canonical endpoint. Provider map keys
+and display labels are never evidence. Anthropic-wire routes, native OpenAI/Codex, managed Google,
+OpenRouter, and DeepSeek currently have proven contracts. Azure Responses and generic compatible routes
+remain `unsupported`: that means their measurement semantics are not verified, not that they do not cache.
+
+The headline includes only rows whose final lifecycle explicitly records successful completion. It reports
+measured coverage as measured successful requests / all successful requests, keeps failed, aborted, partial,
+incomplete, unsupported, and missing-breakdown counts separate, and excludes shadow or helper calls. A
+valid zero read is `available` with a real 0% rate; a zero denominator is unavailable. Pre-lifecycle 2xx
+rows never enter the headline. Their preserved exact denominators, when any, remain in separate historical
+fields and are never mixed into the current rate. This is prompt-input reuse, not response caching, a
+request-hit percentage, a provider invoice, or a money-savings estimate.
+
+Completion here is the gateway-observed lifecycle, not an independent proof that every upstream event was
+consumed. The existing Anthropic stream adapter emits `done` at `message_delta`, before `message_stop`;
+the Messages bridge can therefore finish before a later upstream error is observed. This measurement
+change preserves that protocol behavior rather than claiming to fix it. Known failures, cancellations,
+and incomplete responses are excluded; this pre-existing late-event limitation remains a release-review risk.
+
+The Usage page polls the local summary sequentially with one request in flight, then waits five seconds
+after it settles before starting the next. Effect cleanup
 prevents a late response from an old range or API base from changing the new snapshot, so slow responses
 remain visible without overlapping requests, stale rollback, or changes to provider routing, credentials,
 request bodies, or restore state.

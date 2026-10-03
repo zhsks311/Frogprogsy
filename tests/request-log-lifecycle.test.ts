@@ -550,6 +550,7 @@ describe("privacy-safe request logs", () => {
       expect(summary.models[0]).toMatchObject({ provider: "anthropic", model: "claude-sonnet-4-6", inputTokens: 11, outputTokens: 7 });
       const [persisted] = readUsageEntries();
       expect(persisted).toMatchObject({
+        outcome: "completed",
         cacheUsageStatus: "unavailable",
         cacheUsageSemantics: "anthropic_separate_input_buckets",
         usage: { inputTokens: 11, outputTokens: 7, cacheReadInputTokens: 3 },
@@ -649,7 +650,7 @@ describe("privacy-safe request logs", () => {
         return Response.json({
           choices: [{ message: { content: "chat answer" }, finish_reason: "stop" }],
           usage: chatCalls === 1
-            ? { prompt_tokens: 11, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 5 } }
+            ? { prompt_tokens: 11, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 5, cache_write_tokens: 2 } }
             : { prompt_tokens: 11, completion_tokens: 2 },
         });
       }
@@ -659,7 +660,7 @@ describe("privacy-safe request logs", () => {
       }
       return Response.json({
         output: [{ type: "message", content: [{ type: "output_text", text: "responses answer" }] }],
-        usage: { input_tokens: 13, output_tokens: 3, input_tokens_details: { cached_tokens: 0 } },
+        usage: { input_tokens: 13, output_tokens: 3, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } },
       });
     }) as typeof fetch;
 
@@ -719,8 +720,16 @@ describe("privacy-safe request logs", () => {
         "openai_input_total_includes_cached",
         "openai_input_total_includes_cached",
       ]);
-      expect(requestEntries[0].upstream?.usage).toMatchObject({ inputTokens: 11, cacheReadInputTokens: 5 });
-      expect(requestEntries[1].upstream?.usage).toMatchObject({ inputTokens: 13, cacheReadInputTokens: 0 });
+      expect(requestEntries[0].upstream?.usage).toMatchObject({
+        inputTokens: 11,
+        cacheReadInputTokens: 5,
+        observedCacheWriteInputTokens: 2,
+      });
+      expect(requestEntries[1].upstream?.usage).toMatchObject({
+        inputTokens: 13,
+        cacheReadInputTokens: 0,
+        observedCacheWriteInputTokens: 0,
+      });
       expect(requestEntries[2].upstream?.usage).toEqual({ inputTokens: 11, outputTokens: 2 });
       expect(requestEntries[3].upstream?.usage).toBeUndefined();
 
@@ -737,12 +746,92 @@ describe("privacy-safe request logs", () => {
       expect(__requestLogTest.usageSummarySnapshot().cacheHitRate).toMatchObject({
         status: "available",
         cacheReadInputTokens: 5,
-        cacheCreationInputTokens: 0,
+        cacheCreationInputTokens: 2,
+        cacheCreationUnavailableRequests: 0,
+        uncachedInputTokens: 17,
+        uncachedUnavailableRequests: 0,
+        nonCacheReadInputTokens: 19,
         totalInputTokens: 24,
         hitRate: 5 / 24,
-        reportedRequests: 2,
+        measuredRequests: 2,
         unavailableRequests: 1,
         failedRequests: 1,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("DeepSeek cache counters stay local while persisted cache analytics remain exact", async () => {
+    __requestLogTest.clear();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url) => {
+      expect(String(url)).toBe("https://api.deepseek.com/chat/completions");
+      return Response.json({
+        choices: [{ message: { content: "answer" }, finish_reason: "stop" }],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 5,
+          prompt_cache_hit_tokens: 8,
+          prompt_cache_miss_tokens: 12,
+        },
+      });
+    }) as typeof fetch;
+
+    try {
+      const ctx = __requestLogTest.createRequestLog("/v1/messages", "POST", new Headers());
+      const response = await __requestLogTest.handleMessages(
+        new Request("http://127.0.0.1/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "deepseek/deepseek-chat",
+            max_tokens: 10,
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        }),
+        {
+          port: 10100,
+          defaultProvider: "deepseek",
+          providers: {
+            deepseek: {
+              adapter: "openai-chat",
+              baseUrl: "https://api.deepseek.com",
+              apiKey: "test-key",
+              catalogProviderId: "deepseek",
+              defaultModel: "deepseek-chat",
+              models: ["deepseek-chat"],
+            },
+          },
+        },
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      expect((await response.json()).usage).toEqual({
+        input_tokens: 20,
+        output_tokens: 5,
+      });
+      __requestLogTest.finalizeRequestLog(ctx, "completed", 200);
+
+      expect(readUsageEntries()[0]).toMatchObject({
+        provider: "deepseek",
+        model: "deepseek-chat",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "deepseek_hit_plus_miss",
+        usage: {
+          inputTokens: 20,
+          outputTokens: 5,
+          cacheReadInputTokens: 8,
+          cacheMissInputTokens: 12,
+        },
+      });
+      expect(__requestLogTest.usageSummarySnapshot().cacheHitRate).toMatchObject({
+        status: "available",
+        measuredRequests: 1,
+        cacheReadInputTokens: 8,
+        nonCacheReadInputTokens: 12,
+        totalInputTokens: 20,
+        hitRate: 0.4,
       });
     } finally {
       globalThis.fetch = originalFetch;
@@ -968,10 +1057,11 @@ describe("privacy-safe request logs", () => {
       expect(__requestLogTest.usageSummarySnapshot().cacheHitRate).toMatchObject({
         cacheReadInputTokens: 7,
         cacheCreationInputTokens: 2,
-        inputTokens: 22,
+        cacheCreationUnavailableRequests: 1,
+        nonCacheReadInputTokens: 21,
         totalInputTokens: 28,
         hitRate: 0.25,
-        reportedRequests: 2,
+        measuredRequests: 2,
       });
     } finally {
       globalThis.fetch = originalFetch;
@@ -1241,7 +1331,7 @@ describe("privacy-safe request logs", () => {
     expect(body.cacheHitRate).toMatchObject({
       status: "unsupported",
       hitRate: null,
-      reportedRequests: 0,
+      measuredRequests: 0,
       unsupportedRequests: 1,
       unavailableRequests: 0,
     });
