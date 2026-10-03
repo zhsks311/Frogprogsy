@@ -62,7 +62,7 @@ describe("Anthropic Messages bridge", () => {
       { type: "done", usage: { inputTokens: 8, outputTokens: 5, cacheCreationInputTokens: 6 } },
     ], "model");
     const readOnly = buildMessageJSON([
-      { type: "done", usage: { inputTokens: 8, outputTokens: 5, cacheReadInputTokens: 2 } },
+      { type: "done", usage: { inputTokens: 8, outputTokens: 5, cacheReadInputTokens: 2, observedCacheWriteInputTokens: 3, cacheMissInputTokens: 6 } },
     ], "model");
     const bothWithoutInput = buildMessageJSON([
       {

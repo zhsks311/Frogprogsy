@@ -173,6 +173,7 @@ function usageFromResponses(
   const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : undefined;
   const inputDetails = usage.input_tokens_details as Record<string, unknown> | undefined;
   const cachedTokens = typeof inputDetails?.cached_tokens === "number" ? inputDetails.cached_tokens : undefined;
+  const cacheWriteTokens = typeof inputDetails?.cache_write_tokens === "number" ? inputDetails.cache_write_tokens : undefined;
   const outputDetails = usage.output_tokens_details as Record<string, unknown> | undefined;
   return {
     inputTokens: inputTokens ?? 0,
@@ -180,6 +181,14 @@ function usageFromResponses(
     ...(cachedTokens !== undefined ? { cachedInputTokens: cachedTokens } : {}),
     ...(preserveNativeCacheRead && inputTokens !== undefined && cachedTokens !== undefined
       ? { cacheReadInputTokens: cachedTokens }
+      : {}),
+    ...(preserveNativeCacheRead
+      && cacheWriteTokens !== undefined
+      && cacheWriteTokens >= 0
+      && inputTokens !== undefined
+      && cachedTokens !== undefined
+      && cachedTokens + cacheWriteTokens <= inputTokens
+      ? { observedCacheWriteInputTokens: cacheWriteTokens }
       : {}),
     ...(typeof outputDetails?.reasoning_tokens === "number" ? { reasoningOutputTokens: outputDetails.reasoning_tokens } : {}),
   };
