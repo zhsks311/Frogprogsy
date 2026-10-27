@@ -17,18 +17,47 @@ interface UsageSummaryTotals {
   totalTokens: number;
   coverageRatio: number;
 }
-interface UsageCacheHitRate {
+interface UsageCacheMetrics {
   status: "available" | "no_data" | "unsupported" | "unavailable" | "error";
   formula: "cache_read_input_tokens / total_input_tokens";
+  requests: number;
+  successfulRequests: number;
+  measuredRequests: number;
+  legacyRequests: number;
+  legacyMeasuredRequests: number;
+  historicalCacheReadInputTokens: number;
+  historicalTotalInputTokens: number;
+  historicalHitRate: number | null;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
-  inputTokens: number;
+  cacheCreationMeasuredRequests: number;
+  cacheCreationUnavailableRequests: number;
+  uncachedInputTokens: number;
+  uncachedMeasuredRequests: number;
+  uncachedUnavailableRequests: number;
+  nonCacheReadInputTokens: number;
   totalInputTokens: number;
   hitRate: number | null;
-  reportedRequests: number;
+  coverageRatio: number | null;
   unsupportedRequests: number;
   unavailableRequests: number;
   failedRequests: number;
+  abortedRequests: number;
+  incompleteRequests: number;
+  partialRequests: number;
+}
+
+interface UsageCacheDay extends UsageCacheMetrics {
+  date: string;
+}
+
+interface UsageCacheProvider extends UsageCacheMetrics {
+  provider: string;
+}
+
+interface UsageCacheModel extends UsageCacheMetrics {
+  provider: string;
+  model: string;
 }
 
 
@@ -139,7 +168,10 @@ interface UsageResponse {
   models: UsageModel[];
   providers: UsageProvider[];
   sourceState: UsageSourceState;
-  cacheHitRate: UsageCacheHitRate;
+  cacheHitRate: UsageCacheMetrics;
+  cacheDays: UsageCacheDay[];
+  cacheModels: UsageCacheModel[];
+  cacheProviders: UsageCacheProvider[];
   pricing?: UsagePricing;
   error?: string;
 }
@@ -348,15 +380,16 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
   const pricing = data?.pricing?.available ? data.pricing : null;
   const cacheHitRate = data?.cacheHitRate;
   const cacheHasBreakdown = cacheHitRate?.status === "available";
-  const cacheStatusLabel = cacheHitRate?.status === "available"
-    ? t("usage.cache.status.available")
-    : cacheHitRate?.status === "no_data"
-      ? t("usage.cache.status.noData")
-      : cacheHitRate?.status === "error"
-        ? t("usage.cache.status.error")
-        : cacheHitRate?.status === "unsupported"
-          ? t("usage.cache.status.unsupported")
-          : t("usage.cache.status.unavailable");
+  const cacheStatusLabels: Record<UsageCacheMetrics["status"], string> = {
+    available: t("usage.cache.status.available"),
+    no_data: t("usage.cache.status.noData"),
+    error: t("usage.cache.status.error"),
+    unsupported: t("usage.cache.status.unsupported"),
+    unavailable: t("usage.cache.status.unavailable"),
+  };
+  const cacheStatusLabel = cacheHitRate
+    ? cacheStatusLabels[cacheHitRate.status]
+    : t("usage.cache.status.unavailable");
 
   return (
     <>
@@ -463,10 +496,14 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
               </div>
               <span className={`badge ${cacheHasBreakdown ? "badge-green" : "badge-amber"}`}>{cacheStatusLabel}</span>
             </div>
-            <div className="usage-cards">
+            <div className="usage-cards cache-metric-grid">
               <div className="stat">
                 <div className="muted">{t("usage.cache.hitRate")}</div>
                 <div className="stat-value">{cacheHasBreakdown && cacheHitRate.hitRate !== null ? formatPct(cacheHitRate.hitRate) : "—"}</div>
+              </div>
+              <div className="stat">
+                <div className="muted">{t("usage.cache.measuredCoverage")}</div>
+                <div className="stat-value">{cacheHitRate?.coverageRatio !== null && cacheHitRate?.coverageRatio !== undefined ? formatPct(cacheHitRate.coverageRatio) : "—"}</div>
               </div>
               <div className="stat">
                 <div className="muted">{t("usage.cache.readTokens")}</div>
@@ -474,7 +511,15 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
               </div>
               <div className="stat">
                 <div className="muted">{t("usage.cache.creationTokens")}</div>
-                <div className="stat-value">{cacheHasBreakdown ? formatTokens(cacheHitRate.cacheCreationInputTokens) : "—"}</div>
+                <div className="stat-value">{cacheHasBreakdown && cacheHitRate.cacheCreationMeasuredRequests > 0 ? formatTokens(cacheHitRate.cacheCreationInputTokens) : "—"}</div>
+              </div>
+              <div className="stat">
+                <div className="muted">{t("usage.cache.uncachedTokens")}</div>
+                <div className="stat-value">{cacheHasBreakdown && cacheHitRate.uncachedMeasuredRequests > 0 ? formatTokens(cacheHitRate.uncachedInputTokens) : "—"}</div>
+              </div>
+              <div className="stat">
+                <div className="muted">{t("usage.cache.nonReadTokens")}</div>
+                <div className="stat-value">{cacheHasBreakdown ? formatTokens(cacheHitRate.nonCacheReadInputTokens) : "—"}</div>
               </div>
               <div className="stat">
                 <div className="muted">{t("usage.cache.inputBasis")}</div>
@@ -482,14 +527,131 @@ export default function Usage({ apiBase, embedded = false, target }: { apiBase: 
               </div>
             </div>
             {cacheHitRate && (
-              <p className="muted" style={{ marginTop: 12, fontSize: 13 }}>
-                {t("usage.cache.coverage", {
-                  reported: cacheHitRate.reportedRequests,
-                  unsupported: cacheHitRate.unsupportedRequests,
-                  unavailable: cacheHitRate.unavailableRequests,
-                  failed: cacheHitRate.failedRequests,
-                })}
-              </p>
+              <>
+                <p className="muted" style={{ marginTop: 12, fontSize: 13 }}>
+                  {t("usage.cache.coverage", {
+                    measured: cacheHitRate.measuredRequests,
+                    successful: cacheHitRate.successfulRequests,
+                    unsupported: cacheHitRate.unsupportedRequests,
+                    unavailable: cacheHitRate.unavailableRequests,
+                    failed: cacheHitRate.failedRequests,
+                    aborted: cacheHitRate.abortedRequests,
+                    incomplete: cacheHitRate.incompleteRequests,
+                    legacy: cacheHitRate.legacyRequests,
+                    partial: cacheHitRate.partialRequests,
+                  })}
+                </p>
+                {(cacheHitRate.cacheCreationUnavailableRequests > 0 || cacheHitRate.uncachedUnavailableRequests > 0) && (
+                  <p className="muted cache-write-note">
+                    {t("usage.cache.breakdownUnknown", { requests: Math.max(cacheHitRate.cacheCreationUnavailableRequests, cacheHitRate.uncachedUnavailableRequests) })}
+                  </p>
+                )}
+                {cacheHitRate.legacyRequests > 0 && (
+                  <p className="muted cache-write-note">
+                    {t("usage.cache.historical", {
+                      measured: cacheHitRate.legacyMeasuredRequests,
+                      requests: cacheHitRate.legacyRequests,
+                      rate: cacheHitRate.historicalHitRate === null ? "—" : formatPct(cacheHitRate.historicalHitRate),
+                    })}
+                  </p>
+                )}
+              </>
+            )}
+
+            {data.cacheDays.length > 0 && (
+              <div className="cache-detail-section">
+                <h4>{t("usage.cache.trendTitle")}</h4>
+                <div className="cache-trend-scroll">
+                  <div className="cache-trend" role="img" aria-label={t("usage.cache.trendTitle")}>
+                    {data.cacheDays.map((day, index) => {
+                      const available = day.status === "available" && day.hitRate !== null;
+                      const rate = day.hitRate ?? 0;
+                      const height = available ? Math.max(rate === 0 ? 2 : 4, Math.round(rate * 100)) : 0;
+                      const showDate = index === 0 || index === data.cacheDays.length - 1 || index % 7 === 0;
+                      return (
+                        <div key={day.date} className="cache-trend-column"
+                          title={t("usage.cache.trendTooltip", {
+                            date: day.date,
+                            rate: available ? formatPct(rate) : cacheStatusLabels[day.status],
+                            measured: day.measuredRequests,
+                            successful: day.successfulRequests,
+                          })}>
+                          <div className={`cache-trend-track${available ? "" : " unavailable"}`}>
+                            {available && <div className="cache-trend-fill" style={{ height: `${height}%` }} />}
+                          </div>
+                          <span>{showDate ? day.date.slice(5) : ""}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {data.cacheProviders.length > 0 && (
+              <div className="cache-detail-section">
+                <h4>{t("usage.cache.providersTitle")}</h4>
+                <div className="tbl-wrap">
+                  <table className="tbl cache-breakdown-table">
+                    <thead><tr>
+                      <th>{t("logs.col.provider")}</th>
+                      <th className="num">{t("usage.cache.hitRate")}</th>
+                      <th className="num">{t("usage.cache.measuredCoverage")}</th>
+                      <th className="num">{t("usage.cache.readTokens")}</th>
+                      <th className="num">{t("usage.cache.creationTokens")}</th>
+                      <th className="num">{t("usage.cache.uncachedTokens")}</th>
+                      <th className="num">{t("usage.cache.nonReadTokens")}</th>
+                      <th className="num">{t("usage.cache.inputBasis")}</th>
+                    </tr></thead>
+                    <tbody>{data.cacheProviders.map(row => (
+                      <tr key={row.provider}>
+                        <td className="mono text-anywhere">{row.provider}</td>
+                        <td className="num mono">{row.hitRate !== null ? formatPct(row.hitRate) : cacheStatusLabels[row.status]}</td>
+                        <td className="num mono">{row.successfulRequests > 0 ? `${row.measuredRequests}/${row.successfulRequests}` : "—"}</td>
+                        <td className="num mono">{row.hitRate !== null ? formatTokens(row.cacheReadInputTokens) : "—"}</td>
+                        <td className="num mono">{row.cacheCreationMeasuredRequests > 0 ? formatTokens(row.cacheCreationInputTokens) : "—"}</td>
+                        <td className="num mono">{row.uncachedMeasuredRequests > 0 ? formatTokens(row.uncachedInputTokens) : "—"}</td>
+                        <td className="num mono">{row.hitRate !== null ? formatTokens(row.nonCacheReadInputTokens) : "—"}</td>
+                        <td className="num mono">{row.hitRate !== null ? formatTokens(row.totalInputTokens) : "—"}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {data.cacheModels.length > 0 && (
+              <div className="cache-detail-section">
+                <h4>{t("usage.cache.modelsTitle")}</h4>
+                <div className="tbl-wrap">
+                  <table className="tbl cache-breakdown-table">
+                    <thead><tr>
+                      <th>{t("logs.col.model")}</th>
+                      <th>{t("logs.col.provider")}</th>
+                      <th className="num">{t("usage.cache.hitRate")}</th>
+                      <th className="num">{t("usage.cache.measuredCoverage")}</th>
+                      <th className="num">{t("usage.cache.readTokens")}</th>
+                      <th className="num">{t("usage.cache.creationTokens")}</th>
+                      <th className="num">{t("usage.cache.uncachedTokens")}</th>
+                      <th className="num">{t("usage.cache.nonReadTokens")}</th>
+                      <th className="num">{t("usage.cache.inputBasis")}</th>
+                    </tr></thead>
+                    <tbody>{data.cacheModels.slice(0, 100).map(row => (
+                      <tr key={`${row.provider}/${row.model}`}>
+                        <td className="mono text-anywhere">{row.model}</td>
+                        <td className="muted text-anywhere">{row.provider}</td>
+                        <td className="num mono">{row.hitRate !== null ? formatPct(row.hitRate) : cacheStatusLabels[row.status]}</td>
+                        <td className="num mono">{row.successfulRequests > 0 ? `${row.measuredRequests}/${row.successfulRequests}` : "—"}</td>
+                        <td className="num mono">{row.hitRate !== null ? formatTokens(row.cacheReadInputTokens) : "—"}</td>
+                        <td className="num mono">{row.cacheCreationMeasuredRequests > 0 ? formatTokens(row.cacheCreationInputTokens) : "—"}</td>
+                        <td className="num mono">{row.uncachedMeasuredRequests > 0 ? formatTokens(row.uncachedInputTokens) : "—"}</td>
+                        <td className="num mono">{row.hitRate !== null ? formatTokens(row.nonCacheReadInputTokens) : "—"}</td>
+                        <td className="num mono">{row.hitRate !== null ? formatTokens(row.totalInputTokens) : "—"}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>
             )}
           </section>
           {pricing && (

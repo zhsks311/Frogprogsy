@@ -1669,6 +1669,8 @@ interface RequestLogEntry {
       cachedInputTokens?: number;
       cacheReadInputTokens?: number;
       cacheCreationInputTokens?: number;
+      observedCacheWriteInputTokens?: number;
+      cacheMissInputTokens?: number;
       reasoningOutputTokens?: number;
     };
   };
@@ -2027,14 +2029,20 @@ function claudeStatusSnapshot(config: FrogConfig) {
 
 function recordLogUsage(ctx: RequestLogContext, usage: FrogUsage | undefined): void {
   if (!usage) return;
+  const cacheReadInputTokens = usage.cacheReadInputTokens
+    ?? (ctx.entry.route.cacheUsageSemantics === "deepseek_hit_plus_miss"
+      ? usage.observedCacheReadInputTokens
+      : undefined);
   ctx.entry.upstream = {
     ...(ctx.entry.upstream ?? {}),
     usage: {
       ...(usage.inputTokens !== undefined ? { inputTokens: usage.inputTokens } : {}),
       outputTokens: usage.outputTokens,
       ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
-      ...(usage.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+      ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
       ...(usage.cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
+      ...(usage.observedCacheWriteInputTokens !== undefined ? { observedCacheWriteInputTokens: usage.observedCacheWriteInputTokens } : {}),
+      ...(usage.cacheMissInputTokens !== undefined ? { cacheMissInputTokens: usage.cacheMissInputTokens } : {}),
       ...(usage.reasoningOutputTokens !== undefined ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
     },
   };
@@ -2193,6 +2201,8 @@ function usageFromLogEntry(entry: RequestLogEntry): FrogUsage | undefined {
     ...(typeof usage.cachedInputTokens === "number" ? { cachedInputTokens: usage.cachedInputTokens } : {}),
     ...(typeof usage.cacheReadInputTokens === "number" ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
     ...(typeof usage.cacheCreationInputTokens === "number" ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
+    ...(typeof usage.observedCacheWriteInputTokens === "number" ? { observedCacheWriteInputTokens: usage.observedCacheWriteInputTokens } : {}),
+    ...(typeof usage.cacheMissInputTokens === "number" ? { cacheMissInputTokens: usage.cacheMissInputTokens } : {}),
     ...(typeof usage.reasoningOutputTokens === "number" ? { reasoningOutputTokens: usage.reasoningOutputTokens } : {}),
   };
 }
@@ -2210,17 +2220,33 @@ function cacheUsageStatusForFinalLog(entry: RequestLogEntry, usage: FrogUsage | 
     && isValidUsageCount(usage.inputTokens)
   ) return "reported";
   if (
-    semantics === "openai_input_total_includes_cached"
+    (
+      semantics === "openai_input_total_includes_cached"
+      || semantics === "google_input_total_includes_cached"
+      || semantics === "openrouter_input_total_includes_cached"
+    )
     && isValidUsageCount(usage?.cacheReadInputTokens)
     && isValidUsageCount(usage.inputTokens)
     && usage.cacheReadInputTokens <= usage.inputTokens
+    && (
+      usage.observedCacheWriteInputTokens === undefined
+      || (
+        isValidUsageCount(usage.observedCacheWriteInputTokens)
+        && usage.cacheReadInputTokens + usage.observedCacheWriteInputTokens <= usage.inputTokens
+      )
+    )
+  ) return "reported";
+  if (
+    semantics === "deepseek_hit_plus_miss"
+    && isValidUsageCount(usage?.cacheReadInputTokens)
+    && isValidUsageCount(usage.cacheMissInputTokens)
   ) return "reported";
   if (semantics) return "unavailable";
   if (entry.route.adapter) return "unsupported";
   return "unavailable";
 }
 
-function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
+function appendFinalUsageLogEntry(ctx: RequestLogContext, outcome: Exclude<RequestLifecycle, "in_progress">): void {
   if (ctx.entry.endpoint !== "/v1/messages") return;
   const usage = usageFromLogEntry(ctx.entry);
   try {
@@ -2232,6 +2258,7 @@ function appendFinalUsageLogEntry(ctx: RequestLogContext): void {
       status: ctx.entry.status ?? 0,
       durationMs: ctx.entry.durationMs ?? 0,
       usageStatus: usageStatusForFinalLog(usage),
+      outcome,
       cacheUsageStatus: cacheUsageStatusForFinalLog(ctx.entry, usage),
       ...(ctx.entry.route.cacheUsageSemantics ? { cacheUsageSemantics: ctx.entry.route.cacheUsageSemantics } : {}),
       ...(usage ? { usage, totalTokens: usageTotalTokens(usage) } : {}),
@@ -2257,7 +2284,7 @@ function finalizeRequestLog(
   if (status !== undefined) ctx.entry.status = status;
   if (error) ctx.entry.error = error;
   recordLogPhase(ctx, "finalize", error ? "error" : "ok", error?.code, finalizedAt);
-  appendFinalUsageLogEntry(ctx);
+  appendFinalUsageLogEntry(ctx, lifecycle);
 }
 
 function finalizeFromResponse(ctx: RequestLogContext, response: Response): void {

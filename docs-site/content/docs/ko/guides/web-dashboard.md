@@ -94,18 +94,25 @@ resume해야 합니다.
 
 ## 로컬 사용량 확인
 
-Activity의 사용량 영역은 외부 서비스의 청구서가 아니라 로컬 집계입니다. FrogProgsy는 완료 처리된 모든
-`/v1/messages` 요청을 `~/.frogprogsy/usage.jsonl`에 기록하며, 외부 서비스가 제공한 사용량과 성공하지
-못한 요청의 실패 상태도 보존합니다. 사용량을 주지 않은 요청은 token 0으로 표시하지 않고 `unreported`로 집계합니다.
-프롬프트 캐시 효과는 wire 의미와 입력 분모가 확인된 요청만 계산합니다. Anthropic은
-`cache_read_input_tokens / (cache_read_input_tokens + cache_creation_input_tokens + input_tokens)`를
-사용합니다. 네이티브 OpenAI Chat Completions는
-`prompt_tokens_details.cached_tokens / prompt_tokens`, 네이티브 OpenAI Responses는
-`input_tokens_details.cached_tokens / input_tokens`를 사용합니다. OpenAI 입력 합계에는 캐시 토큰이
-이미 포함되므로 다시 더하지 않습니다. 여러 provider가 섞이면 각 요청의 올바른 입력 기준을 합쳐
-계산하며, 캐시 생성은 Anthropic 값으로만 표시합니다. 일반 OpenAI 호환 provider와 Google의 캐시
-수치는 provenance와 분모가 입증되기 전까지 제외하고, 내역 누락과 요청 실패는 별도로 셉니다. 보고된
-실제 0은 `0%`로 표시하며 데이터 없음, 미지원, 내역 누락, 요청 실패 상태도 서로 구분합니다.
+Activity의 사용량 영역은 외부 서비스 청구서가 아니라 로컬 집계입니다. FrogProgsy는 완료 처리된
+기본 `/v1/messages` 요청을 `~/.frogprogsy/usage.jsonl`에 기록합니다. 숨은 도움·패널 호출과 shadow
+비교 요청은 프롬프트 캐시 지표에서 제외합니다. 대표 지표에는 마지막 처리 상태가 성공으로 확인된
+요청만 넣습니다. 사용량을 받지 못한 요청은 0 token이 아니라 `unreported`로 셉니다.
+
+프롬프트 캐시 효과는 선택한 기간의 캐시 읽기 token 합계를 비교 가능한 전체 입력 token 합계로 나눈
+토큰 가중 적중률입니다. Anthropic은 읽기·쓰기·일반 입력이 서로 다른 값입니다. 네이티브 OpenAI
+Chat/Responses, 관리형 OpenRouter와 Google은 전체 입력에 캐시 읽기가 이미 포함되므로 다시 더하지
+않습니다. 관리형 DeepSeek는 cache hit와 cache miss를 더해 전체 입력을 구합니다. Azure Responses와
+일반 호환 경로는 측정 기준을 확인하지 못한 상태로 남습니다. 이는 캐시를 쓰지 않는다는 뜻이 아닙니다.
+
+화면에는 성공 요청 중 측정된 비율과 캐시 읽기, 확인된 쓰기, 확인된 정확한 비캐시 입력, 캐시에서
+읽지 않은 입력, 비교 가능한 전체 입력을 숫자로 보여 줍니다. 서비스가 쓰기 내역을 주지 않으면
+‘캐시에서 읽지 않은 입력’에 쓰기가 포함될 수 있으며, 이 알 수 없는 값을 0으로 바꾸지 않습니다.
+일별 추이, 최종 프로바이더별 표, 최종 라우팅 모델별 표는 모두 같은 선택 기간을 사용합니다. 실제
+0은 `0%`로 표시하고, 내역 누락·측정 기준 미확인·실패·중단·부분 응답·미완료는 따로 셉니다. 마지막
+처리 상태가 없는 예전 2xx 행은 대표 지표에서 제외하며, 이미 정확한 분모가 있던 행만 별도 과거 값으로
+보여 줍니다. 이 값은 프롬프트 입력 재사용량이며 응답 캐시, 요청 적중 비율, 청구 비용, 예상 절감액이
+아닙니다.
 
 이 화면은 “FrogProgsy를 통해 어떤 서비스/모델이 토큰을 썼는가?”를 확인하는 용도입니다. 계정 청구서,
 구독 한도, 조직 비용은 각 AI 서비스의 사용량 화면에서 확인해야 합니다. 서비스마다 방식이 달라서 FrogProgsy가 하나로 합치지 않습니다.

@@ -1,6 +1,6 @@
 import type { ProviderAdapter } from "./base";
 import { debugDroppedFrame } from "../debug";
-import type { AdapterEvent, AdapterStopReason, FrogAssistantMessage, FrogContentPart, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTextContent, FrogThinkingContent, FrogToolCall, FrogUsage } from "../types";
+import type { AdapterEvent, AdapterStopReason, CacheUsageSemantics, FrogAssistantMessage, FrogContentPart, FrogMessage, FrogParsedRequest, FrogProviderConfig, FrogTextContent, FrogThinkingContent, FrogToolCall, FrogUsage } from "../types";
 import { cacheUsageSemanticsForProvider, modelInList, namespacedToolName } from "../types";
 import { mapReasoningEffort } from "../reasoning-effort";
 import { contentPartsToText } from "./image";
@@ -154,19 +154,42 @@ function toolChoiceToChatFormat(tc: FrogParsedRequest["options"]["toolChoice"]):
 
 function usageFromOpenAIChat(
   usage: Record<string, unknown> | undefined,
-  preserveNativeCacheRead: boolean,
+  cacheSemantics: CacheUsageSemantics | undefined,
 ): FrogUsage | undefined {
   if (!usage) return undefined;
   const promptTokens = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : undefined;
   const promptDetails = usage.prompt_tokens_details as Record<string, unknown> | undefined;
-  const cachedTokens = typeof promptDetails?.cached_tokens === "number" ? promptDetails.cached_tokens : undefined;
+  const detailCacheRead = typeof promptDetails?.cached_tokens === "number" ? promptDetails.cached_tokens : undefined;
+  const detailCacheWrite = typeof promptDetails?.cache_write_tokens === "number" ? promptDetails.cache_write_tokens : undefined;
+  const deepSeekCacheRead = typeof usage.prompt_cache_hit_tokens === "number" ? usage.prompt_cache_hit_tokens : undefined;
+  const deepSeekCacheMiss = typeof usage.prompt_cache_miss_tokens === "number" ? usage.prompt_cache_miss_tokens : undefined;
+  const inclusiveSemantics = cacheSemantics === "openai_input_total_includes_cached"
+    || cacheSemantics === "openrouter_input_total_includes_cached";
+  const cacheRead = inclusiveSemantics && promptTokens !== undefined && detailCacheRead !== undefined
+    ? detailCacheRead
+    : undefined;
+  const observedCacheRead = cacheSemantics === "deepseek_hit_plus_miss"
+    && deepSeekCacheRead !== undefined
+    && deepSeekCacheMiss !== undefined
+    ? deepSeekCacheRead
+    : undefined;
   const completionDetails = usage.completion_tokens_details as Record<string, unknown> | undefined;
   return {
     inputTokens: promptTokens ?? 0,
     outputTokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0,
-    ...(cachedTokens !== undefined ? { cachedInputTokens: cachedTokens } : {}),
-    ...(preserveNativeCacheRead && promptTokens !== undefined && cachedTokens !== undefined
-      ? { cacheReadInputTokens: cachedTokens }
+    ...(detailCacheRead !== undefined ? { cachedInputTokens: detailCacheRead } : {}),
+    ...(cacheRead !== undefined ? { cacheReadInputTokens: cacheRead } : {}),
+    ...(observedCacheRead !== undefined ? { observedCacheReadInputTokens: observedCacheRead } : {}),
+    ...(inclusiveSemantics
+      && detailCacheWrite !== undefined
+      && detailCacheWrite >= 0
+      && promptTokens !== undefined
+      && cacheRead !== undefined
+      && cacheRead + detailCacheWrite <= promptTokens
+      ? { observedCacheWriteInputTokens: detailCacheWrite }
+      : {}),
+    ...(cacheSemantics === "deepseek_hit_plus_miss" && deepSeekCacheMiss !== undefined
+      ? { cacheMissInputTokens: deepSeekCacheMiss }
       : {}),
     ...(typeof completionDetails?.reasoning_tokens === "number" ? { reasoningOutputTokens: completionDetails.reasoning_tokens } : {}),
   };
@@ -197,7 +220,7 @@ function inlineErrorMessage(value: unknown): string {
 }
 
 export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderAdapter {
-  const preserveNativeCacheRead = cacheUsageSemanticsForProvider(provider) === "openai_input_total_includes_cached";
+  const cacheSemantics = cacheUsageSemanticsForProvider(provider);
   return {
     name: "openai-chat",
 
@@ -324,7 +347,7 @@ export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderA
 
         if (chunk.usage && typeof chunk.usage === "object" && !Array.isArray(chunk.usage)) {
           // Some providers combine usage with a final content delta; keep parsing this frame.
-          pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>, preserveNativeCacheRead);
+          pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>, cacheSemantics);
         }
         const choice = choices[0];
         if (!choice) return false;
@@ -470,7 +493,7 @@ export function createOpenAIChatAdapter(provider: FrogProviderConfig): ProviderA
       const stopReason = stopReasonFromOpenAIChat(choice?.finish_reason);
       events.push({
         type: "done",
-        usage: usageFromOpenAIChat(usage, preserveNativeCacheRead),
+        usage: usageFromOpenAIChat(usage, cacheSemantics),
         ...(stopReason ? { stopReason } : {}),
       });
       return events;

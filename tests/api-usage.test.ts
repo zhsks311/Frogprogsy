@@ -198,7 +198,7 @@ describe("GET /api/usage", () => {
       expect(body.cacheHitRate).toMatchObject({
         status: "no_data",
         hitRate: null,
-        reportedRequests: 0,
+        measuredRequests: 0,
         unsupportedRequests: 0,
         unavailableRequests: 0,
         failedRequests: 0,
@@ -362,7 +362,21 @@ describe("GET /api/usage", () => {
         usage: { inputTokens: 20, outputTokens: 5, cachedInputTokens: 10 },
         totalTokens: 25,
       },
-    ];
+      {
+        requestId: "shadow-comparison",
+        timestamp: now,
+        provider: "openai",
+        model: "shadow-gpt",
+        status: 200,
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 1_000, outputTokens: 5, cacheReadInputTokens: 1_000 },
+        totalTokens: 1_005,
+        source: "shadow",
+      },
+    ].map((line, index) => index < 9 ? { ...line, outcome: "completed" } : line);
     writeFileSync(join(testDir, "usage.jsonl"), `${lines.map(line => JSON.stringify(line)).join("\n")}\n`, { mode: 0o600 });
     const server = await startServer(0);
     try {
@@ -370,16 +384,115 @@ describe("GET /api/usage", () => {
       expect(body.cacheHitRate).toEqual({
         status: "available",
         formula: "cache_read_input_tokens / total_input_tokens",
-        cacheReadInputTokens: 79,
-        cacheCreationInputTokens: 15,
-        inputTokens: 310,
-        totalInputTokens: 370,
-        hitRate: 79 / 370,
-        reportedRequests: 6,
+        requests: 11,
+        successfulRequests: 9,
+        measuredRequests: 5,
+        legacyRequests: 2,
+        legacyMeasuredRequests: 1,
+        historicalCacheReadInputTokens: 5,
+        historicalTotalInputTokens: 20,
+        historicalHitRate: 0.25,
+        cacheReadInputTokens: 74,
+        cacheCreationInputTokens: 10,
+        cacheCreationMeasuredRequests: 1,
+        cacheCreationUnavailableRequests: 4,
+        uncachedInputTokens: 50,
+        uncachedMeasuredRequests: 1,
+        uncachedUnavailableRequests: 4,
+        nonCacheReadInputTokens: 276,
+        totalInputTokens: 350,
+        hitRate: 74 / 350,
+        coverageRatio: 5 / 9,
         unsupportedRequests: 2,
-        unavailableRequests: 3,
+        unavailableRequests: 2,
         failedRequests: 0,
+        abortedRequests: 0,
+        incompleteRequests: 0,
+        partialRequests: 0,
       });
+      expect((body.cacheProviders as Array<{ cacheReadInputTokens: number }>).reduce((sum, row) => sum + row.cacheReadInputTokens, 0)).toBe(74);
+      expect((body.cacheModels as Array<{ totalInputTokens: number }>).reduce((sum, row) => sum + row.totalInputTokens, 0)).toBe(350);
+      expect((body.cacheDays as Array<{ nonCacheReadInputTokens: number }>).reduce((sum, row) => sum + row.nonCacheReadInputTokens, 0)).toBe(276);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("aggregates proven Google, OpenRouter, and DeepSeek cache contracts without inventing writes", async () => {
+    const now = Date.now();
+    const rows = [
+      {
+        requestId: "google",
+        timestamp: now,
+        provider: "google",
+        model: "gemini",
+        status: 200,
+        outcome: "completed",
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "google_input_total_includes_cached",
+        usage: { inputTokens: 100, outputTokens: 5, cacheReadInputTokens: 25 },
+      },
+      {
+        requestId: "openrouter",
+        timestamp: now,
+        provider: "openrouter",
+        model: "routed-model",
+        status: 200,
+        outcome: "completed",
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "openrouter_input_total_includes_cached",
+        usage: {
+          inputTokens: 80,
+          outputTokens: 5,
+          cacheReadInputTokens: 20,
+          observedCacheWriteInputTokens: 10,
+        },
+      },
+      {
+        requestId: "deepseek",
+        timestamp: now,
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+        status: 200,
+        outcome: "completed",
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "deepseek_hit_plus_miss",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 5,
+          cacheReadInputTokens: 30,
+          cacheMissInputTokens: 70,
+        },
+      },
+    ];
+    writeFileSync(join(testDir, "usage.jsonl"), `${rows.map(row => JSON.stringify(row)).join("\n")}\n`, { mode: 0o600 });
+    const server = await startServer(0);
+    try {
+      const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
+      expect(body.cacheHitRate).toMatchObject({
+        status: "available",
+        successfulRequests: 3,
+        measuredRequests: 3,
+        cacheReadInputTokens: 75,
+        cacheCreationInputTokens: 10,
+        cacheCreationMeasuredRequests: 1,
+        cacheCreationUnavailableRequests: 2,
+        uncachedInputTokens: 50,
+        uncachedMeasuredRequests: 1,
+        uncachedUnavailableRequests: 2,
+        nonCacheReadInputTokens: 205,
+        totalInputTokens: 280,
+        hitRate: 75 / 280,
+        coverageRatio: 1,
+      });
+      expect(body.cacheProviders).toHaveLength(3);
+      expect(body.cacheModels).toHaveLength(3);
     } finally {
       await server.stop(true);
     }
@@ -392,6 +505,7 @@ describe("GET /api/usage", () => {
       provider: "anthropic",
       model: "claude-sonnet",
       status: 200,
+      outcome: "completed",
       durationMs: 10,
       usageStatus: "reported",
       cacheUsageStatus: "reported",
@@ -412,7 +526,44 @@ describe("GET /api/usage", () => {
         cacheReadInputTokens: 0,
         totalInputTokens: 100,
         hitRate: 0,
-        reportedRequests: 1,
+        measuredRequests: 1,
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("keeps a reported zero denominator unavailable", async () => {
+    writeFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
+      requestId: "cache-zero-denominator",
+      timestamp: Date.now(),
+      provider: "anthropic",
+      model: "claude-sonnet",
+      status: 200,
+      outcome: "completed",
+      durationMs: 10,
+      usageStatus: "reported",
+      cacheUsageStatus: "reported",
+      cacheUsageSemantics: "anthropic_separate_input_buckets",
+      usage: {
+        inputTokens: 0,
+        outputTokens: 1,
+        cachedInputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+      totalTokens: 1,
+    })}\n`, { mode: 0o600 });
+    const server = await startServer(0);
+    try {
+      const body = await fetch(new URL("/api/usage", server.url)).then(res => res.json());
+      expect(body.cacheHitRate).toMatchObject({
+        status: "unavailable",
+        successfulRequests: 1,
+        measuredRequests: 0,
+        coverageRatio: 0,
+        hitRate: null,
+        unavailableRequests: 1,
       });
     } finally {
       await server.stop(true);
@@ -499,7 +650,7 @@ describe("GET /api/usage", () => {
       expect(usageBody.cacheHitRate).toMatchObject({
         status: "unavailable",
         hitRate: null,
-        reportedRequests: 0,
+        measuredRequests: 0,
         unavailableRequests: 1,
       });
 
@@ -521,7 +672,7 @@ describe("GET /api/usage", () => {
       expect(usageBody.cacheHitRate).toMatchObject({
         status: "unavailable",
         hitRate: null,
-        reportedRequests: 0,
+        measuredRequests: 0,
         unavailableRequests: 2,
       });
 
@@ -544,10 +695,10 @@ describe("GET /api/usage", () => {
         status: "available",
         cacheReadInputTokens: 4,
         cacheCreationInputTokens: 6,
-        inputTokens: 0,
+        uncachedInputTokens: 0,
         totalInputTokens: 10,
         hitRate: 0.4,
-        reportedRequests: 1,
+        measuredRequests: 1,
         unavailableRequests: 2,
       });
     } finally {
@@ -563,6 +714,7 @@ describe("GET /api/usage", () => {
       provider: "openai",
       model: "gpt",
       status: 200,
+      outcome: "completed",
       durationMs: 10,
       usageStatus: "reported",
       cacheUsageStatus: "unsupported",
@@ -575,7 +727,7 @@ describe("GET /api/usage", () => {
       expect(body.cacheHitRate).toMatchObject({
         status: "unsupported",
         hitRate: null,
-        reportedRequests: 0,
+        measuredRequests: 0,
         unsupportedRequests: 1,
         unavailableRequests: 0,
         failedRequests: 0,
@@ -594,6 +746,7 @@ describe("GET /api/usage", () => {
         provider: "compatible",
         model: "gpt-shaped",
         status: 200,
+        outcome: "completed",
         durationMs: 10,
         usageStatus: "reported",
         cacheUsageStatus: "unsupported",
@@ -606,6 +759,7 @@ describe("GET /api/usage", () => {
         provider: "openai",
         model: "gpt",
         status: 200,
+        outcome: "completed",
         durationMs: 10,
         usageStatus: "reported",
         cacheUsageStatus: "unavailable",
@@ -619,10 +773,45 @@ describe("GET /api/usage", () => {
         provider: "openai",
         model: "gpt",
         status: 502,
+        outcome: "provider_non_2xx",
         durationMs: 10,
         usageStatus: "unreported",
         cacheUsageStatus: "unavailable",
         cacheUsageSemantics: "openai_input_total_includes_cached",
+      },
+      {
+        requestId: "client-aborted",
+        timestamp: now,
+        provider: "openai",
+        model: "gpt",
+        status: 499,
+        outcome: "client_cancel",
+        durationMs: 10,
+        usageStatus: "unreported",
+        cacheUsageStatus: "unavailable",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+      },
+      {
+        requestId: "partial-stream",
+        timestamp: now,
+        provider: "openai",
+        model: "gpt",
+        status: 502,
+        outcome: "bridge_error",
+        durationMs: 10,
+        usageStatus: "reported",
+        cacheUsageStatus: "reported",
+        cacheUsageSemantics: "openai_input_total_includes_cached",
+        usage: { inputTokens: 100, outputTokens: 5, cacheReadInputTokens: 90 },
+      },
+      {
+        requestId: "incomplete-historical",
+        timestamp: now,
+        provider: "unknown",
+        model: "unknown",
+        durationMs: 10,
+        usageStatus: "unreported",
+        cacheUsageStatus: "unavailable",
       },
     ];
     writeFileSync(join(testDir, "usage.jsonl"), `${lines.map(line => JSON.stringify(line)).join("\n")}\n`, { mode: 0o600 });
@@ -632,10 +821,15 @@ describe("GET /api/usage", () => {
       expect(body.cacheHitRate).toMatchObject({
         status: "error",
         hitRate: null,
-        reportedRequests: 0,
+        measuredRequests: 0,
         unsupportedRequests: 1,
         unavailableRequests: 1,
         failedRequests: 1,
+        abortedRequests: 1,
+        partialRequests: 1,
+        incompleteRequests: 1,
+        cacheReadInputTokens: 0,
+        totalInputTokens: 0,
       });
     } finally {
       await server.stop(true);
@@ -718,15 +912,30 @@ describe("GET /api/usage", () => {
         status: "available",
         cacheReadInputTokens: 2,
         cacheCreationInputTokens: 0,
-        inputTokens: 13,
+        uncachedInputTokens: 13,
         totalInputTokens: 15,
         hitRate: 2 / 15,
-        reportedRequests: 1,
+        measuredRequests: 1,
       });
       expect(body.providers).toHaveLength(1);
       expect(body.providers[0]).toMatchObject({ provider: "fallback", totalTokens: 18 });
       expect(body.models).toHaveLength(1);
       expect(body.models[0]).toMatchObject({ provider: "fallback", model: "fallback-model", totalTokens: 18 });
+      expect(body.cacheProviders).toHaveLength(1);
+      expect(body.cacheProviders[0]).toMatchObject({
+        provider: "fallback",
+        measuredRequests: 1,
+        cacheReadInputTokens: 2,
+        totalInputTokens: 15,
+      });
+      expect(body.cacheModels).toHaveLength(1);
+      expect(body.cacheModels[0]).toMatchObject({
+        provider: "fallback",
+        model: "fallback-model",
+        measuredRequests: 1,
+        cacheReadInputTokens: 2,
+        totalInputTokens: 15,
+      });
       expect(JSON.stringify(body)).not.toContain("primary");
       expect(JSON.stringify(body)).not.toContain("sk-primary-secret");
       expect(JSON.stringify(body)).not.toContain("sk-fallback-secret");

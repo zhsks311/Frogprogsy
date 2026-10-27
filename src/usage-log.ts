@@ -6,6 +6,15 @@ import type { CacheUsageSemantics, FrogUsage } from "./types";
 export type UsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
 export type CacheUsageStatus = "reported" | "unsupported" | "unavailable";
 
+export type UsageOutcome =
+  | "completed"
+  | "client_cancel"
+  | "upstream_abort"
+  | "timeout"
+  | "provider_non_2xx"
+  | "bridge_error"
+  | "internal_error";
+
 export interface PersistedUsageEntry {
   requestId: string;
   timestamp: number;
@@ -15,6 +24,8 @@ export interface PersistedUsageEntry {
   status: number;
   durationMs: number;
   usageStatus: UsageStatus;
+  /** Final lifecycle; historical 2xx rows omit it and stay outside the headline cache metric. */
+  outcome?: UsageOutcome;
   usage?: FrogUsage;
   cacheUsageStatus?: CacheUsageStatus;
   /** Wire-proven denominator contract captured at routing time; absent on historical and unsupported rows. */

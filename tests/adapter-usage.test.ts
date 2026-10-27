@@ -22,6 +22,24 @@ const nativeCodexResponsesProvider = {
   baseUrl: "https://chatgpt.com/backend-api/codex",
   catalogProviderId: "codex",
 };
+const managedGoogleProvider = {
+  adapter: "google",
+  baseUrl: "https://generativelanguage.googleapis.com",
+  apiKey: "key",
+  catalogProviderId: "google",
+};
+const managedOpenRouterProvider = {
+  adapter: "openai-chat",
+  baseUrl: "https://openrouter.ai/api/v1",
+  apiKey: "key",
+  catalogProviderId: "openrouter",
+};
+const managedDeepSeekProvider = {
+  adapter: "openai-chat",
+  baseUrl: "https://api.deepseek.com",
+  apiKey: "key",
+  catalogProviderId: "deepseek",
+};
 
 const comparableRegistryProviders = PROVIDER_REGISTRY
   .filter(entry => cacheUsageSemanticsForProvider({
@@ -68,15 +86,36 @@ function effectiveManagedProvider(
 }
 
 describe("adapter reasoning and usage details", () => {
-  test("registry cache comparability stays limited to proven native or Anthropic wire contracts", () => {
+  test("registry cache comparability stays limited to proven provider and wire contracts", () => {
     expect(comparableRegistryProviders).toEqual([
       "codex",
       "anthropic",
       "openai-apikey",
       "umans",
+      "openrouter",
+      "google",
+      "deepseek",
       "xiaomi",
       "cloudflare-ai-gateway",
     ]);
+  });
+
+  test("cache provenance rejects a matching label without the managed canonical endpoint", () => {
+    expect(cacheUsageSemanticsForProvider({
+      adapter: "google",
+      baseUrl: "https://example.test",
+      catalogProviderId: "google",
+    })).toBeUndefined();
+    expect(cacheUsageSemanticsForProvider({
+      adapter: "openai-chat",
+      baseUrl: "https://example.test/v1",
+      catalogProviderId: "openrouter",
+    })).toBeUndefined();
+    expect(cacheUsageSemanticsForProvider({
+      adapter: "openai-chat",
+      baseUrl: "https://example.test",
+      catalogProviderId: "deepseek",
+    })).toBeUndefined();
   });
 
   test("effective managed restrictions constrain the actual OpenAI request", () => {
@@ -133,7 +172,7 @@ describe("adapter reasoning and usage details", () => {
       usage: {
         prompt_tokens: 11,
         completion_tokens: 7,
-        prompt_tokens_details: { cached_tokens: 5 },
+        prompt_tokens_details: { cached_tokens: 5, cache_write_tokens: 2 },
         completion_tokens_details: { reasoning_tokens: 3 },
       },
     })));
@@ -171,7 +210,7 @@ describe("adapter reasoning and usage details", () => {
       usage: {
         prompt_tokens: 11,
         completion_tokens: 7,
-        prompt_tokens_details: { cached_tokens: 5 },
+        prompt_tokens_details: { cached_tokens: 5, cache_write_tokens: 2 },
       },
     }));
     const missingDetails = await adapter.parseResponse?.(Response.json({
@@ -185,10 +224,24 @@ describe("adapter reasoning and usage details", () => {
         prompt_tokens_details: { cached_tokens: 5 },
       },
     }));
+    const invalidOptionalWrite = await adapter.parseResponse?.(Response.json({
+      choices: [{ message: { content: "answer" } }],
+      usage: {
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        prompt_tokens_details: { cached_tokens: 5, cache_write_tokens: 7 },
+      },
+    }));
 
     expect(positive?.at(-1)).toEqual({
       type: "done",
-      usage: { inputTokens: 11, outputTokens: 7, cachedInputTokens: 5, cacheReadInputTokens: 5 },
+      usage: {
+        inputTokens: 11,
+        outputTokens: 7,
+        cachedInputTokens: 5,
+        cacheReadInputTokens: 5,
+        observedCacheWriteInputTokens: 2,
+      },
     });
     expect(missingDetails?.at(-1)).toEqual({
       type: "done",
@@ -198,12 +251,21 @@ describe("adapter reasoning and usage details", () => {
       type: "done",
       usage: { inputTokens: 0, outputTokens: 7, cachedInputTokens: 5 },
     });
+    expect(invalidOptionalWrite?.at(-1)).toEqual({
+      type: "done",
+      usage: {
+        inputTokens: 11,
+        outputTokens: 7,
+        cachedInputTokens: 5,
+        cacheReadInputTokens: 5,
+      },
+    });
   });
 
   test("native OpenAI Chat streaming preserves an explicitly reported zero cache read", async () => {
     const adapter = createOpenAIChatAdapter(nativeOpenAIChatProvider);
     const response = new Response([
-      "data: {\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\n",
+      "data: {\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0}}}\n\n",
       "data: [DONE]\n\n",
     ].join(""));
     const events = [];
@@ -211,7 +273,13 @@ describe("adapter reasoning and usage details", () => {
 
     expect(events.at(-1)).toEqual({
       type: "done",
-      usage: { inputTokens: 9, outputTokens: 4, cachedInputTokens: 0, cacheReadInputTokens: 0 },
+      usage: {
+        inputTokens: 9,
+        outputTokens: 4,
+        cachedInputTokens: 0,
+        cacheReadInputTokens: 0,
+        observedCacheWriteInputTokens: 0,
+      },
     });
   });
 
@@ -222,7 +290,7 @@ describe("adapter reasoning and usage details", () => {
       usage: {
         input_tokens: 13,
         output_tokens: 5,
-        input_tokens_details: { cached_tokens: 3 },
+        input_tokens_details: { cached_tokens: 3, cache_write_tokens: 2 },
       },
     }));
     const missingDetails = await adapter.parseResponse?.(Response.json({
@@ -234,9 +302,23 @@ describe("adapter reasoning and usage details", () => {
       output: [{ type: "message", content: [{ type: "output_text", text: "answer" }] }],
       usage: { output_tokens: 5, input_tokens_details: { cached_tokens: 3 } },
     }));
+    const invalidOptionalWrite = await adapter.parseResponse?.(Response.json({
+      output: [{ type: "message", content: [{ type: "output_text", text: "answer" }] }],
+      usage: {
+        input_tokens: 13,
+        output_tokens: 5,
+        input_tokens_details: { cached_tokens: 3, cache_write_tokens: 11 },
+      },
+    }));
     expect(positive?.at(-1)).toEqual({
       type: "done",
-      usage: { inputTokens: 13, outputTokens: 5, cachedInputTokens: 3, cacheReadInputTokens: 3 },
+      usage: {
+        inputTokens: 13,
+        outputTokens: 5,
+        cachedInputTokens: 3,
+        cacheReadInputTokens: 3,
+        observedCacheWriteInputTokens: 2,
+      },
     });
     expect(missingDetails?.at(-1)).toEqual({
       type: "done",
@@ -246,6 +328,15 @@ describe("adapter reasoning and usage details", () => {
       type: "done",
       usage: { inputTokens: 0, outputTokens: 5, cachedInputTokens: 3 },
     });
+    expect(invalidOptionalWrite?.at(-1)).toEqual({
+      type: "done",
+      usage: {
+        inputTokens: 13,
+        outputTokens: 5,
+        cachedInputTokens: 3,
+        cacheReadInputTokens: 3,
+      },
+    });
   });
 
   test("native OpenAI Responses streaming preserves an explicitly reported zero cache read", async () => {
@@ -254,14 +345,20 @@ describe("adapter reasoning and usage details", () => {
       "event: response.output_text.delta\n",
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n",
       "event: response.completed\n",
-      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":13,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":0}}}}\n\n",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":13,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0}}}}\n\n",
     ].join(""));
     const events = [];
     for await (const event of adapter.parseStream(response)) events.push(event);
 
     expect(events.at(-1)).toEqual({
       type: "done",
-      usage: { inputTokens: 13, outputTokens: 5, cachedInputTokens: 0, cacheReadInputTokens: 0 },
+      usage: {
+        inputTokens: 13,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        cacheReadInputTokens: 0,
+        observedCacheWriteInputTokens: 0,
+      },
     });
   });
 
@@ -432,6 +529,74 @@ describe("adapter reasoning and usage details", () => {
     expect(events?.at(-1)).toEqual({
       type: "done",
       usage: { inputTokens: 13, outputTokens: 5, cachedInputTokens: 3, reasoningOutputTokens: 2 },
+    });
+  });
+
+  test("managed Google preserves its documented inclusive cache-read subset", async () => {
+    const adapter = createGoogleAdapter(managedGoogleProvider);
+    const events = await adapter.parseResponse?.(Response.json({
+      candidates: [{ content: { parts: [{ text: "answer" }] } }],
+      usageMetadata: {
+        promptTokenCount: 13,
+        candidatesTokenCount: 5,
+        cachedContentTokenCount: 3,
+      },
+    }));
+
+    expect(events?.at(-1)).toEqual({
+      type: "done",
+      usage: {
+        inputTokens: 13,
+        outputTokens: 5,
+        cachedInputTokens: 3,
+        cacheReadInputTokens: 3,
+      },
+    });
+  });
+
+  test("managed OpenRouter preserves documented read and optional write details", async () => {
+    const adapter = createOpenAIChatAdapter(managedOpenRouterProvider);
+    const events = await adapter.parseResponse?.(Response.json({
+      choices: [{ message: { content: "answer" } }],
+      usage: {
+        prompt_tokens: 20,
+        completion_tokens: 5,
+        prompt_tokens_details: { cached_tokens: 8, cache_write_tokens: 4 },
+      },
+    }));
+
+    expect(events?.at(-1)).toEqual({
+      type: "done",
+      usage: {
+        inputTokens: 20,
+        outputTokens: 5,
+        cachedInputTokens: 8,
+        cacheReadInputTokens: 8,
+        observedCacheWriteInputTokens: 4,
+      },
+    });
+  });
+
+  test("managed DeepSeek observes documented cache hit and miss counters locally", async () => {
+    const adapter = createOpenAIChatAdapter(managedDeepSeekProvider);
+    const events = await adapter.parseResponse?.(Response.json({
+      choices: [{ message: { content: "answer" } }],
+      usage: {
+        prompt_tokens: 20,
+        completion_tokens: 5,
+        prompt_cache_hit_tokens: 8,
+        prompt_cache_miss_tokens: 12,
+      },
+    }));
+
+    expect(events?.at(-1)).toEqual({
+      type: "done",
+      usage: {
+        inputTokens: 20,
+        outputTokens: 5,
+        observedCacheReadInputTokens: 8,
+        cacheMissInputTokens: 12,
+      },
     });
   });
 });
