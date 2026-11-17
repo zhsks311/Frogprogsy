@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   catalogDataDigest,
   generateModelCatalog,
@@ -402,7 +403,7 @@ test("provider-owned OpenRouter input refreshes full passthrough without borrowi
 describe("official OpenRouter metadata input", () => {
   test("unknown limits stay unknown through nullable tuple holes and duplicates fail", async () => {
     const dir = mkdtempSync(join(tmpdir(), "frog-openrouter-input-"));
-    const script = new URL("../scripts/generate-jawcode-metadata.ts", import.meta.url).pathname;
+    const script = fileURLToPath(new URL("../scripts/generate-jawcode-metadata.ts", import.meta.url));
     try {
       writeFileSync(join(dir, "jawcode.json"), "{}");
       const snapshot = { data: [
@@ -415,7 +416,7 @@ describe("official OpenRouter metadata input", () => {
         stdout: "pipe", stderr: "pipe",
       });
       expect(run().exitCode).toBe(0);
-      const module = await import(join(dir, "src/generated/jawcode-model-metadata.ts"));
+      const module = await import(pathToFileURL(join(dir, "src/generated/jawcode-model-metadata.ts")).href);
       expect(module.getJawcodeModelMetadata("openrouter", "fixture/unknown")).toEqual({ provider: "openrouter", id: "fixture/unknown", reasoning: true });
       expect(module.getJawcodeModelMetadata("openrouter", "fixture/vision").input).toEqual(["text", "image"]);
       snapshot.data.push(snapshot.data[0]);
