@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { parseMessagesRequest } from "../src/messages/parser";
+import { getProviderRegistryEntry } from "../src/providers/registry";
 import type { FrogProviderConfig } from "../src/types";
 
 const provider = { adapter: "anthropic", baseUrl: "https://example.test", apiKey: "key" };
@@ -192,5 +193,30 @@ describe("Anthropic explicit model effort and request restrictions", () => {
     expect(nonThinkingBody.temperature).toBe(0.5);
     expect(nonThinkingBody.top_p).toBe(0.9);
     expect(nonThinkingBody.tool_choice).toEqual({ type: "tool", name: "get_weather" });
+  });
+
+  test("new Claude GA IDs use only their verified native wire restrictions", () => {
+    const entry = getProviderRegistryEntry("anthropic")!;
+    const config: FrogProviderConfig = { ...entry, catalogProviderId: "anthropic", apiKey: "key" };
+    for (const model of ["claude-fable-5-2", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]) {
+      const body = buildBody({
+        model, max_tokens: 16000, messages: [{ role: "user", content: "Weather?" }],
+        output_config: { effort: "xhigh" }, temperature: 0.2, top_p: 0.8,
+        tools, tool_choice: { type: "tool", name: "get_weather" },
+      }, config);
+      expect(body.output_config).toEqual({ effort: "xhigh" });
+      expect(body.thinking).toBeUndefined();
+      expect(body.temperature).toBeUndefined();
+      expect(body.top_p).toBeUndefined();
+      expect(body.tool_choice).toEqual(model === "claude-haiku-5-5"
+        ? { type: "tool", name: "get_weather" } : { type: "auto" });
+      expect(entry.modelMinFrogprogsyVersions?.[model]).toBe("0.0.9");
+      const customBody = buildBody({
+        model, max_tokens: 16000, messages: [{ role: "user", content: "Weather?" }],
+        thinking: { type: "enabled", budget_tokens: 8000 },
+      }, { ...provider });
+      expect(customBody.thinking).toBeDefined();
+      expect(customBody.output_config).toBeUndefined();
+    }
   });
 });
