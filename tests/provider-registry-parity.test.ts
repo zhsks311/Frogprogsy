@@ -53,11 +53,11 @@ describe("provider registry parity", () => {
       defaultModel: "umans-coder",
       escapeBuiltinToolNames: true,
     });
-    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text", "image"]);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-coder"]).toBe(262_144);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.3"]?.input).toEqual(["text"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-coder"]).toBe(1_048_576);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.3"]).toBe(1_048_576);
     expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-coder"]?.input).toEqual(["text", "image"]);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text", "image"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.3"]?.input).toEqual(["text"]);
   });
 
   test("OpenCode Zen keeps a generic key-auth Chat route without managed model claims", () => {
@@ -87,11 +87,12 @@ describe("provider registry parity", () => {
 
     const moonshot = KEY_LOGIN_PROVIDERS.moonshot;
     expect(moonshot.models).toEqual([
+      "kimi-k3.1-pro",
+      "kimi-k3.1-pro-highspeed",
       "kimi-k3",
       "kimi-k2.7-code",
       "kimi-k2.7-code-highspeed",
       "kimi-k2.6",
-      "kimi-k2.5",
     ]);
     expect(moonshot.modelContextWindows?.["kimi-k3"]).toBe(1_048_576);
     expect(moonshot.modelReasoningEfforts?.["kimi-k3"]).toEqual(["low", "high", "xhigh"]);
@@ -102,54 +103,32 @@ describe("provider registry parity", () => {
     expect(moonshot.noPenaltyModels).toContain("kimi-k3");
 
     expect(KEY_LOGIN_PROVIDERS.umans.models).toEqual([
-      "umans-kimi-k3",
-      "umans-coder",
-      "umans-glm-5.2",
-      "umans-deepseek-v4-flash-0731",
-      "umans-deepseek-v4-pro-0813",
-      "umans-flash",
-      "umans-qwen3.6-35b-a3b",
+      "umans-coder", "umans-flash", "umans-deepseek-v4.1-flash",
+      "umans-deepseek-v4.1-flash-1017", "umans-glm-5.3", "umans-kimi-k3.1-pro",
     ]);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-kimi-k3"]).toBe(1_048_576);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-deepseek-v4-flash-0731"]).toBe(1_048_576);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-kimi-k3"]?.input).toEqual(["text", "image"]);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-deepseek-v4-flash-0731"]?.input).toEqual(["text"]);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-kimi-k3"]).toEqual(["low", "high", "xhigh"]);
-    expect(KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-deepseek-v4-flash-0731"]).toEqual(["low", "high", "xhigh"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-kimi-k3.1-pro"]).toBe(1_048_576);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-deepseek-v4.1-flash"]).toBe(1_048_576);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-kimi-k3.1-pro"]?.input).toEqual(["text", "image"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-deepseek-v4.1-flash"]?.input).toEqual(["text", "image"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-kimi-k3.1-pro"]).toEqual(["low", "high", "xhigh"]);
+    expect(KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-deepseek-v4.1-flash"]).toEqual(["low", "high", "xhigh"]);
 
     expect(KEY_LOGIN_PROVIDERS.deepseek).toMatchObject({
       defaultModel: "deepseek-v4-pro",
-      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      models: ["deepseek-flash", "deepseek-v4-pro"],
       modelContextWindows: {
-        "deepseek-v4-flash": 1_000_000,
         "deepseek-v4-pro": 1_000_000,
       },
     });
 
-    expect(KEY_LOGIN_PROVIDERS.neuralwatt.models).toEqual([
-      "deepseek-v4-flash",
-      "glm-5.2",
-      "glm-5.2-fast",
-      "glm-5.2-short",
-      "glm-5.2-short-fast",
-      "gemma-4-31b",
-      "kimi-k2.7-code",
-      "kimi-k2.7-code-fast",
-      "kimi-k3",
-      "kimi-k3-fast",
-      "qwen3.6-35b",
-      "qwen3.6-35b-fast",
-    ]);
-    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelContextWindows?.["kimi-k3"]).toBe(1_048_560);
-    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelCapabilities?.["gemma-4-31b"]?.input).toEqual(["text", "image"]);
-    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelCapabilities?.["deepseek-v4-flash"]?.input).toEqual(["text"]);
-    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["gemma-4-31b"]).toEqual(["xhigh"]);
-    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["deepseek-v4-flash"]).toEqual(["low", "high", "xhigh"]);
-    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["kimi-k3"]).toEqual(["low", "high", "xhigh"]);
-    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelReasoningEfforts?.["kimi-k3-fast"]).toEqual([]);
-    expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "gemma-4-31b", "xhigh")).toBe("max");
-    expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "deepseek-v4-flash", "xhigh")).toBe("max");
-    expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "kimi-k3", "xhigh")).toBe("max");
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.models).toContain("kimi-k3.1-pro");
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.models).toContain("deepseek-v4.1-flash-flex");
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelContextWindows?.["qwen3.6-35b"]).toBe(262_128);
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelCapabilities?.["glm-5.3"]?.input).toEqual(["text"]);
+    expect(KEY_LOGIN_PROVIDERS.neuralwatt.modelCapabilities?.["deepseek-v4.1-flash"]?.input).toEqual(["text", "image"]);
+    expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "deepseek-v4.1-flash", "xhigh")).toBe("xhigh");
+    expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "kimi-k3.1-pro", "medium")).toBe("medium");
+    expect(mapReasoningEffort(KEY_LOGIN_PROVIDERS.neuralwatt, "kimi-k3.1-pro", "xhigh")).toBe("max");
 
     expect(KEY_LOGIN_PROVIDERS.zai.models).toContain("glm-4.7");
     expect(KEY_LOGIN_PROVIDERS.zai.modelContextWindows?.["glm-5.3[1m]"]).toBe(1_000_000);
@@ -315,19 +294,19 @@ describe("provider registry parity", () => {
       },
       {
         provider: "umans",
-        id: "umans-glm-5.2",
-        contextWindow: KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"],
-        inputModalities: KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.2"]?.input,
-        reasoningEfforts: KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-glm-5.2"],
+        id: "umans-glm-5.3",
+        contextWindow: KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.3"],
+        inputModalities: KEY_LOGIN_PROVIDERS.umans.modelCapabilities?.["umans-glm-5.3"]?.input,
+        reasoningEfforts: KEY_LOGIN_PROVIDERS.umans.modelReasoningEfforts?.["umans-glm-5.3"],
       },
     ]);
     const coder = entries.find(e => e.slug === "umans/umans-coder");
-    const glm = entries.find(e => e.slug === "umans/umans-glm-5.2");
+    const glm = entries.find(e => e.slug === "umans/umans-glm-5.3");
 
-    expect(coder?.context_window).toBe(262_144);
+    expect(coder?.context_window).toBe(1_048_576);
     expect(coder?.input_modalities).toEqual(["text", "image"]);
-    expect(glm?.context_window).toBe(405_504);
-    expect(glm?.input_modalities).toEqual(["text", "image"]);
+    expect(glm?.context_window).toBe(1_048_576);
+    expect(glm?.input_modalities).toEqual(["text"]);
     expect(glm?.default_reasoning_level).toBe("high");
   });
 
@@ -358,7 +337,7 @@ describe("provider registry parity", () => {
   });
 
   test("unmanaged historical MiniMax ids do not decorate routed lowercase ids", () => {
-    expect(getJawcodeModelMetadata("minimax", "MiniMax-M2.5")?.contextWindow).toBe(204_800);
+    expect(getJawcodeModelMetadata("minimax", "MiniMax-M2.5")).toBeUndefined();
     expect(getJawcodeModelMetadata("minimax", "minimax-m2.5")).toBeUndefined();
 
     const entries = buildCatalogEntries(nativeTemplate(), [], [

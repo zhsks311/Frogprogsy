@@ -415,3 +415,35 @@ The change is complete only when these checks pass:
 - Letting remote data change request destinations or authentication.
 - Probing every model with a paid inference request.
 - Declaring a provider-discovered model fully compatible without a maintained catalog record.
+
+
+### Whole-provider audit: 2026-11-17
+
+Catalog revision 5 refreshes the evidenced GPT, Claude, Google, Kimi Code, Umans,
+DeepSeek, Moonshot, Z.AI, Neuralwatt, Ollama Cloud, Mistral, MiniMax global and
+Xiaomi model data. See [the route-by-route audit](13_provider-audit-20261117.md)
+for all 45 provider entries, official sources, account restrictions and holds.
+Xiaomi's bundled default moves from explicitly retired MiMo V2.5 Pro to V2.6 Pro
+for new configurations; persisted user selections remain user-owned. Other defaults
+remain unchanged, including Neuralwatt's legacy GLM 5.2 default pending account evidence.
+
+New native Claude models require Frogprogsy 0.0.9 because their adaptive thinking
+request dialect requires the updated installed adapter allowlist. Older remote-catalog
+readers skip those model records. Catalog v1's schema and transport/auth boundaries
+remain unchanged. Output limits remain audit notes, not runtime caps. Rounded "1M"
+claims without an exact integer remain unknown for new models.
+
+OpenRouter is still the sole full-catalog passthrough route. Its snapshot can now
+come directly from the provider-owned `https://openrouter.ai/api/v1/models` response:
+set `OPENROUTER_MODELS_JSON` when running `scripts/generate-jawcode-metadata.ts`,
+alongside the existing `JAWCODE_MODELS_JSON` input for other routes. This is an
+explicit build-time input, not runtime network discovery. Missing numeric fields
+serialize as nullable tuple holes and are read as unknown, never zero.
+
+The audit identifies separate runtime work rather than inventing metadata fixes:
+Cerebras Qwen reasoning replay (`message.reasoning`), Azure discovery's v1 URL,
+Parallel's console URL, legacy OpenCode gateway equivalence, and MiniMax CN hostname
+continuity. xAI API-key model docs do not establish the OAuth provider's model access.
+Those routes, and environment/account-defined inventories, are not claimed fully
+validated by this catalog update. No user model, credential, opt-in setting or
+installed proxy is changed by the source update.

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -52,12 +52,12 @@ describe("model catalog generator", () => {
     }
   });
 
-  test("OpenRouter catalog은 감사 범위 변경과 무관하게 그대로 유지한다", () => {
+  test("OpenRouter의 공급자 소유 snapshot 전체를 고정해 재현한다", () => {
     const openrouter = generateModelCatalog(input).providers.find(provider => provider.id === "openrouter");
     const digest = createHash("sha256").update(JSON.stringify(openrouter)).digest("hex");
 
-    expect(openrouter?.models).toHaveLength(347);
-    expect(digest).toBe("1d8f3b6b7799ff0533b4ac25857a65604b8d66d336c33f2b2b026cbf4dc9ebc1");
+    expect(openrouter?.models).toHaveLength(470);
+    expect(digest).toBe("ef0897905b52dbad289e9007043ea8398fb1729fb361a742e12a56d309a193ef");
   });
 
   test("명시한 current model만 관리하고 Jawcode·metadata 키는 멤버십을 만들지 않는다", () => {
@@ -95,7 +95,7 @@ describe("model catalog generator", () => {
     expect(catalog.providers[0]?.models).toEqual([]);
   });
 
-  test("OpenRouter는 이번 검증 정책 변경에서 기존 Jawcode catalog를 유지한다", () => {
+  test("OpenRouter만 명시적 모델 목록 없이 전체 snapshot을 관리한다", () => {
     const catalog = generateModelCatalog(input, [{
       id: "openrouter",
       label: "OpenRouter",
@@ -105,8 +105,8 @@ describe("model catalog generator", () => {
       jawcodeBundle: "openrouter",
     }]);
 
-    expect(catalog.providers[0]?.models).toHaveLength(347);
-    expect(catalog.providers[0]?.models.some(model => model.id === "openai/gpt-5.5")).toBeTrue();
+    expect(catalog.providers[0]?.models).toHaveLength(470);
+    expect(catalog.providers[0]?.models.some(model => model.id === "openai/gpt-6.1-sol")).toBeTrue();
   });
 
   test("provider와 model을 ID 순서로 정렬한다", () => {
@@ -145,10 +145,10 @@ describe("model catalog generator", () => {
   test("registry의 retired·unmanaged model을 provider artifact에 직렬화한다", () => {
     const providers = new Map(generateModelCatalog(input).providers.map(provider => [provider.id, provider]));
 
-    expect(providers.get("umans")?.retiredModels).toEqual(["umans-kimi-k2.7"]);
+    expect(providers.get("umans")?.retiredModels).toContain("umans-kimi-k3");
     expect(providers.get("umans")?.unmanagedModels).toEqual(["umans-glm-5.1", "umans-kimi-k2.6"]);
     expect(providers.get("neuralwatt")?.unmanagedModels).toContain("kimi-k2.5-fast");
-    expect(providers.get("deepseek")?.retiredModels).toEqual(["deepseek-chat", "deepseek-reasoner"]);
+    expect(providers.get("deepseek")?.retiredModels).toEqual(["deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]);
   });
 
   test("record별 최소 runtime 버전을 provider와 model에 직렬화한다", () => {
@@ -356,5 +356,71 @@ describe("model catalog generator CLI", () => {
       join(tmpdir(), "unused-model-catalog.json"),
     ], { stdout: "pipe", stderr: "pipe" });
     expect(await missingTime.exited).not.toBe(0);
+  });
+});
+
+test("provider-owned OpenRouter input refreshes full passthrough without borrowing route metadata", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "frogprogsy-provider-metadata-"));
+  const jawcodePath = join(directory, "jawcode.json");
+  const openrouterPath = join(directory, "openrouter.json");
+  const outputPath = join(directory, "src", "generated", "jawcode-model-metadata.ts");
+  writeFileSync(jawcodePath, JSON.stringify({
+    openrouter: { stale: { contextWindow: 1 } },
+    google: { unverified: { contextWindow: 999999 } },
+  }));
+  writeFileSync(openrouterPath, JSON.stringify({ data: [
+    { id: "current", context_length: 123456, architecture: { input_modalities: ["text", "image", "audio"] },
+      top_provider: { max_completion_tokens: 8192 }, supported_parameters: ["reasoning", "tools"] },
+    { id: "unknown" },
+  ] }));
+  const command = ["bun", join(import.meta.dir, "..", "scripts", "generate-jawcode-metadata.ts")];
+  const env = { ...process.env, JAWCODE_MODELS_JSON: jawcodePath, OPENROUTER_MODELS_JSON: openrouterPath };
+  try {
+    const generated = Bun.spawnSync(command, { cwd: directory, env, stdout: "pipe", stderr: "pipe" });
+    expect(generated.exitCode).toBe(0);
+    const source = readFileSync(outputPath, "utf8");
+    expect(source).toContain('["current",123456,8192,"text,image",1]');
+    expect(source).toContain('["unknown"]');
+    expect(source).not.toContain('"stale"');
+    expect(source).not.toContain('"unverified"');
+    expect(source).not.toContain("reasoningEfforts");
+    writeFileSync(openrouterPath, JSON.stringify({ data: [{ id: "duplicate" }, { id: "duplicate" }] }));
+    const duplicate = Bun.spawnSync(command, { cwd: directory, env, stdout: "pipe", stderr: "pipe" });
+    expect(duplicate.exitCode).not.toBe(0);
+    expect(duplicate.stderr.toString()).toContain("duplicate OpenRouter model ID");
+    expect(readFileSync(outputPath, "utf8")).toBe(source);
+    writeFileSync(openrouterPath, JSON.stringify({ data: [{ id: "broken", context_length: -1 }] }));
+    const malformed = Bun.spawnSync(command, { cwd: directory, env, stdout: "pipe", stderr: "pipe" });
+    expect(malformed.exitCode).not.toBe(0);
+    expect(readFileSync(outputPath, "utf8")).toBe(source);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+describe("official OpenRouter metadata input", () => {
+  test("unknown limits stay unknown through nullable tuple holes and duplicates fail", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "frog-openrouter-input-"));
+    const script = new URL("../scripts/generate-jawcode-metadata.ts", import.meta.url).pathname;
+    try {
+      writeFileSync(join(dir, "jawcode.json"), "{}");
+      const snapshot = { data: [
+        { id: "fixture/unknown", supported_parameters: ["reasoning"] },
+        { id: "fixture/vision", context_length: 123456, architecture: { input_modalities: ["text", "image", "audio"] } },
+      ] };
+      writeFileSync(join(dir, "openrouter.json"), JSON.stringify(snapshot));
+      const run = () => Bun.spawnSync([process.execPath, script], {
+        cwd: dir, env: { ...process.env, JAWCODE_MODELS_JSON: join(dir, "jawcode.json"), OPENROUTER_MODELS_JSON: join(dir, "openrouter.json") },
+        stdout: "pipe", stderr: "pipe",
+      });
+      expect(run().exitCode).toBe(0);
+      const module = await import(join(dir, "src/generated/jawcode-model-metadata.ts"));
+      expect(module.getJawcodeModelMetadata("openrouter", "fixture/unknown")).toEqual({ provider: "openrouter", id: "fixture/unknown", reasoning: true });
+      expect(module.getJawcodeModelMetadata("openrouter", "fixture/vision").input).toEqual(["text", "image"]);
+      snapshot.data.push(snapshot.data[0]);
+      writeFileSync(join(dir, "openrouter.json"), JSON.stringify(snapshot));
+      expect(run().exitCode).not.toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
