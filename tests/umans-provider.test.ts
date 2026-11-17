@@ -54,10 +54,10 @@ describe("Umans provider", () => {
 
     expect(provider.defaultModel).toBe("umans-coder");
     expect(provider.models).not.toContain("umans-kimi-k2.7");
-    expect(provider.models).toContain("umans-deepseek-v4-pro-0813");
-    expect(provider.modelCapabilities?.["umans-glm-5.2"]?.input).toEqual(["text", "image"]);
-    expect(provider.modelContextWindows?.["umans-coder"]).toBe(262_144);
-    expect(provider.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
+    expect(provider.models).toContain("umans-deepseek-v4.1-flash-1017");
+    expect(provider.modelCapabilities?.["umans-glm-5.3"]?.input).toEqual(["text"]);
+    expect(provider.modelContextWindows?.["umans-coder"]).toBe(1_048_576);
+    expect(provider.modelContextWindows?.["umans-glm-5.3"]).toBe(1_048_576);
     expect(provider.modelCapabilities?.["umans-coder"]?.input).toEqual(["text", "image"]);
     expect(provider.escapeBuiltinToolNames).toBe(true);
   });

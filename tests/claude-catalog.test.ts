@@ -524,9 +524,9 @@ describe("Claude Code catalog routed normalization", () => {
   });
 
   test("generated jawcode snapshot is restricted to mapped providers", () => {
-    expect(resolveJawcodeProvider("kimi")).toBe("moonshot");
+    expect(resolveJawcodeProvider("kimi")).toBeUndefined();
     expect(resolveJawcodeProvider("nanogpt")).toBeUndefined();
-    expect(getJawcodeModelMetadata("moonshot", "kimi-k2.5")?.contextWindow).toBe(262_144);
+    expect(getJawcodeModelMetadata("moonshot", "kimi-k2.5")).toBeUndefined();
     expect(getJawcodeModelMetadata("nanogpt", "some-model")).toBeUndefined();
   });
 
