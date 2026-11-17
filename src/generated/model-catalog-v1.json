@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "catalogRevision": 5,
-  "catalogDigest": "94ce9bba09e5874cc4bb663fc761dd32dca9b6476b30833cf3586c1e88b1db74",
-  "sourceCommit": "d2d58c8f96abbecfc73aee226573883c828bcfba",
-  "generatedAt": "2026-11-17T13:05:00+09:00",
+  "catalogDigest": "1e6b3d4f75796f14820e470a830d6bbc9b8731808d085bf2e79b6c09fcb3e3fb",
+  "sourceCommit": "7f3fd64ab1ae7e6687afdaac02a3ec19b54c9e6a",
+  "generatedAt": "2026-11-17T13:06:28+09:00",
   "minFrogprogsyVersion": "0.0.2-preview.2",
   "providers": [
     {
@@ -963,11 +963,11 @@
       "retiredModels": [
         "MiniMax-M2",
         "MiniMax-M2.1",
-        "MiniMax-M2.1-highspeed",
-        "MiniMax-M2.5",
-        "MiniMax-M2.5-highspeed"
+        "MiniMax-M2.1-highspeed"
       ],
       "unmanagedModels": [
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
         "MiniMax-M2.5-lightning",
         "minimax-m3"
       ],
