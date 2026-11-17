@@ -1,1 +1,1 @@
-export const MODEL_CATALOG_REVISION = 4;
+export const MODEL_CATALOG_REVISION = 5;
