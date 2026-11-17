@@ -444,6 +444,9 @@ The audit identifies separate runtime work rather than inventing metadata fixes:
 Cerebras Qwen reasoning replay (`message.reasoning`), Azure discovery's v1 URL,
 Parallel's console URL, legacy OpenCode gateway equivalence, and MiniMax CN hostname
 continuity. xAI API-key model docs do not establish the OAuth provider's model access.
+Global MiniMax M2.5 rows use neutral unmanaged status while its published
+credential-dependent November 18 transition is unresolved; the old CN hostname
+is not given new model or lifecycle claims.
 Those routes, and environment/account-defined inventories, are not claimed fully
 validated by this catalog update. No user model, credential, opt-in setting or
 installed proxy is changed by the source update.

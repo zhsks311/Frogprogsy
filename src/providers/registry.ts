@@ -1441,8 +1441,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     jawcodeBundle: "minimax",
     minFrogprogsyVersion: "0.0.5",
     models: ["MiniMax-M3.1-Flash", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
-    retiredModels: ["MiniMax-M2", "MiniMax-M2.1", "MiniMax-M2.1-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
-    unmanagedModels: ["MiniMax-M2.5-lightning", "minimax-m3"],
+    retiredModels: ["MiniMax-M2", "MiniMax-M2.1", "MiniMax-M2.1-highspeed"],
+    unmanagedModels: ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.5-lightning", "minimax-m3"],
     modelContextWindows: {"MiniMax-M3.1-Flash": 1000000, "MiniMax-M3": 1000000, "MiniMax-M2.7": 204800, "MiniMax-M2.7-highspeed": 204800},
     modelMaxOutputTokens: { "MiniMax-M3": 524_288, "MiniMax-M2.7": 204_800, "MiniMax-M2.7-highspeed": 204_800 },
     modelCapabilities: {
